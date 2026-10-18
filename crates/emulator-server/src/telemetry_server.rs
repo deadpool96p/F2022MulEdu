@@ -4,7 +4,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use services_http_content::{parse_http_request, route_http_request, HttpResponse};
-use crate::listener::accept_dual_stream;
+use crate::listener::accept_telemetry_stream;
 
 /// Runs the HTTP/HTTPS Telemetry server listener loop.
 pub async fn run_telemetry_server(listener: TcpListener, tls_acceptor: TlsAcceptor) {
@@ -12,7 +12,7 @@ pub async fn run_telemetry_server(listener: TcpListener, tls_acceptor: TlsAccept
         let acceptor = tls_acceptor.clone();
 
         tokio::spawn(async move {
-            match accept_dual_stream(tcp_stream, &acceptor).await {
+            match accept_telemetry_stream(tcp_stream, &acceptor).await {
                 Ok(mut stream) => {
                     let mut buffer = vec![0u8; 8192];
                     if let Ok(n) = stream.read(&mut buffer).await {
