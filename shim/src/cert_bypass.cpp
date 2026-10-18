@@ -5,6 +5,7 @@
 #include <sstream>
 #include <vector>
 #include <wincrypt.h>
+#include <cstring>
 
     namespace f22 {
 
@@ -133,24 +134,88 @@
     return 0;
   }
 
-  // DirtySDK ProtoSSL certificate bypass pattern scanning
-  static void ScanAndPatchDirtySSLCert() {
-    HMODULE h_main = GetModuleHandleW(nullptr);
-    if (!h_main)
-      return;
+  // 256-byte buffer for the clean-room Root CA RSA modulus
+  static uint8_t g_ca_modulus[256];
+  static bool g_ca_modulus_loaded = false;
 
-    MemoryPattern pat1{"DirtySDK_ProtoSSLCertValidate_Prologue",
-                       {0x48, 0x89, 0x5C, 0x24, 0x00, 0x57, 0x48, 0x83, 0xEC,
-                        0x00, 0x48, 0x8B, 0xD9, 0x48, 0x8B, 0xFA},
-                       "xxxx?xxxx?xxxxx"};
+  static bool LoadCaModulus() {
+    if (g_ca_modulus_loaded) return true;
 
-    uintptr_t addr = FindPattern(h_main, pat1);
-    if (addr) {
-      std::ostringstream ss;
-      ss << "[SSL Bypass] Located DirtySDK ProtoSSL validation function at 0x"
-         << std::hex << addr;
-      LogInfo(ss.str());
+    wchar_t mod_path[MAX_PATH];
+    HMODULE h_self = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&LoadCaModulus), &h_self);
+    if (GetModuleFileNameW(h_self, mod_path, MAX_PATH) > 0) {
+      std::wstring dir = mod_path;
+      size_t last_slash = dir.find_last_of(L"\\/");
+      if (last_slash != std::wstring::npos) {
+        std::wstring bin_path = dir.substr(0, last_slash + 1) + L"f22_ca_modulus.bin";
+        HANDLE h_file = CreateFileW(bin_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                    OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h_file != INVALID_HANDLE_VALUE) {
+          DWORD bytes_read = 0;
+          if (ReadFile(h_file, g_ca_modulus, sizeof(g_ca_modulus), &bytes_read, nullptr) && bytes_read == 256) {
+            g_ca_modulus_loaded = true;
+            CloseHandle(h_file);
+            LogInfo("[SSL Bypass] Loaded 256-byte Root CA RSA modulus from f22_ca_modulus.bin");
+            return true;
+          }
+          CloseHandle(h_file);
+        }
+      }
     }
+    return false;
+  }
+
+  // DirtySDK ProtoSSL certificate bypass: Patches DigiCert Root CA RSA modulus in FIFA 22 memory
+  static bool PatchDirtySdkCaTable() {
+    if (!LoadCaModulus()) {
+      LogWarn("[SSL Bypass] f22_ca_modulus.bin not found yet; waiting for server generation");
+      return false;
+    }
+
+    HMODULE h_main = GetModuleHandleW(nullptr);
+    if (!h_main) return false;
+
+    MODULEINFO mod_info{};
+    if (!GetModuleInformation(GetCurrentProcess(), h_main, &mod_info, sizeof(mod_info))) {
+      return false;
+    }
+
+    const uint8_t *base = static_cast<const uint8_t *>(mod_info.lpBaseOfDll);
+    size_t size = mod_info.SizeOfImage;
+
+    const char kTargetStr[] = "DigiCert Global Root CA";
+    const size_t kStrLen = sizeof(kTargetStr); // 24 bytes including null terminator
+
+    for (size_t i = 0; i < size - kStrLen - 0x60; ++i) {
+      if (std::memcmp(base + i, kTargetStr, kStrLen) == 0) {
+        uintptr_t name_addr = reinterpret_cast<uintptr_t>(base + i);
+        uintptr_t *p_modulus = reinterpret_cast<uintptr_t *>(name_addr + 0x50);
+
+        uint32_t exp_len = *reinterpret_cast<const uint32_t *>(name_addr + 0x58);
+        uint32_t exp_val = *reinterpret_cast<const uint32_t *>(name_addr + 0x5C) & 0x00FFFFFF;
+
+        if (exp_len == 3 && exp_val == 0x010001) {
+          DWORD old_protect = 0;
+          if (VirtualProtect(p_modulus, sizeof(uintptr_t), PAGE_READWRITE, &old_protect)) {
+            uintptr_t old_ptr = *p_modulus;
+            *p_modulus = reinterpret_cast<uintptr_t>(g_ca_modulus);
+            VirtualProtect(p_modulus, sizeof(uintptr_t), old_protect, &old_protect);
+
+            std::ostringstream ss;
+            ss << "[SSL Bypass] SUCCESS: Patched DirtySDK DigiCert Global Root CA modulus pointer at 0x"
+               << std::hex << (name_addr + 0x50) << " (old=0x" << old_ptr << ", new=0x"
+               << reinterpret_cast<uintptr_t>(g_ca_modulus) << ")";
+            LogInfo(ss.str());
+            return true;
+          }
+        }
+      }
+    }
+
+    LogWarn("[SSL Bypass] Could not locate DigiCert Global Root CA struct in FIFA22.exe memory");
+    return false;
   }
 
   bool InstallCertBypassHooks() {
@@ -205,10 +270,11 @@
           "BCryptVerifySignature");
     }
 
-    // 3. Scan for DirtySDK ProtoSSL
-    ScanAndPatchDirtySSLCert();
+    // 3. Patch DirtySDK ProtoSSL DigiCert CA RSA modulus
+    PatchDirtySdkCaTable();
 
     return true;
+
   }
 
 } // namespace f22

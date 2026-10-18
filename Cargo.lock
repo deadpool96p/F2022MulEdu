@@ -169,6 +169,7 @@ dependencies = [
  "blaze-ssl-async",
  "blaze-tdf",
  "rcgen",
+ "rsa",
  "rustls-pki-types",
  "serde",
  "serde_json",

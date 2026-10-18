@@ -91,9 +91,7 @@ static int WSAAPI Hooked_getaddrinfo(
         const ADDRINFOA* effective_hints = pHints;
         if (pHints) {
             sanitized_hints = *pHints;
-            if (sanitized_hints.ai_family == AF_INET6) {
-                sanitized_hints.ai_family = AF_INET;
-            }
+            sanitized_hints.ai_family = AF_INET; // Enforce IPv4 AF_INET for local emulator routing
             sanitized_hints.ai_flags |= AI_NUMERICHOST;
             if (pServiceName && std::isdigit(static_cast<unsigned char>(pServiceName[0]))) {
                 sanitized_hints.ai_flags |= AI_NUMERICSERV;
@@ -156,11 +154,9 @@ static int WSAAPI Hooked_GetAddrInfoW(
             const ADDRINFOW* effective_hints = pHints;
             if (pHints) {
                 sanitized_hints = *pHints;
-                if (sanitized_hints.ai_family == AF_INET6) {
-                    sanitized_hints.ai_family = AF_INET;
-                }
+                sanitized_hints.ai_family = AF_INET; // Enforce IPv4
                 sanitized_hints.ai_flags |= AI_NUMERICHOST;
-                if (pServiceName && iswdigit(pServiceName[0])) {
+                if (pServiceName && std::iswdigit(pServiceName[0])) {
                     sanitized_hints.ai_flags |= AI_NUMERICSERV;
                 }
                 effective_hints = &sanitized_hints;
@@ -187,45 +183,73 @@ static int WSAAPI Hooked_GetAddrInfoW(
     return g_orig_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
 }
 
-// Helper to inspect and rewrite sockaddr_in destination
+// Helper to inspect and rewrite sockaddr destination
 static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr_in *out_sin) {
-    if (!name || name->sa_family != AF_INET) {
+    if (!name) {
         return false;
     }
 
-    const auto *sin = reinterpret_cast<const struct sockaddr_in*>(name);
-    uint16_t port = ntohs(sin->sin_port);
-    char ip_str[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &(sin->sin_addr), ip_str, INET_ADDRSTRLEN);
-
     const auto& cfg = GetConfig();
-    bool should_reroute = (port == cfg.redirector_port || port == cfg.blaze_port ||
-                           port == 42127 || port == 42128);
-    if (cfg.reroute_all_ea) {
-        if (port == cfg.telemetry_port || port == 443 || port == 8080) {
-            should_reroute = true;
+
+    if (name->sa_family == AF_INET) {
+        const auto *sin = reinterpret_cast<const struct sockaddr_in*>(name);
+        uint16_t port = ntohs(sin->sin_port);
+        char ip_str[INET_ADDRSTRLEN];
+        inet_ntop(AF_INET, &(sin->sin_addr), ip_str, INET_ADDRSTRLEN);
+
+        bool should_reroute = (port == cfg.redirector_port || port == cfg.blaze_port ||
+                               port == 42127 || port == 42128);
+        if (cfg.reroute_all_ea) {
+            if (port == cfg.telemetry_port || port == 443 || port == 8080) {
+                should_reroute = true;
+            }
         }
+
+        if (cfg.log_sockets) {
+            std::ostringstream ss;
+            ss << "[WinSock] connect target: " << ip_str << ":" << port
+               << (should_reroute ? " [REROUTING]" : " [PASSTHROUGH]");
+            LogInfo(ss.str());
+        }
+
+        if (should_reroute) {
+            std::memcpy(out_sin, sin, sizeof(struct sockaddr_in));
+            inet_pton(AF_INET, cfg.emulator_host.c_str(), &(out_sin->sin_addr));
+            if (port == 443 && cfg.telemetry_port != 443) {
+                out_sin->sin_port = htons(cfg.telemetry_port);
+            }
+            return true;
+        }
+        return false;
     }
 
-    if (cfg.log_sockets) {
-        std::ostringstream ss;
-        ss << "[WinSock] connect target: " << ip_str << ":" << port
-           << (should_reroute ? " [REROUTING]" : " [PASSTHROUGH]");
-        LogInfo(ss.str());
-    }
+    if (name->sa_family == AF_INET6) {
+        const auto *sin6 = reinterpret_cast<const struct sockaddr_in6*>(name);
+        uint16_t port = ntohs(sin6->sin6_port);
+        char ip6_str[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &(sin6->sin6_addr), ip6_str, INET6_ADDRSTRLEN);
 
-    if (should_reroute) {
-        std::memcpy(out_sin, sin, sizeof(struct sockaddr_in));
-        inet_pton(AF_INET, cfg.emulator_host.c_str(), &(out_sin->sin_addr));
-        // If connecting to port 443 (e.g. telemetry or redirector), map to telemetry port if non-443
-        if (port == 443 && cfg.telemetry_port != 443) {
-            out_sin->sin_port = htons(cfg.telemetry_port);
+        bool should_reroute = (port == cfg.redirector_port || port == cfg.blaze_port ||
+                               port == 42127 || port == 42128);
+
+        if (cfg.log_sockets) {
+            std::ostringstream ss;
+            ss << "[WinSock IPv6] connect target: [" << ip6_str << "]:" << port
+               << (should_reroute ? " [REROUTING]" : " [PASSTHROUGH]");
+            LogInfo(ss.str());
         }
-        return true;
+
+        if (should_reroute) {
+            out_sin->sin_family = AF_INET;
+            out_sin->sin_port = sin6->sin6_port;
+            inet_pton(AF_INET, cfg.emulator_host.c_str(), &(out_sin->sin_addr));
+            return true;
+        }
     }
 
     return false;
 }
+
 
 void SetTargetSteamID(uint64_t steam_id) {
     if (steam_id != 0) {
