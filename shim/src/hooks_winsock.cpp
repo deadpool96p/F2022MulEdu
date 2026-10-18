@@ -184,8 +184,8 @@ static int WSAAPI Hooked_GetAddrInfoW(
 }
 
 // Helper to inspect and rewrite sockaddr destination
-static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr_in *out_sin) {
-    if (!name) {
+static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr_storage *out_addr, int *out_len) {
+    if (!name || !out_addr || !out_len) {
         return false;
     }
 
@@ -198,7 +198,7 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
         inet_ntop(AF_INET, &(sin->sin_addr), ip_str, INET_ADDRSTRLEN);
 
         bool should_reroute = (port == cfg.redirector_port || port == cfg.blaze_port ||
-                               port == 42127 || port == 42128);
+                               port == 42127 || port == 42128 || port == 42230);
         if (cfg.reroute_all_ea) {
             if (port == cfg.telemetry_port || port == 443 || port == 8080) {
                 should_reroute = true;
@@ -213,11 +213,15 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
         }
 
         if (should_reroute) {
+            auto *out_sin = reinterpret_cast<struct sockaddr_in*>(out_addr);
+            std::memset(out_addr, 0, sizeof(struct sockaddr_storage));
             std::memcpy(out_sin, sin, sizeof(struct sockaddr_in));
+            out_sin->sin_family = AF_INET;
             inet_pton(AF_INET, cfg.emulator_host.c_str(), &(out_sin->sin_addr));
             if (port == 443 && cfg.telemetry_port != 443) {
                 out_sin->sin_port = htons(cfg.telemetry_port);
             }
+            *out_len = sizeof(struct sockaddr_in);
             return true;
         }
         return false;
@@ -230,7 +234,12 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
         inet_ntop(AF_INET6, &(sin6->sin6_addr), ip6_str, INET6_ADDRSTRLEN);
 
         bool should_reroute = (port == cfg.redirector_port || port == cfg.blaze_port ||
-                               port == 42127 || port == 42128);
+                               port == 42127 || port == 42128 || port == 42230);
+        if (cfg.reroute_all_ea) {
+            if (port == cfg.telemetry_port || port == 443 || port == 8080) {
+                should_reroute = true;
+            }
+        }
 
         if (cfg.log_sockets) {
             std::ostringstream ss;
@@ -240,16 +249,19 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
         }
 
         if (should_reroute) {
-            out_sin->sin_family = AF_INET;
-            out_sin->sin_port = sin6->sin6_port;
-            inet_pton(AF_INET, cfg.emulator_host.c_str(), &(out_sin->sin_addr));
+            auto *out_sin6 = reinterpret_cast<struct sockaddr_in6*>(out_addr);
+            std::memset(out_addr, 0, sizeof(struct sockaddr_storage));
+            out_sin6->sin6_family = AF_INET6;
+            out_sin6->sin6_port = sin6->sin6_port;
+            // Map to IPv4-mapped loopback ::ffff:127.0.0.1
+            inet_pton(AF_INET6, "::ffff:127.0.0.1", &(out_sin6->sin6_addr));
+            *out_len = sizeof(struct sockaddr_in6);
             return true;
         }
     }
 
     return false;
 }
-
 
 void SetTargetSteamID(uint64_t steam_id) {
     if (steam_id != 0) {
@@ -326,9 +338,10 @@ static int WSAAPI Hooked_connect(SOCKET s, const struct sockaddr *name, int name
     int nodelay = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
 
-    struct sockaddr_in rewritten{};
-    if (CheckAndRewriteSockAddr(name, &rewritten)) {
-        return g_orig_connect(s, reinterpret_cast<const struct sockaddr*>(&rewritten), sizeof(rewritten));
+    struct sockaddr_storage rewritten{};
+    int rewritten_len = 0;
+    if (CheckAndRewriteSockAddr(name, &rewritten, &rewritten_len)) {
+        return g_orig_connect(s, reinterpret_cast<const struct sockaddr*>(&rewritten), rewritten_len);
     }
     return g_orig_connect(s, name, namelen);
 }
@@ -346,9 +359,10 @@ static int WSAAPI Hooked_WSAConnect(
     int nodelay = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
 
-    struct sockaddr_in rewritten{};
-    if (CheckAndRewriteSockAddr(name, &rewritten)) {
-        return g_orig_WSAConnect(s, reinterpret_cast<const struct sockaddr*>(&rewritten), sizeof(rewritten),
+    struct sockaddr_storage rewritten{};
+    int rewritten_len = 0;
+    if (CheckAndRewriteSockAddr(name, &rewritten, &rewritten_len)) {
+        return g_orig_WSAConnect(s, reinterpret_cast<const struct sockaddr*>(&rewritten), rewritten_len,
                                  lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
     }
     return g_orig_WSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
@@ -367,10 +381,11 @@ static BOOL PASCAL FAR Hooked_ConnectEx(
     int nodelay = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
 
-    struct sockaddr_in rewritten{};
-    if (CheckAndRewriteSockAddr(name, &rewritten)) {
+    struct sockaddr_storage rewritten{};
+    int rewritten_len = 0;
+    if (CheckAndRewriteSockAddr(name, &rewritten, &rewritten_len)) {
         if (g_real_ConnectEx) {
-            return g_real_ConnectEx(s, reinterpret_cast<const struct sockaddr*>(&rewritten), sizeof(rewritten),
+            return g_real_ConnectEx(s, reinterpret_cast<const struct sockaddr*>(&rewritten), rewritten_len,
                                    lpSendBuffer, dwSendDataLength, lpdwBytesSent, lpOverlapped);
         }
     }
@@ -379,6 +394,7 @@ static BOOL PASCAL FAR Hooked_ConnectEx(
     }
     return FALSE;
 }
+
 
 // Hooked WSAIoctl
 static int WSAAPI Hooked_WSAIoctl(

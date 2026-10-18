@@ -88,8 +88,21 @@ pub async fn start_services_full(
     let redir_task = tokio::spawn(run_redirector_server(
         redir_listener,
         tls_acceptor.clone(),
-        redir_cfg,
+        redir_cfg.clone(),
     ));
+
+    // Secondary Redirector listener on port 42230 (FIFA 22 standard redirector port)
+    if redirector_port != 42230 {
+        if let Ok(l) = TcpListener::bind("0.0.0.0:42230").await {
+            tracing::info!("  * Secondary Redirector Listener     : Port 42230");
+            tokio::spawn(run_redirector_server(
+                l,
+                tls_acceptor.clone(),
+                redir_cfg.clone(),
+            ));
+        }
+    }
+
 
     let session_store = Arc::new(SessionStore::new());
     let game_registry = Arc::new(GameRegistry::new());
