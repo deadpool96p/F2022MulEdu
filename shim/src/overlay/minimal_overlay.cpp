@@ -1,6 +1,7 @@
 #include "minimal_overlay.h"
 #include "input_hook.h"
 #include "../control_client.h"
+#include "../steam_bridge.hpp"
 #include <imgui.h>
 #include <chrono>
 #include <string>
@@ -130,6 +131,18 @@ static void RenderTopBar(const ServerStatus& status) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextColored(ImVec4(0.35f, 0.75f, 1.0f, 1.0f), "FIFA 22 MULTIPLAYER");
 
+        // Steam Integration Tag
+        if (SteamBridge::Instance().IsActive()) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.3f, 0.35f, 0.45f, 1.0f), "|");
+            ImGui::SameLine();
+            ImGui::TextColored(
+                ImVec4(0.40f, 0.70f, 1.0f, 1.0f),
+                "[ Steam: %s (480) ]",
+                SteamBridge::Instance().GetLocalPersonaName().c_str()
+            );
+        }
+
         ImGui::SameLine();
         ImGui::TextColored(ImVec4(0.3f, 0.35f, 0.45f, 1.0f), "|");
 
@@ -164,6 +177,7 @@ static void RenderTopBar(const ServerStatus& status) {
             ControlClient::Instance().RequestHostRoom([](bool ok, const std::string& code) {
                 if (ok) {
                     strncpy(s_room_code_input, code.c_str(), sizeof(s_room_code_input) - 1);
+                    SteamBridge::Instance().SetRichPresenceStatus("Hosting Match Lobby", code);
                     SetFeedback("Room created: " + code + " (Copied to clipboard!)");
                 } else {
                     SetFeedback("Failed to create room.");
@@ -181,6 +195,7 @@ static void RenderTopBar(const ServerStatus& status) {
             if (!code_to_join.empty()) {
                 ControlClient::Instance().RequestJoinRoom(code_to_join, [code_to_join](bool ok, const std::string&) {
                     if (ok) {
+                        SteamBridge::Instance().SetRichPresenceStatus("Joined Match Lobby", code_to_join);
                         SetFeedback("Joined Room: " + code_to_join + " - enter Native Matchmaking!");
                     } else {
                         SetFeedback("Failed to join room.");
@@ -201,6 +216,15 @@ static void RenderTopBar(const ServerStatus& status) {
             if (!code.empty()) {
                 ControlClient::CopyToClipboard(code);
                 SetFeedback("Copied " + code + " to clipboard!");
+            }
+        }
+
+        // Shift+Tab Invite Button (Steam Overlay)
+        if (SteamBridge::Instance().IsActive()) {
+            ImGui::SameLine();
+            if (ImGui::Button("Shift+Tab Invite")) {
+                SteamBridge::Instance().OpenOverlayInviteDialog();
+                SetFeedback("Opening Steam Overlay Friend Invite Dialog...");
             }
         }
 

@@ -1,6 +1,7 @@
 #include "f22_shim.h"
 #include "control_client.h"
 #include "hooks_dxgi.h"
+#include "steam_bridge.hpp"
 #include <MinHook.h>
 #include <dxgi.h>
 #include <dxgi1_2.h>
@@ -91,6 +92,10 @@ static DWORD WINAPI ShimWorkerThread(LPVOID) {
     ControlClient::Instance().Start(GetConfig().emulator_host, 42129);
     LogInfo("Control client connected to emulator control API on port 42129.");
 
+    if (GetConfig().enable_steam) {
+        SteamBridge::Instance().Initialize(GetConfig().steam_appid);
+    }
+
     if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
         LogError("Failed to enable MinHook hooks!");
         return 1;
@@ -164,6 +169,7 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
         break;
     case DLL_PROCESS_DETACH:
         f22::RemoveDXGIHooks();
+        f22::SteamBridge::Instance().Shutdown();
         f22::ControlClient::Instance().Stop();
         MH_Uninitialize();
         if (f22::g_real_dxgi) {

@@ -24,6 +24,8 @@ struct Config {
     bool log_sockets = true;
     bool bypass_cert_validation = true;
     bool enable_overlay = true;
+    bool enable_steam = true;
+    uint32_t steam_appid = 480;
 };
 
 // Global config access

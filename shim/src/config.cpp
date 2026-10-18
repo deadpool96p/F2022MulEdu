@@ -62,6 +62,16 @@ void LoadConfig() {
                 g_config.enable_overlay = (val == "true" || val == "1");
             } else if (key == "LogSockets") {
                 g_config.log_sockets = (val == "true" || val == "1");
+            } else if (key == "EnableSteam") {
+                g_config.enable_steam = (val == "true" || val == "1");
+            } else if (key == "SteamAppId") {
+                try { g_config.steam_appid = static_cast<uint32_t>(std::stoul(val)); } catch (...) {}
+            }
+        } else if (current_section == "Steam") {
+            if (key == "EnableSteam") {
+                g_config.enable_steam = (val == "true" || val == "1");
+            } else if (key == "SteamAppId") {
+                try { g_config.steam_appid = static_cast<uint32_t>(std::stoul(val)); } catch (...) {}
             }
         } else if (current_section == "SSL") {
             if (key == "BypassCertValidation") {

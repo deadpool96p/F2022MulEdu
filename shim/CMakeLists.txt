@@ -38,6 +38,7 @@ set(SHIM_SOURCES
     src/hooks_dxgi.cpp
     src/overlay/input_hook.cpp
     src/overlay/minimal_overlay.cpp
+    src/steam_bridge.cpp
     ${IMGUI_SOURCES}
     dxgi.def
 )

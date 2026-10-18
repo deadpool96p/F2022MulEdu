@@ -3,6 +3,7 @@
 #include "overlay/input_hook.h"
 #include "overlay/minimal_overlay.h"
 #include "control_client.h"
+#include "steam_bridge.hpp"
 
 #include <MinHook.h>
 #include <d3d11.h>
@@ -147,6 +148,8 @@ static HRESULT WINAPI Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterv
     if (!pSwapChain) {
         return g_original_present(pSwapChain, SyncInterval, Flags);
     }
+
+    SteamBridge::Instance().RunCallbacks();
 
     if (!g_initialized) {
         DXGI_SWAP_CHAIN_DESC desc;
