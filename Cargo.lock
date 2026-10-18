@@ -55,6 +55,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "services-http-content"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "tracing",
+]
+
+[[package]]
+name = "services-redirector"
+version = "0.1.0"
+dependencies = [
+ "blaze-core",
+ "blaze-tdf",
+ "tracing",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"

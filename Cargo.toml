@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/blaze-tdf",
     "crates/blaze-core",
+    "crates/services-redirector",
+    "crates/services-http-content",
 ]
 
 [workspace.package]
