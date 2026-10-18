@@ -39,6 +39,8 @@ void LogError(std::string_view message);
 // Subsystem Hooks
 bool InstallWinsockHooks();
 bool InstallCertBypassHooks();
+bool InstallDXGIHooks();
+void RemoveDXGIHooks();
 
 // Real DXGI Loader
 bool InitDXGIProxy();
