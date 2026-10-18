@@ -3,10 +3,12 @@
 #include "control_client.h"
 #include "overlay/input_hook.h"
 #include <MinHook.h>
+#include <mswsock.h>
 #include <sstream>
 #include <cstring>
 #include <string>
 #include <mutex>
+#include <cctype>
 
 namespace f22 {
 
@@ -15,6 +17,7 @@ using PFN_getaddrinfo = int(WSAAPI*)(const char *pNodeName, const char *pService
 using PFN_GetAddrInfoW = int(WSAAPI*)(const PCWSTR pNodeName, const PCWSTR pServiceName, const ADDRINFOW *pHints, PADDRINFOW *ppResult);
 using PFN_connect = int(WSAAPI*)(SOCKET s, const struct sockaddr *name, int namelen);
 using PFN_WSAConnect = int(WSAAPI*)(SOCKET s, const struct sockaddr *name, int namelen, LPWSABUF lpCallerData, LPWSABUF lpCalleeData, LPQOS lpSQOS, LPQOS lpGQOS);
+using PFN_WSAIoctl = int(WSAAPI*)(SOCKET s, DWORD dwIoControlCode, LPVOID lpvInBuffer, DWORD cbInBuffer, LPVOID lpvOutBuffer, DWORD cbOutBuffer, LPDWORD lpcbBytesReturned, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 
 // UDP Function pointers
 using PFN_bind = int(WSAAPI*)(SOCKET s, const struct sockaddr *name, int namelen);
@@ -27,6 +30,8 @@ static PFN_getaddrinfo g_orig_getaddrinfo = nullptr;
 static PFN_GetAddrInfoW g_orig_GetAddrInfoW = nullptr;
 static PFN_connect g_orig_connect = nullptr;
 static PFN_WSAConnect g_orig_WSAConnect = nullptr;
+static PFN_WSAIoctl g_orig_WSAIoctl = nullptr;
+static LPFN_CONNECTEX g_real_ConnectEx = nullptr;
 
 static PFN_bind g_orig_bind = nullptr;
 static PFN_sendto g_orig_sendto = nullptr;
@@ -82,7 +87,47 @@ static int WSAAPI Hooked_getaddrinfo(
         ss << "[WinSock] Intercepted getaddrinfo(\"" << query_host << "\") -> rerouting to " << target_host;
         LogInfo(ss.str());
 
-        return g_orig_getaddrinfo(target_host.c_str(), pServiceName, pHints, ppResult);
+        ADDRINFOA sanitized_hints{};
+        const ADDRINFOA* effective_hints = pHints;
+        if (pHints) {
+            sanitized_hints = *pHints;
+            if (sanitized_hints.ai_family == AF_INET6) {
+                sanitized_hints.ai_family = AF_INET;
+            }
+            sanitized_hints.ai_flags |= AI_NUMERICHOST;
+            if (pServiceName && std::isdigit(static_cast<unsigned char>(pServiceName[0]))) {
+                sanitized_hints.ai_flags |= AI_NUMERICSERV;
+            }
+            effective_hints = &sanitized_hints;
+        } else {
+            sanitized_hints.ai_family = AF_INET;
+            sanitized_hints.ai_socktype = SOCK_STREAM;
+            sanitized_hints.ai_flags = AI_NUMERICHOST;
+            effective_hints = &sanitized_hints;
+        }
+
+        int res = g_orig_getaddrinfo(target_host.c_str(), pServiceName, effective_hints, ppResult);
+        if (res != 0) {
+            std::ostringstream err;
+            err << "[WinSock] getaddrinfo(\"" << query_host << "\") reroute to " << target_host
+                << " (service: " << (pServiceName ? pServiceName : "null") << ") failed with code " << res
+                << ". Attempting direct AF_INET synthesis fallback...";
+            LogWarn(err.str());
+
+            ADDRINFOA fallback_hints{};
+            fallback_hints.ai_family = AF_INET;
+            fallback_hints.ai_socktype = pHints ? pHints->ai_socktype : SOCK_STREAM;
+            fallback_hints.ai_flags = AI_NUMERICHOST;
+            res = g_orig_getaddrinfo(target_host.c_str(), pServiceName, &fallback_hints, ppResult);
+        }
+
+        if (res == 0 && GetConfig().log_sockets) {
+            std::ostringstream succ;
+            succ << "[WinSock] getaddrinfo(\"" << query_host << "\") successfully resolved to " << target_host;
+            LogInfo(succ.str());
+        }
+
+        return res;
     }
 
     return g_orig_getaddrinfo(pNodeName, pServiceName, pHints, ppResult);
@@ -107,7 +152,35 @@ static int WSAAPI Hooked_GetAddrInfoW(
             ss << "[WinSock] Intercepted GetAddrInfoW(\"" << narrow_buf << "\") -> rerouting to " << target_host;
             LogInfo(ss.str());
 
-            return g_orig_GetAddrInfoW(wide_target, pServiceName, pHints, ppResult);
+            ADDRINFOW sanitized_hints{};
+            const ADDRINFOW* effective_hints = pHints;
+            if (pHints) {
+                sanitized_hints = *pHints;
+                if (sanitized_hints.ai_family == AF_INET6) {
+                    sanitized_hints.ai_family = AF_INET;
+                }
+                sanitized_hints.ai_flags |= AI_NUMERICHOST;
+                if (pServiceName && iswdigit(pServiceName[0])) {
+                    sanitized_hints.ai_flags |= AI_NUMERICSERV;
+                }
+                effective_hints = &sanitized_hints;
+            } else {
+                sanitized_hints.ai_family = AF_INET;
+                sanitized_hints.ai_socktype = SOCK_STREAM;
+                sanitized_hints.ai_flags = AI_NUMERICHOST;
+                effective_hints = &sanitized_hints;
+            }
+
+            int res = g_orig_GetAddrInfoW(wide_target, pServiceName, effective_hints, ppResult);
+            if (res != 0) {
+                ADDRINFOW fallback_hints{};
+                fallback_hints.ai_family = AF_INET;
+                fallback_hints.ai_socktype = pHints ? pHints->ai_socktype : SOCK_STREAM;
+                fallback_hints.ai_flags = AI_NUMERICHOST;
+                res = g_orig_GetAddrInfoW(wide_target, pServiceName, &fallback_hints, ppResult);
+            }
+
+            return res;
         }
     }
 
@@ -126,11 +199,13 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
     inet_ntop(AF_INET, &(sin->sin_addr), ip_str, INET_ADDRSTRLEN);
 
     const auto& cfg = GetConfig();
-    bool should_reroute = (port == cfg.redirector_port || port == cfg.blaze_port);
+    bool should_reroute = (port == cfg.redirector_port || port == cfg.blaze_port ||
+                           port == cfg.telemetry_port || port == 42127 || port == 42128 ||
+                           port == 443 || port == 8080);
 
     if (cfg.log_sockets) {
         std::ostringstream ss;
-        ss << "[WinSock] connect() target: " << ip_str << ":" << port
+        ss << "[WinSock] connect target: " << ip_str << ":" << port
            << (should_reroute ? " [REROUTING]" : " [PASSTHROUGH]");
         LogInfo(ss.str());
     }
@@ -138,6 +213,10 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
     if (should_reroute) {
         std::memcpy(out_sin, sin, sizeof(struct sockaddr_in));
         inet_pton(AF_INET, cfg.emulator_host.c_str(), &(out_sin->sin_addr));
+        // If connecting to port 443 (e.g. telemetry or redirector), map to telemetry port if non-443
+        if (port == 443 && cfg.telemetry_port != 443) {
+            out_sin->sin_port = htons(cfg.telemetry_port);
+        }
         return true;
     }
 
@@ -245,6 +324,63 @@ static int WSAAPI Hooked_WSAConnect(
                                  lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
     }
     return g_orig_WSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
+}
+
+// Hooked ConnectEx (obtained dynamically via WSAIoctl SIO_GET_EXTENSION_FUNCTION_POINTER)
+static BOOL PASCAL FAR Hooked_ConnectEx(
+    SOCKET s,
+    const struct sockaddr *name,
+    int namelen,
+    PVOID lpSendBuffer,
+    DWORD dwSendDataLength,
+    LPDWORD lpdwBytesSent,
+    LPOVERLAPPED lpOverlapped
+) {
+    int nodelay = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+
+    struct sockaddr_in rewritten{};
+    if (CheckAndRewriteSockAddr(name, &rewritten)) {
+        if (g_real_ConnectEx) {
+            return g_real_ConnectEx(s, reinterpret_cast<const struct sockaddr*>(&rewritten), sizeof(rewritten),
+                                   lpSendBuffer, dwSendDataLength, lpdwBytesSent, lpOverlapped);
+        }
+    }
+    if (g_real_ConnectEx) {
+        return g_real_ConnectEx(s, name, namelen, lpSendBuffer, dwSendDataLength, lpdwBytesSent, lpOverlapped);
+    }
+    return FALSE;
+}
+
+// Hooked WSAIoctl
+static int WSAAPI Hooked_WSAIoctl(
+    SOCKET s,
+    DWORD dwIoControlCode,
+    LPVOID lpvInBuffer,
+    DWORD cbInBuffer,
+    LPVOID lpvOutBuffer,
+    DWORD cbOutBuffer,
+    LPDWORD lpcbBytesReturned,
+    LPWSAOVERLAPPED lpOverlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
+) {
+    int res = g_orig_WSAIoctl(s, dwIoControlCode, lpvInBuffer, cbInBuffer,
+                              lpvOutBuffer, cbOutBuffer, lpcbBytesReturned,
+                              lpOverlapped, lpCompletionRoutine);
+
+    if (res == 0 && dwIoControlCode == SIO_GET_EXTENSION_FUNCTION_POINTER) {
+        if (lpvInBuffer && cbInBuffer >= sizeof(GUID) && lpvOutBuffer && cbOutBuffer >= sizeof(void*)) {
+            const GUID* guid = reinterpret_cast<const GUID*>(lpvInBuffer);
+            static const GUID kConnectExGuid = WSAID_CONNECTEX;
+            if (std::memcmp(guid, &kConnectExGuid, sizeof(GUID)) == 0) {
+                g_real_ConnectEx = *reinterpret_cast<LPFN_CONNECTEX*>(lpvOutBuffer);
+                *reinterpret_cast<LPFN_CONNECTEX*>(lpvOutBuffer) = &Hooked_ConnectEx;
+                LogInfo("[WinSock] Intercepted WSAIoctl SIO_GET_EXTENSION_FUNCTION_POINTER for ConnectEx -> Detoured!");
+            }
+        }
+    }
+
+    return res;
 }
 
 // Hooked bind() - Detect UDP game port 3659
@@ -566,6 +702,7 @@ bool InstallWinsockHooks() {
     void *p_GetAddrInfoW = reinterpret_cast<void*>(GetProcAddress(ws2, "GetAddrInfoW"));
     void *p_connect = reinterpret_cast<void*>(GetProcAddress(ws2, "connect"));
     void *p_WSAConnect = reinterpret_cast<void*>(GetProcAddress(ws2, "WSAConnect"));
+    void *p_WSAIoctl = reinterpret_cast<void*>(GetProcAddress(ws2, "WSAIoctl"));
 
     void *p_bind = reinterpret_cast<void*>(GetProcAddress(ws2, "bind"));
     void *p_sendto = reinterpret_cast<void*>(GetProcAddress(ws2, "sendto"));
@@ -592,6 +729,8 @@ bool InstallWinsockHooks() {
                         reinterpret_cast<void**>(&g_orig_connect), "connect");
     create_hook_checked(p_WSAConnect, reinterpret_cast<void*>(&Hooked_WSAConnect),
                         reinterpret_cast<void**>(&g_orig_WSAConnect), "WSAConnect");
+    create_hook_checked(p_WSAIoctl, reinterpret_cast<void*>(&Hooked_WSAIoctl),
+                        reinterpret_cast<void**>(&g_orig_WSAIoctl), "WSAIoctl");
 
     create_hook_checked(p_bind, reinterpret_cast<void*>(&Hooked_bind),
                         reinterpret_cast<void**>(&g_orig_bind), "bind");

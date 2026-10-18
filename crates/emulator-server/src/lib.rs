@@ -56,7 +56,13 @@ pub async fn start_services_full(
 
     let redir_listener = TcpListener::bind(format!("0.0.0.0:{}", redirector_port)).await?;
     let blaze_listener = TcpListener::bind(format!("0.0.0.0:{}", blaze_port)).await?;
-    let telemetry_listener = TcpListener::bind(format!("0.0.0.0:{}", telemetry_port)).await?;
+    let telemetry_listener = match TcpListener::bind(format!("0.0.0.0:{}", telemetry_port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!("Could not bind telemetry to port {}: {:?}. Falling back to 8080", telemetry_port, e);
+            TcpListener::bind("0.0.0.0:8080").await?
+        }
+    };
     let qos_socket = UdpSocket::bind(format!("0.0.0.0:{}", qos_port)).await?;
     let relay_socket = UdpSocket::bind(format!("0.0.0.0:{}", relay_port)).await?;
     let control_listener = TcpListener::bind("0.0.0.0:42129").await?;
