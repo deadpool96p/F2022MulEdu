@@ -42,6 +42,9 @@ public:
 
     static void CopyToClipboard(const std::string& text);
 
+    int GetMySlot() const { return m_my_slot; }
+    bool IsHost() const { return m_is_host; }
+
 private:
     ControlClient() = default;
     ~ControlClient();
@@ -50,6 +53,9 @@ private:
     bool FetchStatusSync(ServerStatus& out_status);
     bool PostHostRoomSync(std::string& out_code);
     bool PostJoinRoomSync(const std::string& room_code, std::string& out_status);
+
+    int m_my_slot = 0;
+    bool m_is_host = true;
 
     std::string m_host = "127.0.0.1";
     uint16_t m_port = 42129;

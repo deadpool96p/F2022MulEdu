@@ -34,6 +34,7 @@ public:
     bool SendP2PPacket(uint64_t remote_steam_id, const void* data, uint32_t size, int send_type = 1, int channel = 0);
     bool IsP2PPacketAvailable(uint32_t* msg_size, int channel = 0);
     bool ReadP2PPacket(void* dest, uint32_t dest_size, uint32_t* msg_size, uint64_t* remote_steam_id, int channel = 0);
+    bool AcceptP2PSession(uint64_t remote_steam_id);
 
 private:
     SteamBridge() = default;

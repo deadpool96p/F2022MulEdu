@@ -1,5 +1,6 @@
 #include "f22_shim.h"
 #include "steam_bridge.hpp"
+#include "control_client.h"
 #include "overlay/input_hook.h"
 #include <MinHook.h>
 #include <sstream>
@@ -146,6 +147,9 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
 void SetTargetSteamID(uint64_t steam_id) {
     if (steam_id != 0) {
         g_target_steam_id = steam_id;
+        if (SteamBridge::Instance().HasSteamNetworking()) {
+            SteamBridge::Instance().AcceptP2PSession(steam_id);
+        }
     }
 }
 
@@ -165,10 +169,13 @@ void TransmitNetcodeGamepadPacket(const struct _XINPUT_GAMEPAD& pad) {
     // 16-byte gamepad payload
     uint16_t magic = 0xF220;
     uint8_t type = 0x01; // INPUT_FRAME
-    uint8_t flags = 0x00;
+    uint8_t slot_byte = static_cast<uint8_t>(ControlClient::Instance().GetMySlot());
+    if (slot_byte == 0 && !ControlClient::Instance().IsHost()) {
+        slot_byte = 1;
+    }
     std::memcpy(packet + 8, &magic, 2);
     packet[10] = type;
-    packet[11] = flags;
+    packet[11] = slot_byte;
     std::memcpy(packet + 12, &pad, sizeof(XINPUT_GAMEPAD));
 
     // Send via Steam P2P if available

@@ -1,5 +1,6 @@
 #include "input_hook.h"
 #include "f22_shim.h"
+#include "../steam_bridge.hpp"
 #include <MinHook.h>
 #include <xinput.h>
 #include <imgui.h>
@@ -189,9 +190,37 @@ void BroadcastLocalGamepad(const XINPUT_GAMEPAD& pad) {
     }
 }
 
+static void PollRemoteGamepadInputs() {
+    if (SteamBridge::Instance().HasSteamNetworking()) {
+        SteamBridge::Instance().RunCallbacks();
+        uint32_t input_sz = 0;
+        while (SteamBridge::Instance().IsP2PPacketAvailable(&input_sz, 1) && input_sz >= 16) {
+            uint8_t p2p_buf[64];
+            uint64_t remote_steam_id = 0;
+            uint32_t read_bytes = 0;
+            if (SteamBridge::Instance().ReadP2PPacket(p2p_buf, sizeof(p2p_buf), &read_bytes, &remote_steam_id, 1)) {
+                if (read_bytes >= 16 && *reinterpret_cast<const uint16_t*>(p2p_buf) == 0xF220) {
+                    if (p2p_buf[2] == 0x01) {
+                        int slot = static_cast<int>(p2p_buf[3]);
+                        if (slot <= 0 || slot >= 4) slot = 1;
+                        XINPUT_GAMEPAD remote_pad{};
+                        std::memcpy(&remote_pad, p2p_buf + 4, sizeof(XINPUT_GAMEPAD));
+                        SetRemotePeerGamepad(slot, remote_pad);
+                    }
+                }
+            }
+        }
+    }
+}
+
 static DWORD WINAPI Hooked_XInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
     if (!pState || dwUserIndex >= 4) {
         return ERROR_BAD_ARGUMENTS;
+    }
+
+    // Pump incoming Steam P2P controller inputs from friends every frame
+    if (dwUserIndex == 0) {
+        PollRemoteGamepadInputs();
     }
 
     // 1. ALWAYS query the real local physical controller FIRST!

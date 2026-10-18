@@ -27,6 +27,7 @@ static PFN_SteamAPI_ISteamFriends_ActivateGameOverlayInviteDialog s_pfn_ISteamFr
 static PFN_SteamAPI_ISteamNetworking_SendP2PPacket s_pfn_ISteamNetworking_SendP2PPacket = nullptr;
 static PFN_SteamAPI_ISteamNetworking_IsP2PPacketAvailable s_pfn_ISteamNetworking_IsP2PPacketAvailable = nullptr;
 static PFN_SteamAPI_ISteamNetworking_ReadP2PPacket s_pfn_ISteamNetworking_ReadP2PPacket = nullptr;
+static PFN_SteamAPI_ISteamNetworking_AcceptP2PSessionWithUser s_pfn_ISteamNetworking_AcceptP2PSessionWithUser = nullptr;
 
 SteamBridge& SteamBridge::Instance() {
     static SteamBridge s_instance;
@@ -143,6 +144,8 @@ bool SteamBridge::LoadSteamAPI() {
         GetProcAddress(m_hSteamDll, "SteamAPI_ISteamNetworking_IsP2PPacketAvailable"));
     s_pfn_ISteamNetworking_ReadP2PPacket = reinterpret_cast<PFN_SteamAPI_ISteamNetworking_ReadP2PPacket>(
         GetProcAddress(m_hSteamDll, "SteamAPI_ISteamNetworking_ReadP2PPacket"));
+    s_pfn_ISteamNetworking_AcceptP2PSessionWithUser = reinterpret_cast<PFN_SteamAPI_ISteamNetworking_AcceptP2PSessionWithUser>(
+        GetProcAddress(m_hSteamDll, "SteamAPI_ISteamNetworking_AcceptP2PSessionWithUser"));
 
     return (s_pfn_SteamAPI_Init != nullptr && s_pfn_SteamAPI_RunCallbacks != nullptr);
 }
@@ -319,6 +322,11 @@ bool SteamBridge::IsP2PPacketAvailable(uint32_t* msg_size, int channel) {
 bool SteamBridge::ReadP2PPacket(void* dest, uint32_t dest_size, uint32_t* msg_size, uint64_t* remote_steam_id, int channel) {
     if (!m_active || !m_pSteamNetworking || !s_pfn_ISteamNetworking_ReadP2PPacket) return false;
     return s_pfn_ISteamNetworking_ReadP2PPacket(m_pSteamNetworking, dest, dest_size, msg_size, remote_steam_id, channel);
+}
+
+bool SteamBridge::AcceptP2PSession(uint64_t remote_steam_id) {
+    if (!m_active || !m_pSteamNetworking || !s_pfn_ISteamNetworking_AcceptP2PSessionWithUser) return false;
+    return s_pfn_ISteamNetworking_AcceptP2PSessionWithUser(m_pSteamNetworking, remote_steam_id);
 }
 
 } // namespace f22

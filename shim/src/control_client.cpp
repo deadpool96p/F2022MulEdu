@@ -225,14 +225,16 @@ bool ControlClient::FetchStatusSync(ServerStatus& out_status) {
             }
 
             out_status.members = ExtractJsonMembers(response);
+            uint64_t local_steam_id = SteamBridge::Instance().GetLocalSteamID();
             bool slot_seen[4] = { true, false, false, false };
             for (const auto& m : out_status.members) {
+                // Target any other player in the room (Host or Friends)
+                if (m.steam_id != 0 && (local_steam_id == 0 || m.steam_id != local_steam_id)) {
+                    SetTargetSteamID(m.steam_id);
+                }
                 if (m.slot > 0 && m.slot < 4) {
                     slot_seen[m.slot] = true;
                     SetRemotePeerConnected(m.slot, m.connected, m.name);
-                    if (m.steam_id != 0) {
-                        SetTargetSteamID(m.steam_id);
-                    }
                 }
             }
             for (int s = 1; s < 4; ++s) {
@@ -311,6 +313,8 @@ bool ControlClient::PostHostRoomSync(std::string& out_code) {
 
             out_code = ExtractJsonString(response, "room_code");
             if (!out_code.empty()) {
+                m_my_slot = 0;
+                m_is_host = true;
                 success = true;
             }
         }
@@ -382,6 +386,8 @@ bool ControlClient::PostJoinRoomSync(const std::string& room_code, std::string& 
             }
 
             out_status = ExtractJsonString(response, "status");
+            m_my_slot = ExtractJsonInt(response, "slot", 1);
+            m_is_host = false;
             success = true;
         }
     }
