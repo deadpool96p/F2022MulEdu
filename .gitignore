@@ -1,0 +1,40 @@
+# Rust build artifacts
+/target
+**/target/
+
+# C++ / Visual Studio / CMake build artifacts
+/build
+**/build/
+.vs/
+out/
+CMakeSettings.json
+*.user
+
+# Binaries, libraries, debug symbols
+*.exe
+*.dll
+*.so
+*.dylib
+*.pdb
+*.obj
+*.lib
+*.a
+*.exp
+*.ilk
+
+# Packet captures & logs
+*.pcap
+*.pcapng
+*.log
+
+# External & reference tooling
+rea-main/
+scratch/
+
+# Proprietary Game dumps & installations
+FIFA22/
+*.toc
+*.sb
+*.cas
+initfs_*
+anadius.cfg
