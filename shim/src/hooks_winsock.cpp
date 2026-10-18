@@ -56,14 +56,14 @@ static bool ShouldRerouteHost(std::string_view host) {
     if (host.empty()) return false;
 
     if (host.find("gosredirector.ea.com") != std::string_view::npos ||
-        host.find("river.data.ea.com") != std::string_view::npos ||
-        host.find("pin-river.data.ea.com") != std::string_view::npos ||
         host.find("blaze") != std::string_view::npos) {
         return true;
     }
 
     if (GetConfig().reroute_all_ea) {
-        if (host.ends_with(".ea.com") || host.ends_with(".ea.net") || host.ends_with(".dice.se")) {
+        if (host.find("river.data.ea.com") != std::string_view::npos ||
+            host.find("pin-river.data.ea.com") != std::string_view::npos ||
+            host.ends_with(".ea.com") || host.ends_with(".ea.net") || host.ends_with(".dice.se")) {
             return true;
         }
     }
@@ -200,8 +200,12 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
 
     const auto& cfg = GetConfig();
     bool should_reroute = (port == cfg.redirector_port || port == cfg.blaze_port ||
-                           port == cfg.telemetry_port || port == 42127 || port == 42128 ||
-                           port == 443 || port == 8080);
+                           port == 42127 || port == 42128);
+    if (cfg.reroute_all_ea) {
+        if (port == cfg.telemetry_port || port == 443 || port == 8080) {
+            should_reroute = true;
+        }
+    }
 
     if (cfg.log_sockets) {
         std::ostringstream ss;

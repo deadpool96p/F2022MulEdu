@@ -2,14 +2,12 @@
 
 use std::io;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::TcpStream;
 use tokio_rustls::server::TlsStream;
 use tokio_rustls::TlsAcceptor;
 use blaze_ssl_async::stream::BlazeStream;
-use blaze_ssl_async::BlazeServerContext;
 
 /// A unified stream that is either a raw plain TCP socket, standard TLS, or EA BlazeSSL session.
 pub enum DualStream {
@@ -63,22 +61,24 @@ impl AsyncWrite for DualStream {
 }
 
 /// Peeks at the incoming TCP stream to detect TLS/SSL ClientHello (0x16) or plain Blaze TCP frames.
-/// Uses EA ProtoSSL / BlazeSSL (Mass Effect 3 / Frostbite legacy SSLv3/ProtoSSL) handler.
-pub async fn accept_blaze_stream(tcp_stream: TcpStream) -> io::Result<DualStream> {
+/// Initiates standard TLS 1.2/1.3 handshake via the trusted TlsAcceptor.
+pub async fn accept_dual_stream(
+    tcp_stream: TcpStream,
+    tls_acceptor: &TlsAcceptor,
+) -> io::Result<DualStream> {
     let mut peek_buf = [0u8; 1];
     let n = tcp_stream.peek(&mut peek_buf).await?;
 
     if n > 0 && peek_buf[0] == 0x16 {
-        tracing::debug!("[DualListener] Detected Blaze SSL/TLS Handshake (0x16) -> Initiating BlazeSSL Handshake");
-        let blaze_ctx = Arc::new(BlazeServerContext::default());
-        match BlazeStream::accept(tcp_stream, blaze_ctx).await {
-            Ok(blaze_stream) => {
-                tracing::info!("[DualListener] BlazeSSL handshake SUCCEEDED!");
-                Ok(DualStream::Blaze(blaze_stream))
+        tracing::debug!("[DualListener] Detected TLS Handshake (0x16) -> Initiating TLS 1.2 Handshake");
+        match tls_acceptor.accept(tcp_stream).await {
+            Ok(tls_stream) => {
+                tracing::info!("[DualListener] TLS handshake SUCCEEDED!");
+                Ok(DualStream::Tls(tls_stream))
             }
             Err(e) => {
-                tracing::warn!("[DualListener] BlazeSSL handshake failed: {:?}", e);
-                Err(e)
+                tracing::warn!("[DualListener] TLS handshake failed: {:?}", e);
+                Err(io::Error::new(io::ErrorKind::Other, e))
             }
         }
     } else {
@@ -87,36 +87,16 @@ pub async fn accept_blaze_stream(tcp_stream: TcpStream) -> io::Result<DualStream
     }
 }
 
-/// Peeks at the incoming TCP stream for Telemetry: handles BlazeSSL with EA OTG3 cert or Plain HTTP.
-pub async fn accept_telemetry_stream(
+pub async fn accept_blaze_stream(
     tcp_stream: TcpStream,
-    _tls_acceptor: &TlsAcceptor,
+    tls_acceptor: &TlsAcceptor,
 ) -> io::Result<DualStream> {
-    let mut peek_buf = [0u8; 1];
-    let n = tcp_stream.peek(&mut peek_buf).await?;
-
-    if n > 0 && peek_buf[0] == 0x16 {
-        tracing::debug!("[Telemetry:443] Detected TLS Handshake (0x16) -> Initiating BlazeSSL Handshake");
-        let blaze_ctx = Arc::new(BlazeServerContext::default());
-        match BlazeStream::accept(tcp_stream, blaze_ctx).await {
-            Ok(blaze_stream) => {
-                tracing::info!("[Telemetry:443] BlazeSSL handshake SUCCEEDED!");
-                Ok(DualStream::Blaze(blaze_stream))
-            }
-            Err(e) => {
-                tracing::warn!("[Telemetry:443] BlazeSSL handshake failed: {:?}", e);
-                Err(e)
-            }
-        }
-    } else {
-        tracing::debug!("[Telemetry:443] Detected Plain HTTP stream");
-        Ok(DualStream::Plain(tcp_stream))
-    }
+    accept_dual_stream(tcp_stream, tls_acceptor).await
 }
 
-pub async fn accept_dual_stream(
+pub async fn accept_telemetry_stream(
     tcp_stream: TcpStream,
-    _tls_acceptor: &TlsAcceptor,
+    tls_acceptor: &TlsAcceptor,
 ) -> io::Result<DualStream> {
-    accept_blaze_stream(tcp_stream).await
+    accept_dual_stream(tcp_stream, tls_acceptor).await
 }
