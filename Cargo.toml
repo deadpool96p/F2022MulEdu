@@ -5,6 +5,7 @@ members = [
     "crates/blaze-core",
     "crates/services-redirector",
     "crates/services-http-content",
+    "crates/services-blaze",
 ]
 
 [workspace.package]

@@ -55,6 +55,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "services-blaze"
+version = "0.1.0"
+dependencies = [
+ "blaze-core",
+ "blaze-tdf",
+ "tracing",
+]
+
+[[package]]
 name = "services-http-content"
 version = "0.1.0"
 dependencies = [
