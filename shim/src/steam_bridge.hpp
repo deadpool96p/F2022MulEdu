@@ -29,6 +29,12 @@ public:
     void OpenOverlayInviteDialog();
     void OpenOverlayFriends();
 
+    // Mode 3: Steam P2P Transport
+    bool HasSteamNetworking() const { return m_pSteamNetworking != nullptr; }
+    bool SendP2PPacket(uint64_t remote_steam_id, const void* data, uint32_t size, int send_type = 1, int channel = 0);
+    bool IsP2PPacketAvailable(uint32_t* msg_size, int channel = 0);
+    bool ReadP2PPacket(void* dest, uint32_t dest_size, uint32_t* msg_size, uint64_t* remote_steam_id, int channel = 0);
+
 private:
     SteamBridge() = default;
     ~SteamBridge();
@@ -48,6 +54,7 @@ private:
     void* m_pSteamUser = nullptr;
     void* m_pSteamFriends = nullptr;
     void* m_pSteamMatchmaking = nullptr;
+    void* m_pSteamNetworking = nullptr;
 };
 
 } // namespace f22

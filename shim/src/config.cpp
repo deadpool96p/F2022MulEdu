@@ -54,10 +54,14 @@ void LoadConfig() {
                 g_config.blaze_port = static_cast<uint16_t>(std::stoi(val));
             } else if (key == "TelemetryPort") {
                 g_config.telemetry_port = static_cast<uint16_t>(std::stoi(val));
+            } else if (key == "RelayPort") {
+                g_config.relay_port = static_cast<uint16_t>(std::stoi(val));
             } else if (key == "RerouteAllEA") {
                 g_config.reroute_all_ea = (val == "true" || val == "1");
             } else if (key == "ForcePlainTCP") {
                 g_config.force_plain_tcp = (val == "true" || val == "1");
+            } else if (key == "ForceRelay") {
+                g_config.force_relay = (val == "true" || val == "1");
             } else if (key == "EnableOverlay") {
                 g_config.enable_overlay = (val == "true" || val == "1");
             } else if (key == "LogSockets") {

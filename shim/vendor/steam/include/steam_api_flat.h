@@ -65,6 +65,12 @@ typedef SteamAPICall_t (*PFN_SteamAPI_ISteamMatchmaking_JoinLobby)(void* self, u
 typedef bool (*PFN_SteamAPI_ISteamMatchmaking_SetLobbyData)(void* self, uint64_t steamIDLobby, const char* pchKey, const char* pchValue);
 typedef const char* (*PFN_SteamAPI_ISteamMatchmaking_GetLobbyData)(void* self, uint64_t steamIDLobby, const char* pchKey);
 
+// ISteamNetworking Flat Functions
+typedef bool (*PFN_SteamAPI_ISteamNetworking_SendP2PPacket)(void* self, uint64_t steamIDRemote, const void *pubData, uint32_t cubData, int eP2PSendType, int nChannel);
+typedef bool (*PFN_SteamAPI_ISteamNetworking_IsP2PPacketAvailable)(void* self, uint32_t *pcubMsgSize, int nChannel);
+typedef bool (*PFN_SteamAPI_ISteamNetworking_ReadP2PPacket)(void* self, void *pubDest, uint32_t cubDest, uint32_t *pcubMsgSize, uint64_t *psteamIDRemote, int nChannel);
+typedef bool (*PFN_SteamAPI_ISteamNetworking_AcceptP2PSessionWithUser)(void* self, uint64_t steamIDRemote);
+
 #ifdef __cplusplus
 }
 #endif

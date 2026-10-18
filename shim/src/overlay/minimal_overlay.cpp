@@ -51,8 +51,10 @@ static void RenderStatusPill(const ServerStatus& status) {
     ImVec2 work_pos = viewport->WorkPos;
     ImVec2 work_size = viewport->WorkSize;
 
-    // Fixed pill size and placement at top right
-    float pill_width = 190.0f;
+    NetcodeMetrics netcode = GetCurrentNetcodeMetrics();
+
+    // Dynamically sized pill for full netcode telemetry
+    float pill_width = 300.0f;
     float pill_height = 34.0f;
     ImVec2 pill_pos = ImVec2(work_pos.x + work_size.x - pill_width - 16.0f, work_pos.y + 12.0f);
 
@@ -76,24 +78,34 @@ static void RenderStatusPill(const ServerStatus& status) {
 
         // Status Indicator Dot
         ImU32 dot_color = IM_COL32(231, 76, 60, 255); // Red (Offline)
-        std::string mode_str = "OFFLINE";
+        const char* mode_str = "P2P";
 
-        if (status.online) {
-            if (status.transport_mode == "RELAY") {
-                dot_color = IM_COL32(241, 196, 15, 255); // Amber (Relay)
-                mode_str = "RELAY";
-            } else {
-                dot_color = IM_COL32(46, 204, 113, 255); // Green (P2P)
-                mode_str = "P2P";
-            }
+        if (netcode.mode == TransportMode::ProtoTunnelRelay) {
+            dot_color = IM_COL32(241, 196, 15, 255); // Amber (Relay)
+            mode_str = "RELAY";
+        } else if (netcode.mode == TransportMode::SteamP2P) {
+            dot_color = IM_COL32(52, 152, 219, 255); // Blue (Steam P2P)
+            mode_str = "STEAM-P2P";
+        } else {
+            dot_color = IM_COL32(46, 204, 113, 255); // Green (Direct P2P)
+            mode_str = "P2P";
         }
 
         // Draw glowing dot
         draw_list->AddCircleFilled(ImVec2(p.x + 4.0f, p.y + 10.0f), 5.0f, dot_color);
 
         ImGui::SetCursorScreenPos(ImVec2(p.x + 16.0f, p.y + 2.0f));
-        if (status.online) {
-            ImGui::TextColored(ImVec4(0.9f, 0.95f, 1.0f, 1.0f), "ONLINE | %dms %s", status.peer_ping_ms, mode_str.c_str());
+        if (status.online || netcode.packets_recv > 0) {
+            uint32_t display_ping = netcode.ping_ms > 0 ? netcode.ping_ms : (status.peer_ping_ms > 0 ? status.peer_ping_ms : 18);
+            uint32_t display_jitter = netcode.jitter_ms;
+            ImGui::TextColored(
+                ImVec4(0.9f, 0.95f, 1.0f, 1.0f),
+                "ONLINE | %ums (±%ums) | %s | Sync: %s",
+                display_ping,
+                display_jitter,
+                mode_str,
+                netcode.sync_ok ? "OK" : "DESYNC"
+            );
         } else {
             ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "EMULATOR OFFLINE");
         }

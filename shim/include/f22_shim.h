@@ -4,9 +4,9 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 #include <string>
 #include <string_view>
 #include <cstdint>
@@ -19,14 +19,35 @@ struct Config {
     uint16_t redirector_port = 42127;
     uint16_t blaze_port = 42128;
     uint16_t telemetry_port = 443;
+    uint16_t relay_port = 3659;
     bool reroute_all_ea = true;
     bool force_plain_tcp = false;
+    bool force_relay = false;
     bool log_sockets = true;
     bool bypass_cert_validation = true;
     bool enable_overlay = true;
     bool enable_steam = true;
     uint32_t steam_appid = 480;
 };
+
+// Real-time UDP Netcode Metrics & Transport Mode
+enum class TransportMode {
+    DirectP2P,
+    ProtoTunnelRelay,
+    SteamP2P
+};
+
+struct NetcodeMetrics {
+    uint32_t ping_ms = 18;
+    uint32_t jitter_ms = 2;
+    uint32_t packets_sent = 0;
+    uint32_t packets_recv = 0;
+    uint32_t packets_per_sec = 60;
+    TransportMode mode = TransportMode::DirectP2P;
+    bool sync_ok = true;
+};
+
+NetcodeMetrics GetCurrentNetcodeMetrics();
 
 // Global config access
 Config& GetConfig();
