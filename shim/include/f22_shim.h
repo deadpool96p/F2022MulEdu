@@ -7,6 +7,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <xinput.h>
 #include <string>
 #include <string_view>
 #include <cstdint>
@@ -68,5 +69,8 @@ void RemoveDXGIHooks();
 
 // Real DXGI Loader
 bool InitDXGIProxy();
+
+// Netcode Gamepad Streaming
+void TransmitNetcodeGamepadPacket(const XINPUT_GAMEPAD& pad);
 
 } // namespace f22

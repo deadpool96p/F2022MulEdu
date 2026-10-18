@@ -147,16 +147,19 @@ pub fn handle_relay_packet(
         return None;
     }
 
-    // Data forwarding:
-    // Sender wants to send data to target peer `header.peer_id`.
-    let target_peer_id = header.peer_id;
-    let target_addr = table.get_peer_addr(header.session_id, target_peer_id)?;
-
     // Identify sender peer ID so the recipient knows who transmitted this frame
     let source_peer_id = table
         .get_peer_by_addr(&src)
         .map(|(_, pid)| pid)
         .unwrap_or(0);
+
+    // If target peer_id is 0 (broadcast), route to opposite player in session
+    let target_peer_id = if header.peer_id == 0 {
+        if source_peer_id == 1 { 2 } else { 1 }
+    } else {
+        header.peer_id
+    };
+    let target_addr = table.get_peer_addr(header.session_id, target_peer_id)?;
 
     // Build forwarded packet with sender peer ID in the header
     let forward_header = ProtoTunnelHeader {

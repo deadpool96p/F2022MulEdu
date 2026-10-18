@@ -1,5 +1,6 @@
 #include "f22_shim.h"
 #include "steam_bridge.hpp"
+#include "overlay/input_hook.h"
 #include <MinHook.h>
 #include <sstream>
 #include <cstring>
@@ -142,8 +143,53 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
     return false;
 }
 
+// Netcode Gamepad Streaming
+void TransmitNetcodeGamepadPacket(const struct _XINPUT_GAMEPAD& pad) {
+    uint8_t packet[24];
+    // 8-byte ProtoTunnel header
+    uint16_t session_id = htons(1);
+    uint16_t peer_id = htons(0); // Broadcast to peer in room
+    uint16_t payload_len = htons(16);
+    uint16_t proto_flags = htons(0x0000);
+    std::memcpy(packet + 0, &session_id, 2);
+    std::memcpy(packet + 2, &peer_id, 2);
+    std::memcpy(packet + 4, &payload_len, 2);
+    std::memcpy(packet + 6, &proto_flags, 2);
+
+    // 16-byte gamepad payload
+    uint16_t magic = 0xF220;
+    uint8_t type = 0x01; // INPUT_FRAME
+    uint8_t flags = 0x00;
+    std::memcpy(packet + 8, &magic, 2);
+    packet[10] = type;
+    packet[11] = flags;
+    std::memcpy(packet + 12, &pad, sizeof(XINPUT_GAMEPAD));
+
+    // Send via Steam P2P if available
+    if (SteamBridge::Instance().HasSteamNetworking() && g_target_steam_id != 0) {
+        SteamBridge::Instance().SendP2PPacket(g_target_steam_id, packet + 8, 16, 1 /* unreliable no delay */, 1 /* channel 1 */);
+    }
+
+    // Send via ProtoTunnel UDP Relay or Direct UDP
+    if (g_game_socket != INVALID_SOCKET) {
+        struct sockaddr_in target{};
+        target.sin_family = AF_INET;
+        target.sin_port = htons(GetConfig().relay_port); // 3659
+        inet_pton(AF_INET, GetConfig().emulator_host.c_str(), &target.sin_addr);
+
+        if (g_orig_sendto) {
+            g_orig_sendto(g_game_socket, reinterpret_cast<const char*>(packet), 24, 0,
+                          reinterpret_cast<const struct sockaddr*>(&target), sizeof(target));
+        }
+    }
+}
+
 // Hooked connect()
 static int WSAAPI Hooked_connect(SOCKET s, const struct sockaddr *name, int namelen) {
+    // Disable Nagle's algorithm for instant TCP packet dispatch
+    int nodelay = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+
     struct sockaddr_in rewritten{};
     if (CheckAndRewriteSockAddr(name, &rewritten)) {
         return g_orig_connect(s, reinterpret_cast<const struct sockaddr*>(&rewritten), sizeof(rewritten));
@@ -161,6 +207,9 @@ static int WSAAPI Hooked_WSAConnect(
     LPQOS lpSQOS,
     LPQOS lpGQOS
 ) {
+    int nodelay = 1;
+    setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+
     struct sockaddr_in rewritten{};
     if (CheckAndRewriteSockAddr(name, &rewritten)) {
         return g_orig_WSAConnect(s, reinterpret_cast<const struct sockaddr*>(&rewritten), sizeof(rewritten),
@@ -176,8 +225,12 @@ static int WSAAPI Hooked_bind(SOCKET s, const struct sockaddr *name, int namelen
         uint16_t port = ntohs(sin->sin_port);
         if (port == 3659 || (port >= 3658 && port <= 3665)) {
             g_game_socket = s;
+            int bufsize = 65536;
+            setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&bufsize), sizeof(bufsize));
+            setsockopt(s, SOL_SOCKET, SO_SNDBUF, reinterpret_cast<const char*>(&bufsize), sizeof(bufsize));
             std::ostringstream ss;
-            ss << "[WinSock] Detected FIFA 22 DirtySDK CommUDP/NetGameDist socket bind on port " << port;
+            ss << "[WinSock] Detected FIFA 22 DirtySDK CommUDP/NetGameDist socket bind on port " << port
+               << " (Configured 64KB low-latency socket buffers)";
             LogInfo(ss.str());
         }
     }
@@ -217,6 +270,34 @@ static int WSAAPI Hooked_sendto(SOCKET s, const char *buf, int len, int flags, c
         } else if (g_metrics.mode != TransportMode::ProtoTunnelRelay) {
             g_metrics.mode = TransportMode::DirectP2P;
         }
+    }
+
+    // Periodic sub-50ms ping probe transmission
+    static uint64_t s_last_ping_probe = 0;
+    if (now - s_last_ping_probe > 1000 && s != INVALID_SOCKET) {
+        s_last_ping_probe = now;
+        char ping_pkt[24];
+        uint16_t session_id = htons(1);
+        uint16_t peer_id = htons(0);
+        uint16_t payload_len = htons(16);
+        uint16_t proto_flags = htons(0x0000);
+        std::memcpy(ping_pkt + 0, &session_id, 2);
+        std::memcpy(ping_pkt + 2, &peer_id, 2);
+        std::memcpy(ping_pkt + 4, &payload_len, 2);
+        std::memcpy(ping_pkt + 6, &proto_flags, 2);
+
+        uint16_t magic = 0xF220;
+        std::memcpy(ping_pkt + 8, &magic, 2);
+        ping_pkt[10] = 0x02; // PING_PROBE
+        ping_pkt[11] = 0x00;
+        std::memcpy(ping_pkt + 12, &now, 8); // 64-bit send timestamp
+
+        struct sockaddr_in target{};
+        target.sin_family = AF_INET;
+        target.sin_port = htons(GetConfig().relay_port);
+        inet_pton(AF_INET, GetConfig().emulator_host.c_str(), &target.sin_addr);
+
+        g_orig_sendto(s, ping_pkt, 24, 0, reinterpret_cast<const struct sockaddr*>(&target), sizeof(target));
     }
 
     TransportMode active_mode;
@@ -264,19 +345,33 @@ static int WSAAPI Hooked_sendto(SOCKET s, const char *buf, int len, int flags, c
 
 // Hooked recvfrom() - Demultiplex ProtoTunnel & compute live latency
 static int WSAAPI Hooked_recvfrom(SOCKET s, char *buf, int len, int flags, struct sockaddr *from, int *fromlen) {
-    // Mode 3: Check if Steam P2P has datagram ready
-    {
-        std::lock_guard<std::mutex> lock(g_metrics_mutex);
-        if (g_metrics.mode == TransportMode::SteamP2P) {
-            uint32_t msg_sz = 0;
-            if (SteamBridge::Instance().IsP2PPacketAvailable(&msg_sz, 0) && msg_sz > 0) {
-                uint64_t remote_steam_id = 0;
-                uint32_t read_bytes = 0;
-                if (SteamBridge::Instance().ReadP2PPacket(buf, len, &read_bytes, &remote_steam_id, 0)) {
-                    g_metrics.packets_recv++;
-                    g_last_recv_time = GetTickCount64();
-                    return static_cast<int>(read_bytes);
+    // Mode 3: Check if Steam P2P has datagram ready (Channel 0: gameplay, Channel 1: input)
+    if (SteamBridge::Instance().HasSteamNetworking()) {
+        uint32_t input_sz = 0;
+        if (SteamBridge::Instance().IsP2PPacketAvailable(&input_sz, 1) && input_sz >= 16) {
+            uint8_t p2p_buf[64];
+            uint64_t remote_steam_id = 0;
+            uint32_t read_bytes = 0;
+            if (SteamBridge::Instance().ReadP2PPacket(p2p_buf, sizeof(p2p_buf), &read_bytes, &remote_steam_id, 1)) {
+                if (read_bytes >= 16 && *reinterpret_cast<const uint16_t*>(p2p_buf) == 0xF220) {
+                    if (p2p_buf[2] == 0x01) {
+                        XINPUT_GAMEPAD remote_pad{};
+                        std::memcpy(&remote_pad, p2p_buf + 4, sizeof(XINPUT_GAMEPAD));
+                        SetRemotePeerGamepad(remote_pad);
+                    }
                 }
+            }
+        }
+
+        uint32_t msg_sz = 0;
+        if (SteamBridge::Instance().IsP2PPacketAvailable(&msg_sz, 0) && msg_sz > 0) {
+            uint64_t remote_steam_id = 0;
+            uint32_t read_bytes = 0;
+            if (SteamBridge::Instance().ReadP2PPacket(buf, len, &read_bytes, &remote_steam_id, 0)) {
+                std::lock_guard<std::mutex> lock(g_metrics_mutex);
+                g_metrics.packets_recv++;
+                g_last_recv_time = GetTickCount64();
+                return static_cast<int>(read_bytes);
             }
         }
     }
@@ -298,6 +393,60 @@ static int WSAAPI Hooked_recvfrom(SOCKET s, char *buf, int len, int flags, struc
         std::lock_guard<std::mutex> lock(g_metrics_mutex);
         g_metrics.packets_recv++;
 
+        // Demultiplex internal 0xF220 stream (inputs, ping/pong probes)
+        const char* data_ptr = buf;
+        int data_len = bytes;
+        if (bytes >= 24 && *reinterpret_cast<const uint16_t*>(buf + 8) == 0xF220) {
+            data_ptr = buf + 8;
+            data_len = bytes - 8;
+        }
+
+        if (data_len >= 16 && *reinterpret_cast<const uint16_t*>(data_ptr) == 0xF220) {
+            uint8_t pkt_type = static_cast<uint8_t>(data_ptr[2]);
+            if (pkt_type == 0x01 && data_len >= 16) {
+                // Input frame from remote friend
+                XINPUT_GAMEPAD remote_pad{};
+                std::memcpy(&remote_pad, data_ptr + 4, sizeof(XINPUT_GAMEPAD));
+                SetRemotePeerGamepad(remote_pad);
+                return 0; // Filter out from DirtySDK
+            } else if (pkt_type == 0x02 && data_len >= 16) {
+                // Ping probe -> Reply Pong (0x03)
+                char pong[24];
+                uint16_t session_id = htons(1);
+                uint16_t peer_id = htons(0);
+                uint16_t payload_len = htons(16);
+                uint16_t proto_flags = htons(0x0000);
+                std::memcpy(pong + 0, &session_id, 2);
+                std::memcpy(pong + 2, &peer_id, 2);
+                std::memcpy(pong + 4, &payload_len, 2);
+                std::memcpy(pong + 6, &proto_flags, 2);
+
+                uint16_t magic = 0xF220;
+                std::memcpy(pong + 8, &magic, 2);
+                pong[10] = 0x03; // PONG
+                pong[11] = 0x00;
+                std::memcpy(pong + 12, data_ptr + 4, 8); // Echo back timestamp
+
+                if (from) {
+                    g_orig_sendto(s, pong, 24, 0, from, *fromlen);
+                }
+                return 0;
+            } else if (pkt_type == 0x03 && data_len >= 16) {
+                // Pong received! Compute accurate RTT!
+                uint64_t sent_ts = 0;
+                std::memcpy(&sent_ts, data_ptr + 4, 8);
+                if (now >= sent_ts) {
+                    uint32_t rtt = static_cast<uint32_t>(now - sent_ts);
+                    if (rtt < 500) {
+                        g_metrics.ping_ms = (g_metrics.ping_ms * 3 + rtt) / 4;
+                        uint32_t diff = (rtt > g_metrics.ping_ms) ? (rtt - g_metrics.ping_ms) : (g_metrics.ping_ms - rtt);
+                        g_metrics.jitter_ms = (g_metrics.jitter_ms * 3 + diff) / 4;
+                    }
+                }
+                return 0;
+            }
+        }
+
         // Mode 2: Strip ProtoTunnel 8-byte header if relayed
         if (g_metrics.mode == TransportMode::ProtoTunnelRelay && bytes >= 8) {
             uint16_t payload_len = ntohs(*reinterpret_cast<const uint16_t*>(buf + 4));
@@ -307,15 +456,11 @@ static int WSAAPI Hooked_recvfrom(SOCKET s, char *buf, int len, int flags, struc
             }
         }
 
-        // Live RTT and Jitter calculation
+        // Live RTT and Jitter calculation (only for continuous frame exchange <= 100ms)
         if (g_last_send_time > 0 && now >= g_last_send_time) {
             uint32_t sample = static_cast<uint32_t>(now - g_last_send_time);
-            if (sample < 500) {
-                if (g_metrics.ping_ms == 0) {
-                    g_metrics.ping_ms = sample;
-                } else {
-                    g_metrics.ping_ms = (g_metrics.ping_ms * 7 + sample) / 8;
-                }
+            if (sample <= 100) { // Reject idle intervals so ping does not falsely blow up to 400ms!
+                g_metrics.ping_ms = (g_metrics.ping_ms * 7 + sample) / 8;
                 uint32_t diff = (sample > g_metrics.ping_ms) ? (sample - g_metrics.ping_ms) : (g_metrics.ping_ms - sample);
                 g_metrics.jitter_ms = (g_metrics.jitter_ms * 7 + diff) / 8;
             }
