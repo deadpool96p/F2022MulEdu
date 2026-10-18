@@ -12,6 +12,7 @@ blaze-tdf = { path = "../blaze-tdf" }
 services-redirector = { path = "../services-redirector" }
 services-blaze = { path = "../services-blaze" }
 services-http-content = { path = "../services-http-content" }
+services-qos-relay = { path = "../services-qos-relay" }
 
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }

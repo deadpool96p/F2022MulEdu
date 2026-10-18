@@ -46,7 +46,7 @@ void LoadConfig() {
         std::string val = Trim(line.substr(eq_pos + 1));
 
         if (current_section == "Network") {
-            if (key == "EmulatorHost") {
+            if (key == "EmulatorHost" || key == "ServerIp") {
                 g_config.emulator_host = val;
             } else if (key == "RedirectorPort") {
                 g_config.redirector_port = static_cast<uint16_t>(std::stoi(val));
@@ -58,6 +58,8 @@ void LoadConfig() {
                 g_config.reroute_all_ea = (val == "true" || val == "1");
             } else if (key == "ForcePlainTCP") {
                 g_config.force_plain_tcp = (val == "true" || val == "1");
+            } else if (key == "EnableOverlay") {
+                g_config.enable_overlay = (val == "true" || val == "1");
             } else if (key == "LogSockets") {
                 g_config.log_sockets = (val == "true" || val == "1");
             }

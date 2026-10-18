@@ -23,6 +23,7 @@ struct Config {
     bool force_plain_tcp = false;
     bool log_sockets = true;
     bool bypass_cert_validation = true;
+    bool enable_overlay = true;
 };
 
 // Global config access
