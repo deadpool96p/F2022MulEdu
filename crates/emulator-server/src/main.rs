@@ -25,5 +25,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .and_then(|p| p.parse().ok())
         .unwrap_or(443); // Default to 443 so all EA telemetry sinks (:443) connect cleanly!
 
-    start_services(redirector_port, blaze_port, telemetry_port, false).await
+    start_services(redirector_port, blaze_port, telemetry_port, true).await
 }

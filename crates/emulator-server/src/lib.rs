@@ -76,7 +76,7 @@ pub async fn start_services_full(
     tracing::info!("  * QoS / STUN Server (ProtoPing UDP) : Port {}", qos_port);
     tracing::info!("  * ProtoTunnel UDP Relay             : Port {}", relay_port);
     tracing::info!("  * Control Channel REST API          : Port 42129");
-    tracing::info!("  * Downgrade to Plain TCP            : {}", !secure_redirect);
+    tracing::info!("  * Secure Redirect (TLS on Blaze)    : {}", secure_redirect);
     tracing::info!("============================================================");
 
     let redir_cfg = RedirectorConfig {

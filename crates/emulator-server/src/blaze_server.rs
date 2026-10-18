@@ -52,7 +52,19 @@ async fn read_blaze_packet(stream: &mut DualStream) -> std::io::Result<Option<Bl
         }
         return Err(e);
     }
+    tracing::info!(
+        "[Blaze Server] Header received: {:02X?}",
+        &header_buf
+    );
     let header = BlazeHeader::from_bytes(&header_buf)?;
+    tracing::info!(
+        "[Blaze Server] Header parsed: Comp=0x{:04X}, Cmd=0x{:04X}, Seq={}, Len={}, MsgType={:?}",
+        header.component,
+        header.command,
+        header.seq_no,
+        header.length,
+        header.msg_type
+    );
 
     let mut payload_buf = vec![0u8; header.length as usize];
     stream.read_exact(&mut payload_buf).await?;

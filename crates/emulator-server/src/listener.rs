@@ -66,23 +66,29 @@ pub async fn accept_dual_stream(
     tcp_stream: TcpStream,
     tls_acceptor: &TlsAcceptor,
 ) -> io::Result<DualStream> {
-    let mut peek_buf = [0u8; 1];
+    let peer_addr = tcp_stream.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string());
+    let mut peek_buf = [0u8; 4];
     let n = tcp_stream.peek(&mut peek_buf).await?;
 
     if n > 0 && peek_buf[0] == 0x16 {
-        tracing::debug!("[DualListener] Detected TLS Handshake (0x16) -> Initiating TLS 1.2 Handshake");
+        tracing::info!("[DualListener] Detected TLS Handshake (0x16) from {} -> Initiating TLS Handshake", peer_addr);
         match tls_acceptor.accept(tcp_stream).await {
             Ok(tls_stream) => {
-                tracing::info!("[DualListener] TLS handshake SUCCEEDED!");
+                tracing::info!("[DualListener] TLS handshake SUCCEEDED with {}!", peer_addr);
                 Ok(DualStream::Tls(tls_stream))
             }
             Err(e) => {
-                tracing::warn!("[DualListener] TLS handshake failed: {:?}", e);
+                tracing::warn!("[DualListener] TLS handshake failed with {}: {:?}", peer_addr, e);
                 Err(io::Error::new(io::ErrorKind::Other, e))
             }
         }
     } else {
-        tracing::debug!("[DualListener] Detected Plain TCP stream (First byte: 0x{:02X})", peek_buf[0]);
+        tracing::info!(
+            "[DualListener] Detected Plain TCP stream from {} (Peeked {} bytes: {:02X?})",
+            peer_addr,
+            n,
+            &peek_buf[..n]
+        );
         Ok(DualStream::Plain(tcp_stream))
     }
 }

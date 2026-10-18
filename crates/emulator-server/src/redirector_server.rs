@@ -130,28 +130,37 @@ async fn handle_http_redirector(
 
     let is_json = req_str.to_ascii_lowercase().contains("application/json");
 
+    // Honor connectionprofile (standardSecure_v4 requires TLS on Blaze port)
+    let is_secure_req = req_str.contains("standardSecure_v4") || config.secure;
+    let secure_val = if is_secure_req { 1 } else { 0 };
+
     let response_body = if is_json {
         format!(
-            r#"{{"address":{{"ipAddress":{{"hostname":"{}","ip":2130706433,"port":{}}}}},"secure":0,"msiz":131072}}"#,
-            config.host, config.port
+            r#"{{"address":{{"ipAddress":{{"hostname":"{}","ip":2130706433,"port":{}}}}},"secure":{},"msiz":131072}}"#,
+            config.host, config.port, secure_val
         )
     } else {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
 <serverinstanceinfo>
-  <address>
+  <address member="0">
+    <valu>
+      <hostname>{}</hostname>
+      <ip>2130706433</ip>
+      <port>{}</port>
+    </valu>
     <ipaddress>
       <hostname>{}</hostname>
       <ip>2130706433</ip>
       <port>{}</port>
     </ipaddress>
   </address>
-  <secure>0</secure>
+  <secure>{}</secure>
   <msiz>131072</msiz>
   <trialService>0</trialService>
   <defaultDnsAddress>0</defaultDnsAddress>
 </serverinstanceinfo>"#,
-            config.host, config.port
+            config.host, config.port, config.host, config.port, secure_val
         )
     };
 
@@ -162,17 +171,25 @@ async fn handle_http_redirector(
     };
 
     let http_response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\n\
+Content-Type: {}\r\n\
+Content-Length: {}\r\n\
+Connection: close\r\n\
+X-BLAZE-ERRORCODE: 0\r\n\
+X-BLAZE-COMPONENT: redirector\r\n\
+X-BLAZE-COMMAND: getServerInstance\r\n\
+X-BLAZE-SEQNO: 0\r\n\r\n{}",
         content_type,
         response_body.len(),
         response_body
     );
 
     tracing::info!(
-        "[Redirector HTTP] Responded 200 OK: redirecting client to {}:{} (Format={})",
+        "[Redirector HTTP] Responded 200 OK: redirecting client to {}:{} (Format={}, Secure={})",
         config.host,
         config.port,
-        if is_json { "JSON" } else { "XML" }
+        if is_json { "JSON" } else { "XML" },
+        secure_val
     );
 
     stream.write_all(http_response.as_bytes()).await?;
