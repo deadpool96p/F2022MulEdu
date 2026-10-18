@@ -49,6 +49,7 @@ target_include_directories(dxgi_proxy PRIVATE
     vendor/minhook/include
     vendor/imgui
     vendor/imgui/backends
+    vendor/steam/include
 )
 
 target_link_libraries(dxgi_proxy PRIVATE
@@ -75,4 +76,13 @@ target_link_options(dxgi_proxy PRIVATE
 set_target_properties(dxgi_proxy PROPERTIES
     PREFIX ""
     OUTPUT_NAME "dxgi"
+)
+
+# Post-build: Copy steam_api64.dll and generate steam_appid.txt in build directory
+add_custom_command(TARGET dxgi_proxy POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/vendor/steam/bin/win64/steam_api64.dll"
+        "${CMAKE_CURRENT_BINARY_DIR}/steam_api64.dll"
+    COMMAND ${CMAKE_COMMAND} -E echo "480" > "${CMAKE_CURRENT_BINARY_DIR}/steam_appid.txt"
+    COMMENT "Copying Steamworks runtime dependencies (steam_api64.dll & steam_appid.txt: 480)"
 )
