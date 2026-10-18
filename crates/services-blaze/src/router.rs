@@ -6,6 +6,7 @@ use blaze_core::BlazePacket;
 use blaze_tdf::TdfStruct;
 use crate::associations::*;
 use crate::auth::*;
+use crate::gamemanager::*;
 use crate::session::SessionState;
 use crate::session_store::SessionStore;
 use crate::usersessions::*;
@@ -15,15 +16,22 @@ use crate::util::*;
 pub struct BlazeRouter {
     pub session: SessionState,
     pub store: Arc<SessionStore>,
+    pub games: Arc<GameRegistry>,
     pub qos_host: String,
     pub qos_port: u16,
 }
 
 impl BlazeRouter {
-    pub fn new(qos_host: String, qos_port: u16, store: Arc<SessionStore>) -> Self {
+    pub fn new(
+        qos_host: String,
+        qos_port: u16,
+        store: Arc<SessionStore>,
+        games: Arc<GameRegistry>,
+    ) -> Self {
         Self {
             session: SessionState::default(),
             store,
+            games,
             qos_host,
             qos_port,
         }
@@ -105,6 +113,44 @@ impl BlazeRouter {
             | (COMPONENT_ASSOCIATION_LISTS, CMD_SUBSCRIBE_TO_LISTS)
             | (COMPONENT_ASSOCIATION_LISTS, CMD_GET_MEMBERS) => {
                 let resp = handle_get_lists(req, self.session.user_id, &self.store)?;
+                Ok((resp, None))
+            }
+
+            // GameManager Component (0x0004)
+            (COMPONENT_GAME_MANAGER, CMD_CREATE_GAME) => {
+                let resp = handle_create_game(req, &self.session, &self.store, &self.games)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_GAME_MANAGER, CMD_JOIN_GAME) => {
+                let resp = handle_join_game(req, &self.session, &self.store, &self.games)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_GAME_MANAGER, CMD_START_MATCHMAKING) => {
+                let resp = handle_start_matchmaking(req, &self.session, &self.store, &self.games)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_GAME_MANAGER, CMD_CANCEL_MATCHMAKING) => {
+                let resp = handle_cancel_matchmaking(req)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_GAME_MANAGER, CMD_FINALIZE_GAME_CREATION)
+            | (COMPONENT_GAME_MANAGER, CMD_SET_GAME_SETTINGS) => {
+                let resp =
+                    handle_finalize_game_creation(req, &self.session, &self.store, &self.games)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_GAME_MANAGER, CMD_UPDATE_GAME_ATTRIBUTES) => {
+                let resp =
+                    handle_update_game_attributes(req, &self.session, &self.store, &self.games)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_GAME_MANAGER, CMD_UPDATE_PLAYER_STATE) => {
+                let resp =
+                    handle_update_player_state(req, &self.session, &self.store, &self.games)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_GAME_MANAGER, CMD_DESTROY_GAME) => {
+                let resp = handle_destroy_game(req, &self.session, &self.store, &self.games)?;
                 Ok((resp, None))
             }
 

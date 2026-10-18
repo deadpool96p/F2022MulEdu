@@ -93,13 +93,16 @@ async fn test_full_online_hub_two_player_flow() {
         redir_cfg,
     ));
 
+    let game_registry = Arc::new(services_blaze::GameRegistry::new());
     let store_clone = session_store.clone();
+    let games_clone = game_registry.clone();
     tokio::spawn(run_blaze_server(
         blaze_listener,
         tls_acceptor,
         "127.0.0.1".to_string(),
         qos_port,
         store_clone,
+        games_clone,
     ));
 
     tokio::spawn(async move {

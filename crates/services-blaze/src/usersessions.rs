@@ -150,6 +150,7 @@ pub fn handle_lookup_user(
             internal_ip: current_session.internal_ip.clone(),
             port: current_session.port,
             nat_type: current_session.nat_type,
+            target_room_code: None,
             last_seen: std::time::Instant::now(),
         }
     });

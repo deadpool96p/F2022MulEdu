@@ -1,10 +1,12 @@
 //! # services-blaze
 //!
 //! Core Blaze RPC services handling Handshake (Util), Identity (Authentication),
-//! Network Registration & Lookups (UserSessions), and Virtual Friends (AssociationLists).
+//! Network Registration & Lookups (UserSessions), Virtual Friends (AssociationLists),
+//! and Game Session / Lobby Orchestration (GameManager).
 
 pub mod associations;
 pub mod auth;
+pub mod gamemanager;
 pub mod router;
 pub mod session;
 pub mod session_store;
@@ -13,6 +15,7 @@ pub mod util;
 
 pub use associations::*;
 pub use auth::*;
+pub use gamemanager::*;
 pub use router::BlazeRouter;
 pub use session::SessionState;
 pub use session_store::{SessionData, SessionStore};
@@ -29,7 +32,8 @@ mod tests {
     #[test]
     fn test_router_handshake_and_multiuser_flow() {
         let store = Arc::new(SessionStore::new());
-        let mut router1 = BlazeRouter::new("127.0.0.1".to_string(), 17498, store.clone());
+        let games = Arc::new(GameRegistry::new());
+        let mut router1 = BlazeRouter::new("127.0.0.1".to_string(), 17498, store.clone(), games.clone());
 
         // 1. Test preAuth
         let pre_auth_req = BlazePacket::new(
@@ -75,8 +79,8 @@ mod tests {
         assert!(router1.session.is_logged_in);
         assert_eq!(router1.session.user_id, 10001);
 
-        // 3. Test second player login on separate router sharing same SessionStore
-        let mut router2 = BlazeRouter::new("127.0.0.1".to_string(), 17498, store.clone());
+        // 3. Test second player login on separate router sharing same SessionStore and GameRegistry
+        let mut router2 = BlazeRouter::new("127.0.0.1".to_string(), 17498, store.clone(), games.clone());
         let mut login2_payload = TdfStruct::new();
         login2_payload.set("DSNM", TdfValue::String("PlayerTwo".to_string()));
         let login2_req = BlazePacket::new(
@@ -162,7 +166,61 @@ mod tests {
             }
         }
 
-        // 7. Test Wildcard Unknown-RPC Fallback
+        // 7. Test GameManager createGame, joinGame, and Notification Delivery
+        let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel();
+        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
+        store.register_notification_channel(router1.session.user_id, tx1);
+        store.register_notification_channel(router2.session.user_id, tx2);
+
+        // Player 1 creates game
+        let create_game_req = BlazePacket::new(
+            COMPONENT_GAME_MANAGER,
+            CMD_CREATE_GAME,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            5,
+            TdfStruct::new(),
+        )
+        .unwrap();
+        let (create_resp, _) = router1.handle_packet(&create_game_req).unwrap();
+        assert_eq!(create_resp.header.command, CMD_CREATE_GAME);
+        let game_id = match create_resp.payload.get("GID").unwrap() {
+            TdfValue::Integer(id) => *id,
+            _ => panic!("Expected GID integer"),
+        };
+
+        // Check async notifications arrived for Player 1 (NotifyGameCreated, NotifyGameSetup)
+        let n1 = rx1.try_recv().expect("Expected NotifyGameCreated");
+        assert_eq!(n1.header.command, NOTIFY_GAME_CREATED);
+        let n2 = rx1.try_recv().expect("Expected NotifyGameSetup");
+        assert_eq!(n2.header.command, NOTIFY_GAME_SETUP);
+
+        // Player 2 joins game
+        let mut join_payload = TdfStruct::new();
+        join_payload.set("GID", TdfValue::Integer(game_id));
+        let join_req = BlazePacket::new(
+            COMPONENT_GAME_MANAGER,
+            CMD_JOIN_GAME,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            3,
+            join_payload,
+        )
+        .unwrap();
+        let (join_resp, _) = router2.handle_packet(&join_req).unwrap();
+        assert_eq!(join_resp.header.command, CMD_JOIN_GAME);
+
+        // Check Player 2 received NotifyGameSetup
+        let p2_setup = rx2.try_recv().expect("Expected NotifyGameSetup on join");
+        assert_eq!(p2_setup.header.command, NOTIFY_GAME_SETUP);
+
+        // Check Player 1 (Host) received NotifyPlayerJoining!
+        let p1_joining = rx1.try_recv().expect("Expected NotifyPlayerJoining on host");
+        assert_eq!(p1_joining.header.command, NOTIFY_PLAYER_JOINING);
+
+        // 8. Test Wildcard Unknown-RPC Fallback
         let unknown_req = BlazePacket::new(
             0x00F0, // Unimplemented Component
             0x00A1, // Unimplemented Command

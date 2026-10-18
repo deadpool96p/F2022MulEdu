@@ -16,7 +16,7 @@ pub use redirector_server::run_redirector_server;
 pub use telemetry_server::run_telemetry_server;
 pub use tls::create_self_signed_tls_acceptor;
 
-pub use services_blaze::SessionStore;
+pub use services_blaze::{GameRegistry, GameSession, SessionStore};
 pub use services_qos_relay::{run_qos_server, run_relay_server, PeerTable};
 
 use std::sync::Arc;
@@ -82,13 +82,15 @@ pub async fn start_services_full(
     ));
 
     let session_store = Arc::new(SessionStore::new());
+    let game_registry = Arc::new(GameRegistry::new());
 
     let blaze_task = tokio::spawn(run_blaze_server(
         blaze_listener,
         tls_acceptor.clone(),
         "127.0.0.1".to_string(),
         qos_port,
-        session_store,
+        session_store.clone(),
+        game_registry.clone(),
     ));
 
     let telemetry_task = tokio::spawn(run_telemetry_server(

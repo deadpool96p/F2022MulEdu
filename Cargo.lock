@@ -370,6 +370,7 @@ dependencies = [
  "blaze-core",
  "blaze-tdf",
  "parking_lot",
+ "tokio",
  "tracing",
 ]
 

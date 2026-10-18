@@ -37,12 +37,14 @@ async fn test_full_boot_handshake_flow() {
     ));
 
     let session_store = std::sync::Arc::new(services_blaze::SessionStore::new());
+    let game_registry = std::sync::Arc::new(services_blaze::GameRegistry::new());
     tokio::spawn(run_blaze_server(
         blaze_listener,
         tls_acceptor,
         "127.0.0.1".to_string(),
         17498,
         session_store,
+        game_registry,
     ));
 
     // Wait a brief moment for listeners to start
