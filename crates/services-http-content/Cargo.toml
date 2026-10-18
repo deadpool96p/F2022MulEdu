@@ -9,5 +9,7 @@ description = "Fast mock HTTPS telemetry sink and squad distribution service"
 [dependencies]
 bytes = "1.5"
 tracing = "0.1"
+sha2 = "0.10"
+parking_lot = "0.12"
 
 [dev-dependencies]

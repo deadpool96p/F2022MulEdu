@@ -9,6 +9,7 @@ description = "Core Blaze RPC services: Util, Authentication, and UserSessions"
 [dependencies]
 blaze-core = { path = "../blaze-core" }
 blaze-tdf = { path = "../blaze-tdf" }
+services-http-content = { path = "../services-http-content" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"

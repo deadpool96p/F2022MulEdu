@@ -5,6 +5,9 @@
 
 use std::collections::HashMap;
 
+pub mod squads;
+pub use squads::*;
+
 /// Parsed HTTP request structure.
 #[derive(Debug, Clone)]
 pub struct HttpRequest {
@@ -130,13 +133,21 @@ pub fn route_http_request(req: &HttpRequest) -> HttpResponse {
         }
         // Canonical Squad Hash query
         "/content/squads/hash" => {
-            // Milestone 4: canonical squad hash verification
-            HttpResponse::ok_json(r#"{"squad_hash":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}"#)
+            let (hash, size) = SquadStore::global().get_hash_and_size();
+            let json = format!(r#"{{"sha256":"{}","size":{}}}"#, hash, size);
+            HttpResponse::ok_json(&json)
+        }
+        // Canonical Squad Database upload
+        "/content/squads/upload" => {
+            let (hash, size) = SquadStore::global().update_squad(req.body.clone());
+            let json = format!(r#"{{"status":"ok","sha256":"{}","size":{}}}"#, hash, size);
+            HttpResponse::ok_json(&json)
         }
         // Canonical Squad Database file distribution
         "/content/squads" | "/content/squads/canonical_squads.db" => {
-            tracing::info!("[Squad Content] Serving canonical squad database stub");
-            HttpResponse::ok_binary(vec![0x53, 0x51, 0x55, 0x41, 0x44, 0x5F, 0x44, 0x42])
+            tracing::info!("[Squad Content] Serving canonical squad database");
+            let bytes = SquadStore::global().get_squad_bytes();
+            HttpResponse::ok_binary(bytes)
         }
         _ => {
             // Fallback 200 OK for any unmapped EA telemetry/ad path to prevent game freeze
@@ -172,12 +183,20 @@ mod tests {
         let req_hash = parse_http_request(raw_hash).unwrap();
         let resp_hash = route_http_request(&req_hash);
         assert_eq!(resp_hash.status_code, 200);
+        let hash_str = String::from_utf8_lossy(&resp_hash.body);
+        assert!(hash_str.contains("sha256"));
 
-        let raw_squad = b"GET /content/squads HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        let raw_upload = b"POST /content/squads/upload HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 10\r\n\r\nNEWSQUADS1";
+        let req_upload = parse_http_request(raw_upload).unwrap();
+        let resp_upload = route_http_request(&req_upload);
+        assert_eq!(resp_upload.status_code, 200);
+
+        let raw_squad = b"GET /content/squads/canonical_squads.db HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
         let req_squad = parse_http_request(raw_squad).unwrap();
         let resp_squad = route_http_request(&req_squad);
         assert_eq!(resp_squad.status_code, 200);
         assert_eq!(resp_squad.content_type, "application/octet-stream");
+        assert_eq!(resp_squad.body, b"NEWSQUADS1");
     }
 
     #[test]

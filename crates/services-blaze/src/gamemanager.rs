@@ -29,6 +29,7 @@ pub const NOTIFY_GAME_REMOVED: u16 = 0x000A;
 pub const NOTIFY_GAME_CREATED: u16 = 0x000F;
 pub const NOTIFY_GAME_SETUP: u16 = 0x0014;
 pub const NOTIFY_PLAYER_JOINING: u16 = 0x0015;
+pub const NOTIFY_GAME_ATTRIB_CHANGE_ALT: u16 = 0x0018;
 pub const NOTIFY_GAME_ATTRIB_CHANGE: u16 = 0x0050;
 pub const NOTIFY_GAME_STATE_CHANGE: u16 = 0x0064;
 pub const NOTIFY_PLAYER_STATE_CHANGE: u16 = 0x0074;
@@ -54,6 +55,9 @@ pub struct GameSession {
     pub settings: u32,
     pub seed: u32,
     pub attributes: HashMap<String, String>,
+    pub host_state: u16,
+    pub guest_state: u16,
+    pub squad_hash_synced: bool,
 }
 
 /// Global registry managing all active multiplayer game sessions.
@@ -77,6 +81,21 @@ impl GameRegistry {
             games: RwLock::new(HashMap::new()),
             room_map: RwLock::new(HashMap::new()),
             player_game_map: RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Generates a deterministic 32-bit random seed for physics and gameplay synchronization.
+    pub fn generate_deterministic_seed() -> u32 {
+        use std::time::SystemTime;
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        let s = (nanos ^ 0x5F3759DF) & 0x7FFFFFFF;
+        if s == 0 {
+            13374269
+        } else {
+            s
         }
     }
 
@@ -106,10 +125,16 @@ impl GameRegistry {
     ) -> GameSession {
         let game_id = self.next_game_id.fetch_add(1, Ordering::Relaxed);
         let room_code = custom_room_code.unwrap_or_else(|| self.generate_room_code());
+        let seed = Self::generate_deterministic_seed();
+        let canonical_hash = services_http_content::SquadStore::global().get_canonical_hash();
 
         let mut attributes = HashMap::new();
-        attributes.insert("ATTR_SEED".to_string(), "13374269".to_string());
-        attributes.insert("ATTR_SQDH".to_string(), "CANONICAL_HASH".to_string());
+        attributes.insert("ATTR_SEED".to_string(), seed.to_string());
+        attributes.insert("ATTR_SQDH".to_string(), canonical_hash);
+        attributes.insert("ATTR_TEAM_HOME".to_string(), "0".to_string());
+        attributes.insert("ATTR_TEAM_AWAY".to_string(), "0".to_string());
+        attributes.insert("ATTR_KITS".to_string(), "0".to_string());
+        attributes.insert("ATTR_HALF_LEN".to_string(), "6".to_string());
 
         let session = GameSession {
             game_id,
@@ -120,8 +145,11 @@ impl GameRegistry {
             guest_persona_id: None,
             game_state: GAME_STATE_INITIALIZING,
             settings: 0x00000001,
-            seed: 13374269,
+            seed,
             attributes,
+            host_state: GAME_STATE_INITIALIZING,
+            guest_state: GAME_STATE_INITIALIZING,
+            squad_hash_synced: true,
         };
 
         self.games.write().insert(game_id, session.clone());
@@ -129,9 +157,10 @@ impl GameRegistry {
         self.player_game_map.write().insert(host.user_id, game_id);
 
         tracing::info!(
-            "[GameManager] Created Game {} (Room Code: '{}') for Host '{}' (UID={})",
+            "[GameManager] Created Game {} (Room Code: '{}', Seed: {}, SquadHash: OK) for Host '{}' (UID={})",
             game_id,
             room_code,
+            seed,
             host.persona_name,
             host.user_id
         );
@@ -214,10 +243,66 @@ impl GameRegistry {
     ) -> Option<GameSession> {
         let mut games = self.games.write();
         let game = games.get_mut(&game_id)?;
+        let canonical_hash = services_http_content::SquadStore::global().get_canonical_hash();
+
         for (k, v) in new_attrs {
+            if k == "ATTR_SQDH" {
+                if v != canonical_hash {
+                    tracing::warn!(
+                        "[GameManager] Game {}: Squad Hash mismatch! Client sent '{}', canonical is '{}'",
+                        game_id, v, canonical_hash
+                    );
+                    game.squad_hash_synced = false;
+                } else {
+                    game.squad_hash_synced = true;
+                }
+            }
             game.attributes.insert(k, v);
         }
         Some(game.clone())
+    }
+
+    /// Updates player readiness state and triggers symmetric kickoff when both peers are ready.
+    pub fn update_player_state(
+        &self,
+        game_id: u64,
+        user_id: u64,
+        new_state: u16,
+    ) -> Option<(GameSession, Option<u16>)> {
+        let mut games = self.games.write();
+        let game = games.get_mut(&game_id)?;
+
+        if user_id == game.host_user_id {
+            game.host_state = new_state;
+        } else if Some(user_id) == game.guest_user_id {
+            game.guest_state = new_state;
+        }
+
+        let mut state_transition = None;
+
+        if game.guest_user_id.is_some() {
+            if game.host_state >= GAME_STATE_IN_GAME && game.guest_state >= GAME_STATE_IN_GAME {
+                if game.game_state != GAME_STATE_IN_GAME {
+                    game.game_state = GAME_STATE_IN_GAME;
+                    state_transition = Some(GAME_STATE_IN_GAME);
+                }
+            } else if game.host_state >= GAME_STATE_PRE_GAME && game.guest_state >= GAME_STATE_PRE_GAME {
+                if game.game_state != GAME_STATE_PRE_GAME && game.game_state < GAME_STATE_IN_GAME {
+                    game.game_state = GAME_STATE_PRE_GAME;
+                    state_transition = Some(GAME_STATE_PRE_GAME);
+                }
+            }
+        } else {
+            if game.host_state >= GAME_STATE_IN_GAME && game.game_state != GAME_STATE_IN_GAME {
+                game.game_state = GAME_STATE_IN_GAME;
+                state_transition = Some(GAME_STATE_IN_GAME);
+            } else if game.host_state >= GAME_STATE_PRE_GAME && game.game_state < GAME_STATE_PRE_GAME {
+                game.game_state = GAME_STATE_PRE_GAME;
+                state_transition = Some(GAME_STATE_PRE_GAME);
+            }
+        }
+
+        Some((game.clone(), state_transition))
     }
 
     /// Updates game state (Lobby -> PreGame -> InGame).
@@ -372,6 +457,26 @@ pub fn build_notify_game_attrib_change(
     );
 
     BlazePacket::notification(COMPONENT_GAME_MANAGER, NOTIFY_GAME_ATTRIB_CHANGE, payload)
+}
+
+/// Builds a NotifyGameAttribChange (0x0018) legacy/alt notification.
+pub fn build_notify_game_attrib_change_0018(
+    game_id: u64,
+    attrs: &HashMap<String, String>,
+) -> io::Result<BlazePacket> {
+    let mut payload = TdfStruct::new();
+    payload.set("GID", TdfValue::Integer(game_id));
+
+    let mut entries = Vec::new();
+    for (k, v) in attrs {
+        entries.push((TdfValue::String(k.clone()), TdfValue::String(v.clone())));
+    }
+    payload.set(
+        "ATTR",
+        TdfValue::Map(TdfMap::new(TdfType::String, TdfType::String, entries)),
+    );
+
+    BlazePacket::notification(COMPONENT_GAME_MANAGER, NOTIFY_GAME_ATTRIB_CHANGE_ALT, payload)
 }
 
 /// Builds a NotifyPlayerStateChange (0x0074) notification.
@@ -567,11 +672,13 @@ pub fn handle_update_game_attributes(
 
         if let Some(g) = registry.update_attributes(game.game_id, new_attrs.clone()) {
             let notif = build_notify_game_attrib_change(g.game_id, &new_attrs)?;
+            let notif_0018 = build_notify_game_attrib_change_0018(g.game_id, &new_attrs)?;
             let mut participants = vec![g.host_user_id];
             if let Some(gid) = g.guest_user_id {
                 participants.push(gid);
             }
             store.broadcast_notification(&participants, notif);
+            store.broadcast_notification(&participants, notif_0018);
         }
     }
     BlazePacket::response(&req.header, TdfStruct::new())
@@ -590,12 +697,29 @@ pub fn handle_update_player_state(
     };
 
     if let Some(game) = registry.find_by_player(session.user_id) {
-        let notif = build_notify_player_state_change(game.game_id, session.persona_id, state)?;
         let mut participants = vec![game.host_user_id];
         if let Some(gid) = game.guest_user_id {
             participants.push(gid);
         }
-        store.broadcast_notification(&participants, notif);
+
+        // 1. Notify individual player state change (0x0074)
+        let notif_player = build_notify_player_state_change(game.game_id, session.persona_id, state)?;
+        store.broadcast_notification(&participants, notif_player);
+
+        // 2. Symmetric Kickoff state machine check
+        if let Some((g, state_transition)) = registry.update_player_state(game.game_id, session.user_id, state) {
+            if let Some(new_state) = state_transition {
+                tracing::info!(
+                    "[GameManager] Kickoff State Machine: Game {} reached state {} (HostState={}, GuestState={})",
+                    g.game_id,
+                    new_state,
+                    g.host_state,
+                    g.guest_state
+                );
+                let notif_game = build_notify_game_state_change(g.game_id, new_state)?;
+                store.broadcast_notification(&participants, notif_game);
+            }
+        }
     }
 
     BlazePacket::response(&req.header, TdfStruct::new())
@@ -661,5 +785,113 @@ mod tests {
         let destroyed = registry.destroy_game(g1.game_id).unwrap();
         assert_eq!(destroyed.game_id, g1.game_id);
         assert!(registry.find_by_room_code(&g1.room_code).is_none());
+    }
+
+    #[test]
+    fn test_deterministic_seed_and_squad_hash_verification() {
+        let store = Arc::new(SessionStore::new());
+        let registry = Arc::new(GameRegistry::new());
+        let p1 = store.create_session(Some("HostPlayer"));
+
+        let game = registry.create_game(&p1, None);
+        assert!(game.seed > 0);
+        assert_eq!(
+            game.attributes.get("ATTR_SEED"),
+            Some(&game.seed.to_string())
+        );
+
+        let canonical_hash = services_http_content::SquadStore::global().get_canonical_hash();
+        assert_eq!(
+            game.attributes.get("ATTR_SQDH"),
+            Some(&canonical_hash)
+        );
+        assert!(game.squad_hash_synced);
+
+        // Update with matching squad hash
+        let mut matching = HashMap::new();
+        matching.insert("ATTR_SQDH".to_string(), canonical_hash.clone());
+        let updated_ok = registry.update_attributes(game.game_id, matching).unwrap();
+        assert!(updated_ok.squad_hash_synced);
+
+        // Update with mismatched squad hash
+        let mut mismatched = HashMap::new();
+        mismatched.insert("ATTR_SQDH".to_string(), "corrupted_or_outdated_hash_404".to_string());
+        let updated_bad = registry.update_attributes(game.game_id, mismatched).unwrap();
+        assert!(!updated_bad.squad_hash_synced);
+    }
+
+    #[test]
+    fn test_team_and_kit_attribute_broadcasts() {
+        let store = Arc::new(SessionStore::new());
+        let registry = Arc::new(GameRegistry::new());
+        let p1 = store.create_session(Some("Host"));
+
+        let game = registry.create_game(&p1, None);
+
+        let mut team_attrs = HashMap::new();
+        team_attrs.insert("ATTR_TEAM_HOME".to_string(), "243".to_string()); // Real Madrid
+        team_attrs.insert("ATTR_TEAM_AWAY".to_string(), "9".to_string());   // Liverpool
+        team_attrs.insert("ATTR_KITS".to_string(), "1".to_string());
+
+        let updated = registry.update_attributes(game.game_id, team_attrs.clone()).unwrap();
+        assert_eq!(updated.attributes.get("ATTR_TEAM_HOME"), Some(&"243".to_string()));
+        assert_eq!(updated.attributes.get("ATTR_TEAM_AWAY"), Some(&"9".to_string()));
+        assert_eq!(updated.attributes.get("ATTR_KITS"), Some(&"1".to_string()));
+
+        // Verify both 0x0050 and 0x0018 notification packet formats build cleanly
+        let notif_0050 = build_notify_game_attrib_change(game.game_id, &team_attrs).unwrap();
+        assert_eq!(notif_0050.header.component, COMPONENT_GAME_MANAGER);
+        assert_eq!(notif_0050.header.command, NOTIFY_GAME_ATTRIB_CHANGE);
+
+        let notif_0018 = build_notify_game_attrib_change_0018(game.game_id, &team_attrs).unwrap();
+        assert_eq!(notif_0018.header.component, COMPONENT_GAME_MANAGER);
+        assert_eq!(notif_0018.header.command, NOTIFY_GAME_ATTRIB_CHANGE_ALT);
+    }
+
+    #[test]
+    fn test_symmetric_kickoff_state_machine() {
+        let store = Arc::new(SessionStore::new());
+        let registry = Arc::new(GameRegistry::new());
+
+        let p1 = store.create_session(Some("HostPlayer"));
+        let p2 = store.create_session(Some("GuestPlayer"));
+
+        let (game, _) = registry.find_or_create_auto_match(&p1);
+        let (joined_game, is_joined) = registry.find_or_create_auto_match(&p2);
+        assert!(is_joined);
+        assert_eq!(joined_game.game_state, GAME_STATE_IN_LOBBY);
+
+        // Host transitions to PRE_GAME (Guest still IN_LOBBY) -> Session state remains IN_LOBBY
+        let (g, transition1) = registry
+            .update_player_state(game.game_id, p1.user_id, GAME_STATE_PRE_GAME)
+            .unwrap();
+        assert_eq!(g.host_state, GAME_STATE_PRE_GAME);
+        assert_eq!(g.guest_state, GAME_STATE_INITIALIZING);
+        assert_eq!(g.game_state, GAME_STATE_IN_LOBBY);
+        assert_eq!(transition1, None);
+
+        // Guest transitions to PRE_GAME -> Session symmetrically reaches PRE_GAME
+        let (g, transition2) = registry
+            .update_player_state(game.game_id, p2.user_id, GAME_STATE_PRE_GAME)
+            .unwrap();
+        assert_eq!(g.guest_state, GAME_STATE_PRE_GAME);
+        assert_eq!(g.game_state, GAME_STATE_PRE_GAME);
+        assert_eq!(transition2, Some(GAME_STATE_PRE_GAME));
+
+        // Host transitions to IN_GAME (ready for kickoff) -> Session remains PRE_GAME
+        let (g, transition3) = registry
+            .update_player_state(game.game_id, p1.user_id, GAME_STATE_IN_GAME)
+            .unwrap();
+        assert_eq!(g.host_state, GAME_STATE_IN_GAME);
+        assert_eq!(g.game_state, GAME_STATE_PRE_GAME);
+        assert_eq!(transition3, None);
+
+        // Guest transitions to IN_GAME -> Symmetric Kickoff triggered!
+        let (g, transition4) = registry
+            .update_player_state(game.game_id, p2.user_id, GAME_STATE_IN_GAME)
+            .unwrap();
+        assert_eq!(g.guest_state, GAME_STATE_IN_GAME);
+        assert_eq!(g.game_state, GAME_STATE_IN_GAME);
+        assert_eq!(transition4, Some(GAME_STATE_IN_GAME));
     }
 }
