@@ -4,4 +4,4 @@
 
 pub mod frame;
 
-pub use frame::{BlazeHeader, BlazePacket, MessageType};
+pub use frame::{hex_dump, BlazeHeader, BlazePacket, MessageType};

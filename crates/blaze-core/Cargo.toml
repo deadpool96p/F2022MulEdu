@@ -9,5 +9,6 @@ description = "Core framing, packet routing, and connection management for EA Bl
 [dependencies]
 blaze-tdf = { path = "../blaze-tdf" }
 bytes = "1.5"
+tracing = "0.1"
 
 [dev-dependencies]

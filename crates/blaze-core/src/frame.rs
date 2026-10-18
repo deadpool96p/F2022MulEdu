@@ -1,5 +1,6 @@
 //! 12-Byte Blaze Packet Header and Wire Framing.
 
+use std::fmt::Write as FmtWrite;
 use std::io::{self, Read, Write};
 use blaze_tdf::{deserialize_tdf, serialize_tdf, TdfStruct};
 
@@ -27,6 +28,34 @@ impl MessageType {
             _ => None,
         }
     }
+}
+
+/// Formats a byte slice into a standard canonical hex dump string.
+pub fn hex_dump(bytes: &[u8]) -> String {
+    let mut out = String::new();
+    for (chunk_idx, chunk) in bytes.chunks(16).enumerate() {
+        let _ = write!(out, "{:04X}  ", chunk_idx * 16);
+        for i in 0..16 {
+            if i < chunk.len() {
+                let _ = write!(out, "{:02X} ", chunk[i]);
+            } else {
+                out.push_str("   ");
+            }
+            if i == 7 {
+                out.push(' ');
+            }
+        }
+        out.push_str(" |");
+        for b in chunk {
+            if b.is_ascii_graphic() || *b == b' ' {
+                out.push(*b as char);
+            } else {
+                out.push('.');
+            }
+        }
+        out.push_str("|\n");
+    }
+    out
 }
 
 /// The 12-byte fixed-size header preceding every Blaze message payload.
@@ -113,6 +142,7 @@ impl BlazeHeader {
         let qos = buf[9] & 0x0F;
 
         let msg_type = MessageType::from_u8(type_raw).ok_or_else(|| {
+            tracing::warn!("Invalid Blaze message type: 0x{:X}\nRaw Header Dump:\n{}", type_raw, hex_dump(buf));
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Invalid Blaze message type: 0x{:X}", type_raw),
@@ -173,6 +203,45 @@ impl BlazePacket {
         Ok(Self { header, payload })
     }
 
+    /// Constructs an error response packet matching a request header.
+    pub fn error_response(req_header: &BlazeHeader, error_code: u16) -> io::Result<Self> {
+        Self::new(
+            req_header.component,
+            req_header.command,
+            error_code,
+            MessageType::ErrorResponse,
+            0,
+            req_header.seq_no,
+            TdfStruct::new(),
+        )
+    }
+
+    /// Constructs a success response packet matching a request header.
+    pub fn response(req_header: &BlazeHeader, payload: TdfStruct) -> io::Result<Self> {
+        Self::new(
+            req_header.component,
+            req_header.command,
+            0x0000,
+            MessageType::RecordResponse,
+            0,
+            req_header.seq_no,
+            payload,
+        )
+    }
+
+    /// Constructs an asynchronous notification packet.
+    pub fn notification(component: u16, command: u16, payload: TdfStruct) -> io::Result<Self> {
+        Self::new(
+            component,
+            command,
+            0x0000,
+            MessageType::Notification,
+            0,
+            0,
+            payload,
+        )
+    }
+
     /// Serializes the entire packet (12-byte header + TDF body) into a byte buffer.
     pub fn encode(&self) -> io::Result<Vec<u8>> {
         let payload_bytes = serialize_tdf(&self.payload)?;
@@ -185,14 +254,34 @@ impl BlazePacket {
         Ok(buf)
     }
 
-    /// Deserializes a packet from an I/O reader.
+    /// Deserializes a packet from an I/O reader with diagnostic hex dump logging.
     pub fn decode<R: Read>(reader: &mut R) -> io::Result<Self> {
         let header = BlazeHeader::read_from(reader)?;
 
         let mut payload_bytes = vec![0u8; header.length as usize];
-        reader.read_exact(&mut payload_bytes)?;
+        if let Err(e) = reader.read_exact(&mut payload_bytes) {
+            tracing::error!(
+                "Failed to read payload of {} bytes for component 0x{:04X} command 0x{:04X}: {:?}",
+                header.length,
+                header.component,
+                header.command,
+                e
+            );
+            return Err(e);
+        }
 
-        let payload = deserialize_tdf(&payload_bytes)?;
+        let payload = match deserialize_tdf(&payload_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::error!(
+                    "TDF Deserialization failure on Component 0x{:04X} Command 0x{:04X}:\nRaw Payload Hex Dump:\n{}",
+                    header.component,
+                    header.command,
+                    hex_dump(&payload_bytes)
+                );
+                return Err(e);
+            }
+        };
 
         Ok(Self { header, payload })
     }
@@ -202,6 +291,14 @@ impl BlazePacket {
 mod tests {
     use super::*;
     use blaze_tdf::TdfValue;
+
+    #[test]
+    fn test_hex_dump_output() {
+        let data = b"Hello, EA Blaze!";
+        let dump = hex_dump(data);
+        assert!(dump.contains("Hello, EA Blaze!"));
+        assert!(dump.contains("0000"));
+    }
 
     #[test]
     fn test_blaze_header_roundtrip() {
