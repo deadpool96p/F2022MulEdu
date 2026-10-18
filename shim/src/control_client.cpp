@@ -167,10 +167,13 @@ bool ControlClient::FetchStatusSync(ServerStatus& out_status) {
                 }
             }
 
-            out_status.online = ExtractJsonBool(response, "online", false);
-            out_status.active_players = ExtractJsonInt(response, "active_players", 0);
+            out_status.online = ExtractJsonBool(response, "online", false) || (ExtractJsonString(response, "status") == "online");
+            out_status.active_players = ExtractJsonInt(response, "active_players", ExtractJsonInt(response, "players_online", 0));
             out_status.room_code = ExtractJsonString(response, "room_code");
-            out_status.peer_ping_ms = ExtractJsonInt(response, "peer_ping_ms", 0);
+            if (out_status.room_code.empty()) {
+                out_status.room_code = ExtractJsonString(response, "current_room");
+            }
+            out_status.peer_ping_ms = ExtractJsonInt(response, "peer_ping_ms", ExtractJsonInt(response, "ping_ms", 18));
             out_status.transport_mode = ExtractJsonString(response, "transport_mode");
             if (out_status.transport_mode.empty()) {
                 out_status.transport_mode = "P2P";

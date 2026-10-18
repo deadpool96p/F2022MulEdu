@@ -54,8 +54,8 @@ pub async fn run_control_server(
                         .unwrap_or_default();
 
                     let json = format!(
-                        r#"{{"status":"online","players_online":{},"active_games":{},"current_room":"{}","transport_mode":"P2P","ping_ms":18}}"#,
-                        online_count, games_count, active_room
+                        r#"{{"status":"online","online":true,"players_online":{},"active_players":{},"active_games":{},"current_room":"{}","room_code":"{}","transport_mode":"P2P","ping_ms":18,"peer_ping_ms":18}}"#,
+                        online_count, online_count, games_count, active_room, active_room
                     );
                     HttpResponse::ok_json(&json)
                 }
