@@ -145,7 +145,10 @@ void SetRemotePeerConnected(int slot, bool connected, const std::string& peer_na
     if (!peer_name.empty()) {
         g_remote_slots[slot].name = peer_name;
     }
-    if (!connected) {
+    if (connected) {
+        g_remote_slots[slot].last_seen = GetTickCount64();
+    } else {
+        g_remote_slots[slot].last_seen = 0;
         std::memset(&g_remote_slots[slot].gamepad, 0, sizeof(XINPUT_GAMEPAD));
     }
 }
@@ -154,7 +157,7 @@ bool IsRemotePeerConnected(int slot) {
     if (slot < 0 || slot >= 4) return false;
     std::lock_guard<std::mutex> lock(g_pad_mutex);
     if (!g_remote_slots[slot].connected) return false;
-    if (g_remote_slots[slot].last_seen > 0 && (GetTickCount64() - g_remote_slots[slot].last_seen > 5000)) {
+    if (g_remote_slots[slot].last_seen > 0 && (GetTickCount64() - g_remote_slots[slot].last_seen > 10000)) {
         return false;
     }
     return true;

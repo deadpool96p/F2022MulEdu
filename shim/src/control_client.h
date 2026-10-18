@@ -6,7 +6,18 @@
 #include <atomic>
 #include <functional>
 
+#include <vector>
+
 namespace f22 {
+
+struct RoomMember {
+    int slot = 0;
+    std::string name;
+    uint64_t steam_id = 0;
+    std::string role; // "host" | "guest"
+    int ping_ms = 18;
+    bool connected = true;
+};
 
 struct ServerStatus {
     bool online = false;
@@ -15,6 +26,7 @@ struct ServerStatus {
     int peer_ping_ms = 0;
     std::string transport_mode = "P2P"; // "P2P" | "RELAY" | "DISCONNECTED"
     std::string last_error;
+    std::vector<RoomMember> members;
 };
 
 class ControlClient {

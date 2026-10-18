@@ -143,6 +143,12 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
     return false;
 }
 
+void SetTargetSteamID(uint64_t steam_id) {
+    if (steam_id != 0) {
+        g_target_steam_id = steam_id;
+    }
+}
+
 // Netcode Gamepad Streaming
 void TransmitNetcodeGamepadPacket(const struct _XINPUT_GAMEPAD& pad) {
     uint8_t packet[24];
@@ -171,15 +177,31 @@ void TransmitNetcodeGamepadPacket(const struct _XINPUT_GAMEPAD& pad) {
     }
 
     // Send via ProtoTunnel UDP Relay or Direct UDP
-    if (g_game_socket != INVALID_SOCKET) {
+    SOCKET send_sock = g_game_socket;
+    static SOCKET s_fallback_gamepad_socket = INVALID_SOCKET;
+    if (send_sock == INVALID_SOCKET) {
+        if (s_fallback_gamepad_socket == INVALID_SOCKET) {
+            s_fallback_gamepad_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (s_fallback_gamepad_socket != INVALID_SOCKET) {
+                u_long nonblocking = 1;
+                ioctlsocket(s_fallback_gamepad_socket, FIONBIO, &nonblocking);
+            }
+        }
+        send_sock = s_fallback_gamepad_socket;
+    }
+
+    if (send_sock != INVALID_SOCKET) {
         struct sockaddr_in target{};
         target.sin_family = AF_INET;
         target.sin_port = htons(GetConfig().relay_port); // 3659
         inet_pton(AF_INET, GetConfig().emulator_host.c_str(), &target.sin_addr);
 
         if (g_orig_sendto) {
-            g_orig_sendto(g_game_socket, reinterpret_cast<const char*>(packet), 24, 0,
+            g_orig_sendto(send_sock, reinterpret_cast<const char*>(packet), 24, 0,
                           reinterpret_cast<const struct sockaddr*>(&target), sizeof(target));
+        } else {
+            sendto(send_sock, reinterpret_cast<const char*>(packet), 24, 0,
+                   reinterpret_cast<const struct sockaddr*>(&target), sizeof(target));
         }
     }
 }

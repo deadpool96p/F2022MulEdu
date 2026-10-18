@@ -1,5 +1,7 @@
 #include "control_client.h"
 #include "f22_shim.h"
+#include "steam_bridge.hpp"
+#include "overlay/input_hook.h"
 #include <windows.h>
 #include <winhttp.h>
 #include <sstream>
@@ -56,6 +58,49 @@ static bool ExtractJsonBool(const std::string& json, const std::string& key, boo
     if (json.compare(pos, 4, "true") == 0) return true;
     if (json.compare(pos, 5, "false") == 0) return false;
     return default_val;
+}
+
+// Helper to extract room members array from JSON
+static std::vector<RoomMember> ExtractJsonMembers(const std::string& json) {
+    std::vector<RoomMember> members;
+    size_t members_pos = json.find("\"members\":");
+    if (members_pos == std::string::npos) return members;
+    size_t array_start = json.find('[', members_pos);
+    if (array_start == std::string::npos) return members;
+    size_t array_end = json.find(']', array_start);
+    if (array_end == std::string::npos) return members;
+
+    std::string array_str = json.substr(array_start, array_end - array_start + 1);
+
+    size_t obj_start = 0;
+    while ((obj_start = array_str.find('{', obj_start)) != std::string::npos) {
+        size_t obj_end = array_str.find('}', obj_start);
+        if (obj_end == std::string::npos) break;
+        std::string obj_str = array_str.substr(obj_start, obj_end - obj_start + 1);
+
+        RoomMember m;
+        m.slot = ExtractJsonInt(obj_str, "slot", 0);
+        m.name = ExtractJsonString(obj_str, "name");
+        m.role = ExtractJsonString(obj_str, "role");
+        m.ping_ms = ExtractJsonInt(obj_str, "ping_ms", 18);
+        m.connected = ExtractJsonBool(obj_str, "connected", true);
+
+        std::string sid_str = ExtractJsonString(obj_str, "steam_id");
+        if (!sid_str.empty()) {
+            try { m.steam_id = std::stoull(sid_str); } catch (...) {}
+        } else {
+            size_t sid_pos = obj_str.find("\"steam_id\":");
+            if (sid_pos != std::string::npos) {
+                sid_pos += 11;
+                while (sid_pos < obj_str.length() && (obj_str[sid_pos] == ' ' || obj_str[sid_pos] == '\t')) sid_pos++;
+                try { m.steam_id = std::stoull(obj_str.substr(sid_pos)); } catch (...) {}
+            }
+        }
+
+        members.push_back(m);
+        obj_start = obj_end + 1;
+    }
+    return members;
 }
 
 ControlClient& ControlClient::Instance() {
@@ -178,6 +223,24 @@ bool ControlClient::FetchStatusSync(ServerStatus& out_status) {
             if (out_status.transport_mode.empty()) {
                 out_status.transport_mode = "P2P";
             }
+
+            out_status.members = ExtractJsonMembers(response);
+            bool slot_seen[4] = { true, false, false, false };
+            for (const auto& m : out_status.members) {
+                if (m.slot > 0 && m.slot < 4) {
+                    slot_seen[m.slot] = true;
+                    SetRemotePeerConnected(m.slot, m.connected, m.name);
+                    if (m.steam_id != 0) {
+                        SetTargetSteamID(m.steam_id);
+                    }
+                }
+            }
+            for (int s = 1; s < 4; ++s) {
+                if (!slot_seen[s] && IsRemotePeerConnected(s)) {
+                    SetRemotePeerConnected(s, false);
+                }
+            }
+
             success = true;
         }
     }
@@ -213,10 +276,21 @@ bool ControlClient::PostHostRoomSync(std::string& out_code) {
 
     WinHttpSetTimeouts(hRequest, 2000, 2000, 2000, 2000);
 
+    std::string persona = SteamBridge::Instance().IsActive()
+        ? SteamBridge::Instance().GetLocalPersonaName()
+        : "Local Host";
+    uint64_t steam_id = SteamBridge::Instance().IsActive()
+        ? SteamBridge::Instance().GetLocalSteamID()
+        : 0;
+
+    std::ostringstream ss;
+    ss << "{\"persona_name\":\"" << persona << "\",\"steam_id\":\"" << steam_id << "\"}";
+    std::string body = ss.str();
+
     LPCWSTR headers = L"Content-Type: application/json\r\n";
     bool success = false;
     if (WinHttpSendRequest(hRequest, headers, (DWORD)-1L,
-                           WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+                           (LPVOID)body.data(), (DWORD)body.length(), (DWORD)body.length(), 0) &&
         WinHttpReceiveResponse(hRequest, nullptr)) {
 
         DWORD statusCode = 0;
@@ -273,8 +347,18 @@ bool ControlClient::PostJoinRoomSync(const std::string& room_code, std::string& 
 
     WinHttpSetTimeouts(hRequest, 2000, 2000, 2000, 2000);
 
+    std::string persona = SteamBridge::Instance().IsActive()
+        ? SteamBridge::Instance().GetLocalPersonaName()
+        : "Guest";
+    uint64_t steam_id = SteamBridge::Instance().IsActive()
+        ? SteamBridge::Instance().GetLocalSteamID()
+        : 0;
+
+    std::ostringstream ss;
+    ss << "{\"room_code\":\"" << room_code << "\",\"persona_name\":\"" << persona << "\",\"steam_id\":\"" << steam_id << "\"}";
+    std::string body = ss.str();
+
     LPCWSTR headers = L"Content-Type: application/json\r\n";
-    std::string body = "{\"room_code\":\"" + room_code + "\"}";
 
     bool success = false;
     if (WinHttpSendRequest(hRequest, headers, (DWORD)-1L,

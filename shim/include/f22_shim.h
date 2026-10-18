@@ -72,5 +72,6 @@ bool InitDXGIProxy();
 
 // Netcode Gamepad Streaming
 void TransmitNetcodeGamepadPacket(const XINPUT_GAMEPAD& pad);
+void SetTargetSteamID(uint64_t steam_id);
 
 } // namespace f22

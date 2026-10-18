@@ -306,7 +306,17 @@ static void RenderSideSelectGamerCards(const ServerStatus& status) {
                 ImGui::TextColored(ImVec4(0.40f, 0.75f, 1.0f, 1.0f), "P1 [ HOST ]");
                 std::string local_name = SteamBridge::Instance().IsActive()
                     ? SteamBridge::Instance().GetLocalPersonaName()
-                    : "Local Host";
+                    : "";
+                if (local_name.empty() && !status.members.empty()) {
+                    for (const auto& m : status.members) {
+                        if (m.slot == 0 && !m.name.empty()) {
+                            local_name = m.name;
+                            break;
+                        }
+                    }
+                }
+                if (local_name.empty()) local_name = "Local Host";
+
                 ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", local_name.c_str());
                 ImGui::TextColored(ImVec4(0.30f, 0.85f, 0.45f, 1.0f), "● Ready");
             }
@@ -315,6 +325,24 @@ static void RenderSideSelectGamerCards(const ServerStatus& status) {
         } else {
             // Slots 1, 2, 3: Friends / Clients
             bool connected = IsRemotePeerConnected(slot);
+            std::string guest_name = GetRemotePeerName(slot);
+
+            // Also check if member exists in status.members from control server
+            const RoomMember* member_info = nullptr;
+            for (const auto& m : status.members) {
+                if (m.slot == slot) {
+                    member_info = &m;
+                    break;
+                }
+            }
+
+            if (member_info && member_info->connected) {
+                connected = true;
+                if (!member_info->name.empty() && member_info->name != "Friend") {
+                    guest_name = member_info->name;
+                }
+            }
+
             ImVec4 border_col = connected
                 ? ImVec4(0.18f, 0.85f, 0.45f, 0.85f)
                 : ImVec4(0.25f, 0.30f, 0.40f, 0.50f);
@@ -326,14 +354,15 @@ static void RenderSideSelectGamerCards(const ServerStatus& status) {
                 std::string slot_title = "P" + std::to_string(slot + 1) + " [ GUEST ]";
                 ImGui::TextColored(ImVec4(0.95f, 0.80f, 0.30f, 1.0f), "%s", slot_title.c_str());
 
-                std::string guest_name = GetRemotePeerName(slot);
                 if (guest_name.empty() || guest_name == "Friend") {
                     guest_name = "Player " + std::to_string(slot + 1);
                 }
                 ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", guest_name.c_str());
 
                 if (connected) {
-                    uint32_t ping = netcode.ping_ms > 0 ? netcode.ping_ms : 18;
+                    uint32_t ping = (member_info && member_info->ping_ms > 0)
+                        ? member_info->ping_ms
+                        : (netcode.ping_ms > 0 ? netcode.ping_ms : 18);
                     ImGui::TextColored(ImVec4(0.20f, 0.90f, 0.45f, 1.0f), "● Online (%ums)", ping);
                 } else {
                     ImGui::TextColored(ImVec4(0.50f, 0.55f, 0.65f, 0.8f), "○ Waiting (F1)");
