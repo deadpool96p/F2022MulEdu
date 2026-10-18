@@ -42,25 +42,30 @@ static LRESULT CALLBACK HookedWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 
         ImGuiIO& io = ImGui::GetIO();
         if (g_overlay_focused) {
-            // Mask mouse events when ImGui wants mouse
+            // Only mask mouse clicks when mouse cursor is within the top bar (top 48 pixels)
             if (io.WantCaptureMouse) {
-                switch (msg) {
-                case WM_LBUTTONDOWN:
-                case WM_LBUTTONUP:
-                case WM_RBUTTONDOWN:
-                case WM_RBUTTONUP:
-                case WM_MBUTTONDOWN:
-                case WM_MBUTTONUP:
-                case WM_MOUSEWHEEL:
-                case WM_MOUSEHWHEEL:
-                case WM_LBUTTONDBLCLK:
-                case WM_RBUTTONDBLCLK:
-                    return 0;
+                POINT pt;
+                if (GetCursorPos(&pt) && ScreenToClient(hWnd, &pt)) {
+                    if (pt.y <= 48) {
+                        switch (msg) {
+                        case WM_LBUTTONDOWN:
+                        case WM_LBUTTONUP:
+                        case WM_RBUTTONDOWN:
+                        case WM_RBUTTONUP:
+                        case WM_MBUTTONDOWN:
+                        case WM_MBUTTONUP:
+                        case WM_MOUSEWHEEL:
+                        case WM_MOUSEHWHEEL:
+                        case WM_LBUTTONDBLCLK:
+                        case WM_RBUTTONDBLCLK:
+                            return 0;
+                        }
+                    }
                 }
             }
 
-            // Mask keyboard events when typing or focused
-            if (io.WantCaptureKeyboard) {
+            // ONLY mask keyboard events if user is actively typing in an ImGui text input box!
+            if (io.WantTextInput) {
                 switch (msg) {
                 case WM_KEYDOWN:
                 case WM_KEYUP:
@@ -111,46 +116,54 @@ void RemoveInputHooks(HWND hWnd) {
     }
 }
 
-// Remote Gamepad State (Slot 1)
+// 4-Player Remote Gamepad Slots (Slot 0 = Local/Host, Slots 1, 2, 3 = Remote Friends)
+struct RemotePlayerSlot {
+    bool connected = false;
+    std::string name = "Friend";
+    XINPUT_GAMEPAD gamepad{};
+    uint32_t packet_number = 0;
+    uint64_t last_seen = 0;
+};
+
 static std::mutex g_pad_mutex;
-static XINPUT_GAMEPAD g_remote_gamepad{};
-static bool g_remote_peer_connected = false;
-static std::string g_remote_peer_name = "Friend";
-static uint32_t g_remote_packet_number = 0;
-static uint64_t g_remote_last_seen = 0;
+static RemotePlayerSlot g_remote_slots[4];
 static uint64_t g_last_broadcast_time = 0;
 
-void SetRemotePeerGamepad(const XINPUT_GAMEPAD& pad) {
+void SetRemotePeerGamepad(int slot, const XINPUT_GAMEPAD& pad) {
+    if (slot < 0 || slot >= 4) return;
     std::lock_guard<std::mutex> lock(g_pad_mutex);
-    g_remote_gamepad = pad;
-    g_remote_packet_number++;
-    g_remote_last_seen = GetTickCount64();
-    g_remote_peer_connected = true;
+    g_remote_slots[slot].gamepad = pad;
+    g_remote_slots[slot].packet_number++;
+    g_remote_slots[slot].last_seen = GetTickCount64();
+    g_remote_slots[slot].connected = true;
 }
 
-void SetRemotePeerConnected(bool connected, const std::string& peer_name) {
+void SetRemotePeerConnected(int slot, bool connected, const std::string& peer_name) {
+    if (slot < 0 || slot >= 4) return;
     std::lock_guard<std::mutex> lock(g_pad_mutex);
-    g_remote_peer_connected = connected;
+    g_remote_slots[slot].connected = connected;
     if (!peer_name.empty()) {
-        g_remote_peer_name = peer_name;
+        g_remote_slots[slot].name = peer_name;
     }
     if (!connected) {
-        std::memset(&g_remote_gamepad, 0, sizeof(g_remote_gamepad));
+        std::memset(&g_remote_slots[slot].gamepad, 0, sizeof(XINPUT_GAMEPAD));
     }
 }
 
-bool IsRemotePeerConnected() {
+bool IsRemotePeerConnected(int slot) {
+    if (slot < 0 || slot >= 4) return false;
     std::lock_guard<std::mutex> lock(g_pad_mutex);
-    if (!g_remote_peer_connected) return false;
-    if (g_remote_last_seen > 0 && (GetTickCount64() - g_remote_last_seen > 4000)) {
+    if (!g_remote_slots[slot].connected) return false;
+    if (g_remote_slots[slot].last_seen > 0 && (GetTickCount64() - g_remote_slots[slot].last_seen > 5000)) {
         return false;
     }
     return true;
 }
 
-std::string GetRemotePeerName() {
+std::string GetRemotePeerName(int slot) {
+    if (slot < 0 || slot >= 4) return "Friend";
     std::lock_guard<std::mutex> lock(g_pad_mutex);
-    return g_remote_peer_name;
+    return g_remote_slots[slot].name;
 }
 
 static int16_t ApplyDeadzone(int16_t value, int16_t deadzone) {
@@ -164,31 +177,9 @@ static int16_t ApplyDeadzone(int16_t value, int16_t deadzone) {
     return 0;
 }
 
-XINPUT_STATE GetSafeNormalizedRemoteGamepadState() {
-    std::lock_guard<std::mutex> lock(g_pad_mutex);
-    XINPUT_STATE state{};
-    state.dwPacketNumber = g_remote_packet_number;
-    state.Gamepad = g_remote_gamepad;
-
-    // Standard thumbstick deadzones
-    state.Gamepad.sThumbLX = ApplyDeadzone(state.Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-    state.Gamepad.sThumbLY = ApplyDeadzone(state.Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
-    state.Gamepad.sThumbRX = ApplyDeadzone(state.Gamepad.sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
-    state.Gamepad.sThumbRY = ApplyDeadzone(state.Gamepad.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
-
-    if (state.Gamepad.bLeftTrigger < XINPUT_GAMEPAD_TRIGGER_THRESHOLD) {
-        state.Gamepad.bLeftTrigger = 0;
-    }
-    if (state.Gamepad.bRightTrigger < XINPUT_GAMEPAD_TRIGGER_THRESHOLD) {
-        state.Gamepad.bRightTrigger = 0;
-    }
-
-    return state;
-}
-
 void BroadcastLocalGamepad(const XINPUT_GAMEPAD& pad) {
     uint64_t now = GetTickCount64();
-    // Rate limit gamepad broadcasting to 60Hz (~16ms) to avoid saturating network
+    // Rate limit gamepad broadcasting to 60Hz (~16ms)
     if (now - g_last_broadcast_time >= 15) {
         g_last_broadcast_time = now;
         TransmitNetcodeGamepadPacket(pad);
@@ -196,27 +187,19 @@ void BroadcastLocalGamepad(const XINPUT_GAMEPAD& pad) {
 }
 
 static DWORD WINAPI Hooked_XInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
-    if (!pState) {
+    if (!pState || dwUserIndex >= 4) {
         return ERROR_BAD_ARGUMENTS;
     }
 
-    // Slot 1: Crash-Proof Virtual Remote Controller for Friend
-    if (dwUserIndex == 1) {
-        if (IsRemotePeerConnected()) {
-            *pState = GetSafeNormalizedRemoteGamepadState();
-            return ERROR_SUCCESS;
-        }
-        return ERROR_DEVICE_NOT_CONNECTED;
+    // 1. ALWAYS query the real local physical controller FIRST!
+    DWORD local_res = ERROR_DEVICE_NOT_CONNECTED;
+    if (g_original_XInputGetState) {
+        local_res = g_original_XInputGetState(dwUserIndex, pState);
     }
 
-    if (!g_original_XInputGetState) {
-        return ERROR_DEVICE_NOT_CONNECTED;
-    }
-
-    DWORD result = g_original_XInputGetState(dwUserIndex, pState);
-    if (result == ERROR_SUCCESS) {
+    if (local_res == ERROR_SUCCESS) {
+        // Real physical controller is connected on this PC! Never block or zero it!
         if (dwUserIndex == 0) {
-            // Check L3 + R3 (Thumb buttons combo)
             WORD combo = XINPUT_GAMEPAD_LEFT_THUMB | XINPUT_GAMEPAD_RIGHT_THUMB;
             bool combo_pressed = (pState->Gamepad.wButtons & combo) == combo;
 
@@ -226,20 +209,47 @@ static DWORD WINAPI Hooked_XInputGetState(DWORD dwUserIndex, XINPUT_STATE* pStat
             }
             g_combo_pressed_last = combo_pressed;
 
-            // Transmit local physical gamepad state to connected peer
+            // Broadcast local pad state to connected friends
             BroadcastLocalGamepad(pState->Gamepad);
         }
 
-        // Only mask gamepad buttons if the user is actively typing in the overlay's text field
-        // NEVER zero out analog sticks or triggers, so gameplay and menu navigation remain smooth!
+        // Only mask buttons if user is actively typing in a text field
         if (g_overlay_focused && ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput) {
             pState->Gamepad.wButtons &= ~(XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y |
                                           XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN |
                                           XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT);
         }
+
+        return ERROR_SUCCESS;
     }
 
-    return result;
+    // 2. If no local physical controller is connected on this slot, check if a remote friend is assigned to it!
+    {
+        std::lock_guard<std::mutex> lock(g_pad_mutex);
+        if (g_remote_slots[dwUserIndex].connected) {
+            uint64_t now = GetTickCount64();
+            if (g_remote_slots[dwUserIndex].last_seen > 0 && (now - g_remote_slots[dwUserIndex].last_seen < 5000)) {
+                pState->dwPacketNumber = g_remote_slots[dwUserIndex].packet_number;
+                pState->Gamepad = g_remote_slots[dwUserIndex].gamepad;
+
+                pState->Gamepad.sThumbLX = ApplyDeadzone(pState->Gamepad.sThumbLX, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                pState->Gamepad.sThumbLY = ApplyDeadzone(pState->Gamepad.sThumbLY, XINPUT_GAMEPAD_LEFT_THUMB_DEADZONE);
+                pState->Gamepad.sThumbRX = ApplyDeadzone(pState->Gamepad.sThumbRX, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+                pState->Gamepad.sThumbRY = ApplyDeadzone(pState->Gamepad.sThumbRY, XINPUT_GAMEPAD_RIGHT_THUMB_DEADZONE);
+
+                if (pState->Gamepad.bLeftTrigger < XINPUT_GAMEPAD_TRIGGER_THRESHOLD) {
+                    pState->Gamepad.bLeftTrigger = 0;
+                }
+                if (pState->Gamepad.bRightTrigger < XINPUT_GAMEPAD_TRIGGER_THRESHOLD) {
+                    pState->Gamepad.bRightTrigger = 0;
+                }
+
+                return ERROR_SUCCESS;
+            }
+        }
+    }
+
+    return ERROR_DEVICE_NOT_CONNECTED;
 }
 
 bool InstallXInputHooks() {

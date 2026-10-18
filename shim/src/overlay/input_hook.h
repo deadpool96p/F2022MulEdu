@@ -23,12 +23,11 @@ void SetOverlayFocused(bool focused);
 bool IsStatusPillVisible();
 void SetStatusPillVisible(bool visible);
 
-// Crash-Proof Remote Gamepad Virtualization (Slot 1)
-void SetRemotePeerGamepad(const XINPUT_GAMEPAD& pad);
-void SetRemotePeerConnected(bool connected, const std::string& peer_name = "");
-bool IsRemotePeerConnected();
-std::string GetRemotePeerName();
-XINPUT_STATE GetSafeNormalizedRemoteGamepadState();
+// 4-Player Remote Gamepad Virtualization (Slots 0 to 3)
+void SetRemotePeerGamepad(int slot, const XINPUT_GAMEPAD& pad);
+void SetRemotePeerConnected(int slot, bool connected, const std::string& peer_name = "");
+bool IsRemotePeerConnected(int slot = 1);
+std::string GetRemotePeerName(int slot = 1);
 void BroadcastLocalGamepad(const XINPUT_GAMEPAD& pad);
 
 } // namespace f22

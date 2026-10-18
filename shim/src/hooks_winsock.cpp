@@ -355,9 +355,11 @@ static int WSAAPI Hooked_recvfrom(SOCKET s, char *buf, int len, int flags, struc
             if (SteamBridge::Instance().ReadP2PPacket(p2p_buf, sizeof(p2p_buf), &read_bytes, &remote_steam_id, 1)) {
                 if (read_bytes >= 16 && *reinterpret_cast<const uint16_t*>(p2p_buf) == 0xF220) {
                     if (p2p_buf[2] == 0x01) {
+                        int slot = static_cast<int>(p2p_buf[3]);
+                        if (slot <= 0 || slot >= 4) slot = 1;
                         XINPUT_GAMEPAD remote_pad{};
                         std::memcpy(&remote_pad, p2p_buf + 4, sizeof(XINPUT_GAMEPAD));
-                        SetRemotePeerGamepad(remote_pad);
+                        SetRemotePeerGamepad(slot, remote_pad);
                     }
                 }
             }
@@ -405,9 +407,11 @@ static int WSAAPI Hooked_recvfrom(SOCKET s, char *buf, int len, int flags, struc
             uint8_t pkt_type = static_cast<uint8_t>(data_ptr[2]);
             if (pkt_type == 0x01 && data_len >= 16) {
                 // Input frame from remote friend
+                int slot = static_cast<int>(data_ptr[3]);
+                if (slot <= 0 || slot >= 4) slot = 1;
                 XINPUT_GAMEPAD remote_pad{};
                 std::memcpy(&remote_pad, data_ptr + 4, sizeof(XINPUT_GAMEPAD));
-                SetRemotePeerGamepad(remote_pad);
+                SetRemotePeerGamepad(slot, remote_pad);
                 return 0; // Filter out from DirtySDK
             } else if (pkt_type == 0x02 && data_len >= 16) {
                 // Ping probe -> Reply Pong (0x03)

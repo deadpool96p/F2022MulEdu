@@ -66,7 +66,8 @@ static void RenderStatusPill(const ServerStatus& status) {
                             ImGuiWindowFlags_NoResize |
                             ImGuiWindowFlags_NoSavedSettings |
                             ImGuiWindowFlags_NoFocusOnAppearing |
-                            ImGuiWindowFlags_NoNav;
+                            ImGuiWindowFlags_NoNav |
+                            ImGuiWindowFlags_NoInputs;
 
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.05f, 0.07f, 0.10f, 0.85f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 17.0f);
@@ -269,73 +270,80 @@ static void RenderSideSelectGamerCards(const ServerStatus& status) {
     ImVec2 work_size = viewport->WorkSize;
 
     NetcodeMetrics netcode = GetCurrentNetcodeMetrics();
-    bool remote_connected = IsRemotePeerConnected();
 
-    float card_width = 280.0f;
-    float card_height = 60.0f;
-    float spacing = 20.0f;
-    float total_width = (card_width * 2.0f) + spacing;
+    float card_width = 175.0f;
+    float card_height = 56.0f;
+    float spacing = 12.0f;
+    float total_width = (card_width * 4.0f) + (spacing * 3.0f);
     float start_x = work_pos.x + (work_size.x - total_width) * 0.5f;
-    float start_y = work_pos.y + 64.0f;
+    float start_y = work_pos.y + 60.0f;
 
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
                             ImGuiWindowFlags_NoMove |
                             ImGuiWindowFlags_NoResize |
                             ImGuiWindowFlags_NoSavedSettings |
                             ImGuiWindowFlags_NoFocusOnAppearing |
-                            ImGuiWindowFlags_NoNav;
+                            ImGuiWindowFlags_NoNav |
+                            ImGuiWindowFlags_NoInputs; // NEVER capture mouse/keyboard inputs!
 
-    // Card 1: Slot 0 (Host / Local Player)
-    ImGui::SetNextWindowPos(ImVec2(start_x, start_y), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(card_width, card_height), ImGuiCond_Always);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f, 0.06f, 0.09f, 0.88f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.20f, 0.55f, 0.90f, 0.75f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.5f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.2f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
 
-    if (ImGui::Begin("##HostGamerCard", nullptr, flags)) {
-        ImGui::TextColored(ImVec4(0.40f, 0.75f, 1.0f, 1.0f), "PLAYER 1  [ HOST ]");
-        std::string local_name = SteamBridge::Instance().IsActive()
-            ? SteamBridge::Instance().GetLocalPersonaName()
-            : "Local Player";
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", local_name.c_str());
-        ImGui::TextColored(ImVec4(0.30f, 0.85f, 0.45f, 1.0f), "● Slot 1: Active & Ready");
-    }
-    ImGui::End();
+    for (int slot = 0; slot < 4; ++slot) {
+        float x = start_x + (slot * (card_width + spacing));
+        ImGui::SetNextWindowPos(ImVec2(x, start_y), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(card_width, card_height), ImGuiCond_Always);
 
-    // Card 2: Slot 1 (Guest / Friend)
-    ImGui::SetNextWindowPos(ImVec2(start_x + card_width + spacing, start_y), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(card_width, card_height), ImGuiCond_Always);
+        std::string win_id = "##GamerCardSlot" + std::to_string(slot);
 
-    ImVec4 border_col = remote_connected
-        ? ImVec4(0.18f, 0.85f, 0.45f, 0.85f)
-        : ImVec4(0.90f, 0.65f, 0.15f, 0.60f);
+        if (slot == 0) {
+            // Slot 0: Host / Local Player
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f, 0.06f, 0.09f, 0.88f));
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.20f, 0.55f, 0.90f, 0.85f));
 
-    ImGui::PushStyleColor(ImGuiCol_Border, border_col);
-
-    if (ImGui::Begin("##GuestGamerCard", nullptr, flags)) {
-        ImGui::TextColored(ImVec4(0.95f, 0.80f, 0.30f, 1.0f), "PLAYER 2  [ GUEST ]");
-        std::string guest_name = GetRemotePeerName();
-        if (guest_name.empty() || guest_name == "Friend") {
-            if (!status.room_code.empty()) {
-                guest_name = "Room: " + status.room_code;
-            } else {
-                guest_name = "Remote Friend";
+            if (ImGui::Begin(win_id.c_str(), nullptr, flags)) {
+                ImGui::TextColored(ImVec4(0.40f, 0.75f, 1.0f, 1.0f), "P1 [ HOST ]");
+                std::string local_name = SteamBridge::Instance().IsActive()
+                    ? SteamBridge::Instance().GetLocalPersonaName()
+                    : "Local Host";
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", local_name.c_str());
+                ImGui::TextColored(ImVec4(0.30f, 0.85f, 0.45f, 1.0f), "● Ready");
             }
-        }
-        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", guest_name.c_str());
-
-        if (remote_connected) {
-            uint32_t ping = netcode.ping_ms > 0 ? netcode.ping_ms : 18;
-            ImGui::TextColored(ImVec4(0.20f, 0.90f, 0.45f, 1.0f), "● Slot 2: Virtual Pad (Online, %ums)", ping);
+            ImGui::End();
+            ImGui::PopStyleColor(2);
         } else {
-            ImGui::TextColored(ImVec4(0.70f, 0.70f, 0.70f, 1.0f), "○ Waiting for friend (F1 to Join/Host)");
+            // Slots 1, 2, 3: Friends / Clients
+            bool connected = IsRemotePeerConnected(slot);
+            ImVec4 border_col = connected
+                ? ImVec4(0.18f, 0.85f, 0.45f, 0.85f)
+                : ImVec4(0.25f, 0.30f, 0.40f, 0.50f);
+
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.04f, 0.06f, 0.09f, 0.88f));
+            ImGui::PushStyleColor(ImGuiCol_Border, border_col);
+
+            if (ImGui::Begin(win_id.c_str(), nullptr, flags)) {
+                std::string slot_title = "P" + std::to_string(slot + 1) + " [ GUEST ]";
+                ImGui::TextColored(ImVec4(0.95f, 0.80f, 0.30f, 1.0f), "%s", slot_title.c_str());
+
+                std::string guest_name = GetRemotePeerName(slot);
+                if (guest_name.empty() || guest_name == "Friend") {
+                    guest_name = "Player " + std::to_string(slot + 1);
+                }
+                ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "%s", guest_name.c_str());
+
+                if (connected) {
+                    uint32_t ping = netcode.ping_ms > 0 ? netcode.ping_ms : 18;
+                    ImGui::TextColored(ImVec4(0.20f, 0.90f, 0.45f, 1.0f), "● Online (%ums)", ping);
+                } else {
+                    ImGui::TextColored(ImVec4(0.50f, 0.55f, 0.65f, 0.8f), "○ Waiting (F1)");
+                }
+            }
+            ImGui::End();
+            ImGui::PopStyleColor(2);
         }
     }
-    ImGui::End();
 
-    ImGui::PopStyleColor(3);
     ImGui::PopStyleVar(3);
 }
 
