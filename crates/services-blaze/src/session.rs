@@ -16,10 +16,10 @@ pub struct SessionState {
 impl Default for SessionState {
     fn default() -> Self {
         Self {
-            user_id: 10001,
-            persona_id: 10001,
-            display_name: "F22_Player1".to_string(),
-            session_key: "F22_SESSION_01928374".to_string(),
+            user_id: 0,
+            persona_id: 0,
+            display_name: "Guest".to_string(),
+            session_key: String::new(),
             external_ip: "127.0.0.1".to_string(),
             internal_ip: "127.0.0.1".to_string(),
             port: 3659,

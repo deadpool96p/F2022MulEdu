@@ -66,8 +66,7 @@ async fn handle_blaze_session(
     router: &mut BlazeRouter,
 ) -> std::io::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BlazePacket>();
-    let mut registered_uid = router.session.user_id;
-    router.store.register_notification_channel(registered_uid, tx.clone());
+    let mut registered_uid: u64 = 0;
 
     loop {
         tokio::select! {
@@ -93,9 +92,11 @@ async fn handle_blaze_session(
 
                 let (resp_packet, notif_opt) = router.handle_packet(&req_packet)?;
 
-                // If user logged in and received a new UID, re-register channel under new UID
-                if router.session.user_id != registered_uid {
-                    router.store.remove_notification_channel(registered_uid);
+                // If user logged in and received a valid UID, register/update notification channel
+                if router.session.user_id != 0 && router.session.user_id != registered_uid {
+                    if registered_uid != 0 {
+                        router.store.remove_notification_channel(registered_uid);
+                    }
                     registered_uid = router.session.user_id;
                     router.store.register_notification_channel(registered_uid, tx.clone());
                 }
@@ -113,6 +114,10 @@ async fn handle_blaze_session(
                 stream.flush().await?;
             }
         }
+    }
+
+    if registered_uid != 0 {
+        router.store.remove_notification_channel(registered_uid);
     }
 
     Ok(())

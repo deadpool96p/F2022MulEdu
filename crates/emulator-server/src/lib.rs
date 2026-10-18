@@ -5,12 +5,14 @@
 //! QoS/STUN UDP Responder (:17498), and ProtoTunnel Relay Engine (:3659).
 
 pub mod blaze_server;
+pub mod control_server;
 pub mod listener;
 pub mod redirector_server;
 pub mod telemetry_server;
 pub mod tls;
 
 pub use blaze_server::run_blaze_server;
+pub use control_server::run_control_server;
 pub use listener::{accept_dual_stream, DualStream};
 pub use redirector_server::run_redirector_server;
 pub use telemetry_server::run_telemetry_server;
@@ -57,6 +59,7 @@ pub async fn start_services_full(
     let telemetry_listener = TcpListener::bind(format!("127.0.0.1:{}", telemetry_port)).await?;
     let qos_socket = UdpSocket::bind(format!("0.0.0.0:{}", qos_port)).await?;
     let relay_socket = UdpSocket::bind(format!("0.0.0.0:{}", relay_port)).await?;
+    let control_listener = TcpListener::bind("127.0.0.1:42129").await?;
 
     tracing::info!("============================================================");
     tracing::info!("  FIFA 22 Frostbite 3 Clean-Room Multiplayer Emulator       ");
@@ -66,6 +69,7 @@ pub async fn start_services_full(
     tracing::info!("  * Telemetry Sink (river.data.ea.com): Port {}", telemetry_port);
     tracing::info!("  * QoS / STUN Server (ProtoPing UDP) : Port {}", qos_port);
     tracing::info!("  * ProtoTunnel UDP Relay             : Port {}", relay_port);
+    tracing::info!("  * Control Channel REST API          : Port 42129");
     tracing::info!("  * Downgrade to Plain TCP            : {}", !secure_redirect);
     tracing::info!("============================================================");
 
@@ -111,12 +115,19 @@ pub async fn start_services_full(
         }
     });
 
+    let control_task = tokio::spawn(run_control_server(
+        control_listener,
+        session_store.clone(),
+        game_registry.clone(),
+    ));
+
     tokio::select! {
         _ = redir_task => {},
         _ = blaze_task => {},
         _ = telemetry_task => {},
         _ = qos_task => {},
         _ = relay_task => {},
+        _ = control_task => {},
     }
 
     Ok(())
