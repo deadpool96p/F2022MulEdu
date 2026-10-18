@@ -6,6 +6,7 @@ members = [
     "crates/services-redirector",
     "crates/services-http-content",
     "crates/services-blaze",
+    "crates/services-qos-relay",
     "crates/emulator-server",
 ]
 

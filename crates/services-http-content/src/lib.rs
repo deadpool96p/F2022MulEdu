@@ -33,6 +33,15 @@ impl HttpResponse {
         }
     }
 
+    pub fn ok_xml(body: &str) -> Self {
+        Self {
+            status_code: 200,
+            reason_phrase: "OK",
+            content_type: "application/xml",
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
     pub fn ok_binary(body: Vec<u8>) -> Self {
         Self {
             status_code: 200,
@@ -104,6 +113,12 @@ pub fn route_http_request(req: &HttpRequest) -> HttpResponse {
             tracing::info!("[Telemetry Sink] Absorbed {} telemetry ping", req.method);
             HttpResponse::ok_json(r#"{"status":"ok"}"#)
         }
+        // DirtySDK HTTP QoS metadata discovery probes
+        "/qos/qos" | "/qos/fire" => {
+            tracing::info!("[QoS HTTP] Serving QoS XML configuration metadata");
+            let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<qos>\n    <numprobes>10</numprobes>\n    <qoshost>127.0.0.1</qoshost>\n    <qosport>17498</qosport>\n    <probesize>1200</probesize>\n    <serviceid>1</serviceid>\n</qos>";
+            HttpResponse::ok_xml(xml)
+        }
         // Canonical Squad Hash query
         "/content/squads/hash" => {
             // Milestone 4: canonical squad hash verification
@@ -154,5 +169,17 @@ mod tests {
         let resp_squad = route_http_request(&req_squad);
         assert_eq!(resp_squad.status_code, 200);
         assert_eq!(resp_squad.content_type, "application/octet-stream");
+    }
+
+    #[test]
+    fn test_qos_xml_endpoints() {
+        let raw_qos = b"GET /qos/qos HTTP/1.1\r\nHost: gosqos.ea.com\r\n\r\n";
+        let req_qos = parse_http_request(raw_qos).unwrap();
+        let resp_qos = route_http_request(&req_qos);
+        assert_eq!(resp_qos.status_code, 200);
+        assert_eq!(resp_qos.content_type, "application/xml");
+        let body = String::from_utf8(resp_qos.body).unwrap();
+        assert!(body.contains("<qoshost>127.0.0.1</qoshost>"));
+        assert!(body.contains("<qosport>17498</qosport>"));
     }
 }

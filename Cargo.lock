@@ -380,6 +380,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "services-qos-relay"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "parking_lot",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "services-redirector"
 version = "0.1.0"
 dependencies = [

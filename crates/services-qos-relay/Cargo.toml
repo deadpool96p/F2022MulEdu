@@ -1,0 +1,16 @@
+[package]
+name = "services-qos-relay"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "QoS / STUN UDP responder (17498) and ProtoTunnel Relay engine (3659) for FIFA 22"
+
+[dependencies]
+tokio = { version = "1.38", features = ["full"] }
+bytes = "1.6"
+tracing = "0.1"
+parking_lot = "0.12"
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
