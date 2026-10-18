@@ -210,7 +210,8 @@ void SteamBridge::PushIdentityToControlServer() {
                                          WINHTTP_NO_PROXY_BYPASS, 0);
         if (!hSession) return;
 
-        HINTERNET hConnect = WinHttpConnect(hSession, L"127.0.0.1", 42129, 0);
+        std::wstring wHost(GetConfig().emulator_host.begin(), GetConfig().emulator_host.end());
+        HINTERNET hConnect = WinHttpConnect(hSession, wHost.c_str(), 42129, 0);
         if (!hConnect) {
             WinHttpCloseHandle(hSession);
             return;

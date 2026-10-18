@@ -20,10 +20,17 @@ pub async fn run_redirector_server(
 
     while let Ok((tcp_stream, peer_addr)) = listener.accept().await {
         let acceptor = tls_acceptor.clone();
-        let cfg = config.clone();
+        let mut cfg = (*config).clone();
+        if let Ok(local_addr) = tcp_stream.local_addr() {
+            let ip_str = local_addr.ip().to_string();
+            if ip_str != "0.0.0.0" {
+                cfg.host = ip_str;
+            }
+        }
+        let cfg = Arc::new(cfg);
 
         tokio::spawn(async move {
-            tracing::info!("[Redirector] Connection from {}", peer_addr);
+            tracing::info!("[Redirector] Connection from {} (redirecting to {})", peer_addr, cfg.host);
             match accept_dual_stream(tcp_stream, &acceptor).await {
                 Ok(mut stream) => {
                     if let Err(e) = handle_redirector_connection(&mut stream, &cfg).await {

@@ -54,12 +54,12 @@ pub async fn start_services_full(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tls_acceptor = create_self_signed_tls_acceptor()?;
 
-    let redir_listener = TcpListener::bind(format!("127.0.0.1:{}", redirector_port)).await?;
-    let blaze_listener = TcpListener::bind(format!("127.0.0.1:{}", blaze_port)).await?;
-    let telemetry_listener = TcpListener::bind(format!("127.0.0.1:{}", telemetry_port)).await?;
+    let redir_listener = TcpListener::bind(format!("0.0.0.0:{}", redirector_port)).await?;
+    let blaze_listener = TcpListener::bind(format!("0.0.0.0:{}", blaze_port)).await?;
+    let telemetry_listener = TcpListener::bind(format!("0.0.0.0:{}", telemetry_port)).await?;
     let qos_socket = UdpSocket::bind(format!("0.0.0.0:{}", qos_port)).await?;
     let relay_socket = UdpSocket::bind(format!("0.0.0.0:{}", relay_port)).await?;
-    let control_listener = TcpListener::bind("127.0.0.1:42129").await?;
+    let control_listener = TcpListener::bind("0.0.0.0:42129").await?;
 
     tracing::info!("============================================================");
     tracing::info!("  FIFA 22 Frostbite 3 Clean-Room Multiplayer Emulator       ");
