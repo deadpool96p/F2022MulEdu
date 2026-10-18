@@ -232,6 +232,11 @@ impl GameRegistry {
         self.games.read().get(&gid).cloned()
     }
 
+    /// Looks up a game by game ID.
+    pub fn get_game(&self, game_id: u64) -> Option<GameSession> {
+        self.games.read().get(&game_id).cloned()
+    }
+
     /// Looks up the active game a player is currently in.
     pub fn find_by_player(&self, user_id: u64) -> Option<GameSession> {
         let gid = self.player_game_map.read().get(&user_id).copied()?;

@@ -67,6 +67,7 @@ async fn handle_blaze_session(
 ) -> std::io::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BlazePacket>();
     let mut registered_uid: u64 = 0;
+    let timeout_duration = std::time::Duration::from_secs(45);
 
     loop {
         tokio::select! {
@@ -82,13 +83,37 @@ async fn handle_blaze_session(
                     router.session.user_id
                 );
             }
-            // Client RPC request
-            res = read_blaze_packet(stream) => {
-                let req_packet = match res {
-                    Ok(Some(pkt)) => pkt,
-                    Ok(None) => break, // Clean EOF
-                    Err(e) => return Err(e),
+            // Client RPC request monitored by 45s keep-alive timeout
+            timeout_res = tokio::time::timeout(timeout_duration, read_blaze_packet(stream)) => {
+                let req_packet = match timeout_res {
+                    Ok(Ok(Some(pkt))) => pkt,
+                    Ok(Ok(None)) => {
+                        tracing::info!(
+                            "[Blaze Server] Client UID {} closed connection (EOF)",
+                            router.session.user_id
+                        );
+                        break;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            "[Blaze Server] Socket read error for UID {}: {}",
+                            router.session.user_id, e
+                        );
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "[Blaze Server] Keep-alive ping timeout (45s) expired for UID {}",
+                            router.session.user_id
+                        );
+                        break;
+                    }
                 };
+
+                // Touch session to record keep-alive activity
+                if router.session.user_id != 0 {
+                    router.store.touch_session(router.session.user_id);
+                }
 
                 let (resp_packet, notif_opt) = router.handle_packet(&req_packet)?;
 
@@ -116,8 +141,40 @@ async fn handle_blaze_session(
         }
     }
 
-    if registered_uid != 0 {
-        router.store.remove_notification_channel(registered_uid);
+    // Disconnect cleanup: unregister channel, remove session, and cleanup active games
+    let uid_to_clean = if registered_uid != 0 {
+        registered_uid
+    } else {
+        router.session.user_id
+    };
+
+    if uid_to_clean != 0 {
+        router.store.remove_notification_channel(uid_to_clean);
+        router.store.remove_session(uid_to_clean);
+
+        if let Some((removed_game, remaining_uids)) = router.games.handle_player_disconnect(uid_to_clean) {
+            tracing::info!(
+                "[Blaze Server] Cleaned up Game {} on disconnect of UID {}. Notifying {} peers.",
+                removed_game.game_id,
+                uid_to_clean,
+                remaining_uids.len()
+            );
+            for peer_uid in remaining_uids {
+                if let Ok(notif_player) = services_blaze::gamemanager::build_notify_player_removed(
+                    removed_game.game_id,
+                    router.session.persona_id,
+                    4, // Reason: 4 = DISCONNECTED / PLAYER_LEFT
+                ) {
+                    let _ = router.store.send_notification(peer_uid, notif_player);
+                }
+                if let Ok(notif_game) = services_blaze::gamemanager::build_notify_game_removed(removed_game.game_id) {
+                    let _ = router.store.send_notification(peer_uid, notif_game);
+                }
+                if let Ok(notif_game_alt) = services_blaze::gamemanager::build_notify_game_removed_alt(removed_game.game_id) {
+                    let _ = router.store.send_notification(peer_uid, notif_game_alt);
+                }
+            }
+        }
     }
 
     Ok(())

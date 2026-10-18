@@ -211,6 +211,13 @@ impl SessionStore {
         tracing::debug!("[SessionStore] Removed notification channel for user {}", user_id);
     }
 
+    /// Updates keep-alive timestamp for an active user.
+    pub fn touch_session(&self, user_id: u64) {
+        if let Some(sess) = self.sessions.write().get_mut(&user_id) {
+            sess.last_seen = Instant::now();
+        }
+    }
+
     /// Sends an async unsolicited Blaze notification packet directly to a specific user.
     pub fn send_notification(&self, user_id: u64, packet: BlazePacket) -> bool {
         if let Some(tx) = self.notif_channels.read().get(&user_id) {
