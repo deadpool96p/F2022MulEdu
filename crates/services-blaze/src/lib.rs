@@ -10,6 +10,7 @@ pub mod gamemanager;
 pub mod router;
 pub mod session;
 pub mod session_store;
+pub mod stats;
 pub mod usersessions;
 pub mod util;
 
@@ -19,6 +20,7 @@ pub use gamemanager::*;
 pub use router::BlazeRouter;
 pub use session::SessionState;
 pub use session_store::{SessionData, SessionStore, SteamFriend, SteamProfile};
+pub use stats::*;
 pub use usersessions::*;
 pub use util::*;
 

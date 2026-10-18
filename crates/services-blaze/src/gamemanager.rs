@@ -26,10 +26,13 @@ pub const CMD_UPDATE_PLAYER_STATE: u16 = 0x0014;
 pub const CMD_UPDATE_GAME_ATTRIBUTES: u16 = 0x0016;
 
 pub const NOTIFY_GAME_REMOVED: u16 = 0x000A;
+pub const NOTIFY_GAME_REMOVED_ALT: u16 = 0x0010;
 pub const NOTIFY_GAME_CREATED: u16 = 0x000F;
 pub const NOTIFY_GAME_SETUP: u16 = 0x0014;
 pub const NOTIFY_PLAYER_JOINING: u16 = 0x0015;
+pub const NOTIFY_PLAYER_LEFT: u16 = 0x0016;
 pub const NOTIFY_GAME_ATTRIB_CHANGE_ALT: u16 = 0x0018;
+pub const NOTIFY_PLAYER_REMOVED: u16 = 0x0020;
 pub const NOTIFY_GAME_ATTRIB_CHANGE: u16 = 0x0050;
 pub const NOTIFY_GAME_STATE_CHANGE: u16 = 0x0064;
 pub const NOTIFY_PLAYER_STATE_CHANGE: u16 = 0x0074;
@@ -324,6 +327,23 @@ impl GameRegistry {
         tracing::info!("[GameManager] Destroyed Game {}", game_id);
         Some(removed)
     }
+
+    /// Handles abrupt player disconnection, cleanly cleans up session, and returns (removed_game, remaining_players)
+    pub fn handle_player_disconnect(&self, user_id: u64) -> Option<(GameSession, Vec<u64>)> {
+        let game = self.find_by_player(user_id)?;
+        let mut remaining = Vec::new();
+        if game.host_user_id != user_id {
+            remaining.push(game.host_user_id);
+        }
+        if let Some(gid) = game.guest_user_id {
+            if gid != user_id {
+                remaining.push(gid);
+            }
+        }
+
+        let removed = self.destroy_game(game.game_id)?;
+        Some((removed, remaining))
+    }
 }
 
 // =============================================================================
@@ -497,6 +517,26 @@ pub fn build_notify_game_removed(game_id: u64) -> io::Result<BlazePacket> {
     let mut payload = TdfStruct::new();
     payload.set("GID", TdfValue::Integer(game_id));
     BlazePacket::notification(COMPONENT_GAME_MANAGER, NOTIFY_GAME_REMOVED, payload)
+}
+
+/// Builds a NotifyGameRemoved (0x0010) alt notification.
+pub fn build_notify_game_removed_alt(game_id: u64) -> io::Result<BlazePacket> {
+    let mut payload = TdfStruct::new();
+    payload.set("GID", TdfValue::Integer(game_id));
+    BlazePacket::notification(COMPONENT_GAME_MANAGER, NOTIFY_GAME_REMOVED_ALT, payload)
+}
+
+/// Builds a NotifyPlayerRemoved (0x0020) notification.
+pub fn build_notify_player_removed(
+    game_id: u64,
+    persona_id: u64,
+    reason: u16,
+) -> io::Result<BlazePacket> {
+    let mut payload = TdfStruct::new();
+    payload.set("GID", TdfValue::Integer(game_id));
+    payload.set("PID", TdfValue::Integer(persona_id));
+    payload.set("REAS", TdfValue::Integer(reason as u64));
+    BlazePacket::notification(COMPONENT_GAME_MANAGER, NOTIFY_PLAYER_REMOVED, payload)
 }
 
 // =============================================================================
@@ -732,13 +772,22 @@ pub fn handle_destroy_game(
     store: &SessionStore,
     registry: &GameRegistry,
 ) -> io::Result<BlazePacket> {
-    if let Some(game) = registry.destroy_game(session.user_id) {
-        let notif = build_notify_game_removed(game.game_id)?;
-        let mut participants = vec![game.host_user_id];
-        if let Some(gid) = game.guest_user_id {
-            participants.push(gid);
+    let target_game = match req.payload.get("GID") {
+        Some(TdfValue::Integer(gid)) => registry.games.read().get(gid).cloned(),
+        _ => registry.find_by_player(session.user_id),
+    };
+
+    if let Some(game) = target_game {
+        if let Some(removed) = registry.destroy_game(game.game_id) {
+            let notif = build_notify_game_removed(removed.game_id)?;
+            let notif_alt = build_notify_game_removed_alt(removed.game_id)?;
+            let mut participants = vec![removed.host_user_id];
+            if let Some(gid) = removed.guest_user_id {
+                participants.push(gid);
+            }
+            store.broadcast_notification(&participants, notif);
+            store.broadcast_notification(&participants, notif_alt);
         }
-        store.broadcast_notification(&participants, notif);
     }
     BlazePacket::response(&req.header, TdfStruct::new())
 }
@@ -893,5 +942,63 @@ mod tests {
         assert_eq!(g.guest_state, GAME_STATE_IN_GAME);
         assert_eq!(g.game_state, GAME_STATE_IN_GAME);
         assert_eq!(transition4, Some(GAME_STATE_IN_GAME));
+    }
+
+    #[test]
+    fn test_destroy_game_and_session_deallocation() {
+        let store = Arc::new(SessionStore::new());
+        let registry = Arc::new(GameRegistry::new());
+
+        let p1 = store.create_session(Some("HostDestroyer"));
+        let p2 = store.create_session(Some("GuestVictim"));
+
+        let (game, _) = registry.find_or_create_auto_match(&p1);
+        let (_, is_joined) = registry.find_or_create_auto_match(&p2);
+        assert!(is_joined);
+
+        // Verify player mappings
+        assert!(registry.find_by_player(p1.user_id).is_some());
+        assert!(registry.find_by_player(p2.user_id).is_some());
+        assert!(registry.find_by_room_code(&game.room_code).is_some());
+
+        // Destroy Game
+        let destroyed = registry.destroy_game(game.game_id).unwrap();
+        assert_eq!(destroyed.game_id, game.game_id);
+
+        // Verify total cleanup and deallocation
+        assert!(registry.find_by_player(p1.user_id).is_none());
+        assert!(registry.find_by_player(p2.user_id).is_none());
+        assert!(registry.find_by_room_code(&game.room_code).is_none());
+
+        // Verify notification builders for 0x000A, 0x0010, and 0x0020
+        let notif_000a = build_notify_game_removed(game.game_id).unwrap();
+        assert_eq!(notif_000a.header.command, NOTIFY_GAME_REMOVED);
+
+        let notif_0010 = build_notify_game_removed_alt(game.game_id).unwrap();
+        assert_eq!(notif_0010.header.command, NOTIFY_GAME_REMOVED_ALT);
+
+        let notif_0020 = build_notify_player_removed(game.game_id, p1.persona_id, 0).unwrap();
+        assert_eq!(notif_0020.header.command, NOTIFY_PLAYER_REMOVED);
+    }
+
+    #[test]
+    fn test_handle_player_disconnect() {
+        let store = Arc::new(SessionStore::new());
+        let registry = Arc::new(GameRegistry::new());
+
+        let p1 = store.create_session(Some("DroppingHost"));
+        let p2 = store.create_session(Some("RemainingGuest"));
+
+        let (game, _) = registry.find_or_create_auto_match(&p1);
+        let _ = registry.find_or_create_auto_match(&p2);
+
+        // Host drops connection
+        let (removed, remaining) = registry.handle_player_disconnect(p1.user_id).unwrap();
+        assert_eq!(removed.game_id, game.game_id);
+        assert_eq!(remaining, vec![p2.user_id]);
+
+        // Verify registry is cleanly freed
+        assert!(registry.find_by_player(p1.user_id).is_none());
+        assert!(registry.find_by_player(p2.user_id).is_none());
     }
 }

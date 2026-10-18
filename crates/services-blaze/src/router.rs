@@ -9,6 +9,7 @@ use crate::auth::*;
 use crate::gamemanager::*;
 use crate::session::SessionState;
 use crate::session_store::SessionStore;
+use crate::stats::*;
 use crate::usersessions::*;
 use crate::util::*;
 
@@ -155,8 +156,26 @@ impl BlazeRouter {
             }
 
             // Stats Component (0x0007)
+            (COMPONENT_STATS, CMD_GET_STATS) => {
+                let resp = handle_get_stats(req, &self.session)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_STATS, CMD_UPDATE_STATS) => {
+                let resp = handle_update_stats(req)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_STATS, CMD_GET_LEADERBOARD)
+            | (COMPONENT_STATS, CMD_GET_CENTERED_LEADERBOARD)
+            | (COMPONENT_STATS, CMD_GET_FILTERED_LEADERBOARD) => {
+                let resp = handle_get_leaderboard(req)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_STATS, CMD_SUBMIT_GAME_REPORT) => {
+                let resp = handle_submit_game_report(req, &self.session, &self.store)?;
+                Ok((resp, None))
+            }
             (COMPONENT_STATS, _) => {
-                let resp = handle_stats(req)?;
+                let resp = handle_update_stats(req)?;
                 Ok((resp, None))
             }
 
