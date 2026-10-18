@@ -1,9 +1,10 @@
-//! Authentication Component (0x0001) Handlers.
+//! # Authentication Component (0x0001) Handlers.
 
 use std::io;
 use blaze_core::BlazePacket;
 use blaze_tdf::{TdfList, TdfStruct, TdfType, TdfValue};
 use crate::session::SessionState;
+use crate::session_store::SessionStore;
 
 pub const COMPONENT_AUTH: u16 = 0x0001;
 
@@ -12,8 +13,26 @@ pub const CMD_LOGIN: u16 = 0x0028;
 pub const CMD_SILENT_LOGIN: u16 = 0x0029;
 pub const CMD_LIST_USER_ENTITLEMENTS: u16 = 0x0046;
 
-/// Handles login, expressLogin, and silentLogin.
-pub fn handle_login(req: &BlazePacket, session: &mut SessionState) -> io::Result<BlazePacket> {
+/// Handles login, expressLogin, and silentLogin backed by the dynamic SessionStore.
+pub fn handle_login(
+    req: &BlazePacket,
+    session: &mut SessionState,
+    store: &SessionStore,
+) -> io::Result<BlazePacket> {
+    // Extract requested persona name if present in login payload
+    let requested_name = match req.payload.get("DSNM") {
+        Some(TdfValue::String(s)) => Some(s.as_str()),
+        _ => match req.payload.get("NAME") {
+            Some(TdfValue::String(s)) => Some(s.as_str()),
+            _ => None,
+        },
+    };
+
+    let session_data = store.create_session(requested_name);
+    session.user_id = session_data.user_id;
+    session.persona_id = session_data.persona_id;
+    session.display_name = session_data.persona_name.clone();
+    session.session_key = session_data.session_key.clone();
     session.is_logged_in = true;
 
     let mut resp = TdfStruct::new();
@@ -21,7 +40,7 @@ pub fn handle_login(req: &BlazePacket, session: &mut SessionState) -> io::Result
     resp.set("UID", TdfValue::Integer(session.user_id));
     resp.set("PID", TdfValue::Integer(session.persona_id));
     resp.set("DSNM", TdfValue::String(session.display_name.clone()));
-    resp.set("MAIL", TdfValue::String("player@f22emu.local".to_string()));
+    resp.set("MAIL", TdfValue::String(format!("{}@f22emu.local", session.display_name)));
     resp.set("PVER", TdfValue::Integer(1));
     resp.set("LTIM", TdfValue::Integer(1700000000));
 
@@ -31,7 +50,7 @@ pub fn handle_login(req: &BlazePacket, session: &mut SessionState) -> io::Result
     sess_info.set("FRST", TdfValue::Integer(0));
     sess_info.set("KEY", TdfValue::String(session.session_key.clone()));
     sess_info.set("LLOG", TdfValue::Integer(1700000000));
-    sess_info.set("MAIL", TdfValue::String("player@f22emu.local".to_string()));
+    sess_info.set("MAIL", TdfValue::String(format!("{}@f22emu.local", session.display_name)));
     sess_info.set("PERSONA", TdfValue::String(session.display_name.clone()));
     sess_info.set("UID", TdfValue::Integer(session.user_id));
     resp.set("SESS", TdfValue::Struct(sess_info));

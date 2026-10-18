@@ -10,5 +10,6 @@ description = "Core Blaze RPC services: Util, Authentication, and UserSessions"
 blaze-core = { path = "../blaze-core" }
 blaze-tdf = { path = "../blaze-tdf" }
 tracing = "0.1"
+parking_lot = "0.12"
 
 [dev-dependencies]

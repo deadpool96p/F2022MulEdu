@@ -52,11 +52,14 @@ pub async fn start_services(
         redir_cfg,
     ));
 
+    let session_store = std::sync::Arc::new(services_blaze::SessionStore::new());
+
     let blaze_task = tokio::spawn(run_blaze_server(
         blaze_listener,
         tls_acceptor.clone(),
         "127.0.0.1".to_string(),
         17498,
+        session_store,
     ));
 
     let telemetry_task = tokio::spawn(run_telemetry_server(

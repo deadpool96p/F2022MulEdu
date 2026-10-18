@@ -12,8 +12,12 @@ pub const CMD_PING: u16 = 0x0002;
 pub const CMD_SET_CLIENT_DATA: u16 = 0x0003;
 pub const CMD_USER_SETTINGS_SAVE: u16 = 0x0007;
 pub const CMD_USER_SETTINGS_LOAD: u16 = 0x0008;
+pub const CMD_USER_SETTINGS_LOAD_ALL: u16 = 0x000A;
 pub const CMD_PRE_AUTH: u16 = 0x000B;
 pub const CMD_POST_AUTH: u16 = 0x000C;
+
+pub const COMPONENT_STATS: u16 = 0x0007;
+pub const COMPONENT_CENSUS_DATA: u16 = 0x000A;
 
 /// Handles preAuth (0x000B).
 pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::Result<BlazePacket> {
@@ -135,5 +139,25 @@ pub fn handle_user_settings_load(req: &BlazePacket) -> io::Result<BlazePacket> {
 
 /// Handles userSettingsSave (0x0007).
 pub fn handle_user_settings_save(req: &BlazePacket) -> io::Result<BlazePacket> {
+    BlazePacket::response(&req.header, TdfStruct::new())
+}
+
+/// Handles userSettingsLoadAll (0x000A).
+pub fn handle_user_settings_load_all(req: &BlazePacket) -> io::Result<BlazePacket> {
+    let mut resp = TdfStruct::new();
+    let entries: Vec<(TdfValue, TdfValue)> = Vec::new();
+    resp.set("SMAP", TdfValue::Map(TdfMap::new(TdfType::String, TdfType::String, entries)));
+    BlazePacket::response(&req.header, resp)
+}
+
+/// Handles CensusData component queries.
+pub fn handle_census_data(req: &BlazePacket, active_users: usize) -> io::Result<BlazePacket> {
+    let mut resp = TdfStruct::new();
+    resp.set("CENS", TdfValue::Integer(std::cmp::max(1, active_users as u64)));
+    BlazePacket::response(&req.header, resp)
+}
+
+/// Handles Stats component queries.
+pub fn handle_stats(req: &BlazePacket) -> io::Result<BlazePacket> {
     BlazePacket::response(&req.header, TdfStruct::new())
 }

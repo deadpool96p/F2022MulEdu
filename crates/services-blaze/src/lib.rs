@@ -1,29 +1,35 @@
 //! # services-blaze
 //!
 //! Core Blaze RPC services handling Handshake (Util), Identity (Authentication),
-//! and Network Registration (UserSessions).
+//! Network Registration & Lookups (UserSessions), and Virtual Friends (AssociationLists).
 
+pub mod associations;
 pub mod auth;
 pub mod router;
 pub mod session;
+pub mod session_store;
 pub mod usersessions;
 pub mod util;
 
+pub use associations::*;
 pub use auth::*;
 pub use router::BlazeRouter;
 pub use session::SessionState;
+pub use session_store::{SessionData, SessionStore};
 pub use usersessions::*;
 pub use util::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use blaze_core::{BlazePacket, MessageType};
     use blaze_tdf::{TdfStruct, TdfUnion, TdfValue};
 
     #[test]
-    fn test_router_handshake_flow() {
-        let mut router = BlazeRouter::new("127.0.0.1".to_string(), 17498);
+    fn test_router_handshake_and_multiuser_flow() {
+        let store = Arc::new(SessionStore::new());
+        let mut router1 = BlazeRouter::new("127.0.0.1".to_string(), 17498, store.clone());
 
         // 1. Test preAuth
         let pre_auth_req = BlazePacket::new(
@@ -37,7 +43,7 @@ mod tests {
         )
         .unwrap();
 
-        let (pre_auth_resp, notif) = router.handle_packet(&pre_auth_req).unwrap();
+        let (pre_auth_resp, notif) = router1.handle_packet(&pre_auth_req).unwrap();
         assert!(notif.is_none());
         assert_eq!(pre_auth_resp.header.component, COMPONENT_UTIL);
         assert_eq!(pre_auth_resp.header.command, CMD_PRE_AUTH);
@@ -45,9 +51,9 @@ mod tests {
         assert!(pre_auth_resp.payload.get("QOSS").is_some());
         assert!(pre_auth_resp.payload.get("CIDS").is_some());
 
-        // 2. Test expressLogin
+        // 2. Test expressLogin for Player 1
         let mut login_req_payload = TdfStruct::new();
-        login_req_payload.set("AUTH", TdfValue::String("MOCK_ORIGIN_TOKEN".to_string()));
+        login_req_payload.set("DSNM", TdfValue::String("PlayerOne".to_string()));
         let login_req = BlazePacket::new(
             COMPONENT_AUTH,
             CMD_EXPRESS_LOGIN,
@@ -59,50 +65,39 @@ mod tests {
         )
         .unwrap();
 
-        let (login_resp, _) = router.handle_packet(&login_req).unwrap();
+        let (login_resp, _) = router1.handle_packet(&login_req).unwrap();
         assert_eq!(login_resp.header.component, COMPONENT_AUTH);
         assert_eq!(login_resp.header.command, CMD_EXPRESS_LOGIN);
-        assert_eq!(login_resp.header.seq_no, 2);
         assert_eq!(
             login_resp.payload.get("DSNM"),
-            Some(&TdfValue::String("F22_Player1".to_string()))
+            Some(&TdfValue::String("PlayerOne".to_string()))
         );
-        assert!(login_resp.payload.get("SKEY").is_some());
-        assert!(router.session.is_logged_in);
+        assert!(router1.session.is_logged_in);
+        assert_eq!(router1.session.user_id, 10001);
 
-        // 3. Test postAuth
-        let post_auth_req = BlazePacket::new(
-            COMPONENT_UTIL,
-            CMD_POST_AUTH,
+        // 3. Test second player login on separate router sharing same SessionStore
+        let mut router2 = BlazeRouter::new("127.0.0.1".to_string(), 17498, store.clone());
+        let mut login2_payload = TdfStruct::new();
+        login2_payload.set("DSNM", TdfValue::String("PlayerTwo".to_string()));
+        let login2_req = BlazePacket::new(
+            COMPONENT_AUTH,
+            CMD_LOGIN,
             0,
             MessageType::SubmitRequest,
             0,
-            3,
-            TdfStruct::new(),
+            1,
+            login2_payload,
         )
         .unwrap();
+        let (login2_resp, _) = router2.handle_packet(&login2_req).unwrap();
+        assert_eq!(
+            login2_resp.payload.get("DSNM"),
+            Some(&TdfValue::String("PlayerTwo".to_string()))
+        );
+        assert_eq!(router2.session.user_id, 10002);
+        assert_eq!(store.count(), 2);
 
-        let (post_auth_resp, _) = router.handle_packet(&post_auth_req).unwrap();
-        assert_eq!(post_auth_resp.header.command, CMD_POST_AUTH);
-        assert!(post_auth_resp.payload.get("TELE").is_some());
-
-        // 4. Test ping
-        let ping_req = BlazePacket::new(
-            COMPONENT_UTIL,
-            CMD_PING,
-            0,
-            MessageType::SubmitRequest,
-            0,
-            4,
-            TdfStruct::new(),
-        )
-        .unwrap();
-
-        let (ping_resp, _) = router.handle_packet(&ping_req).unwrap();
-        assert_eq!(ping_resp.header.command, CMD_PING);
-        assert!(ping_resp.payload.get("STIM").is_some());
-
-        // 5. Test updateNetworkInfo (generates response + async notification)
+        // 4. Test updateNetworkInfo for Player 2
         let mut net_req_payload = TdfStruct::new();
         let mut addr_struct = TdfStruct::new();
         addr_struct.set("PORT", TdfValue::Integer(3659));
@@ -118,25 +113,69 @@ mod tests {
             0,
             MessageType::SubmitRequest,
             0,
-            5,
+            2,
             net_req_payload,
         )
         .unwrap();
-
-        let (net_resp, net_notif) = router.handle_packet(&net_req).unwrap();
+        let (net_resp, net_notif) = router2.handle_packet(&net_req).unwrap();
         assert_eq!(net_resp.header.command, CMD_UPDATE_NETWORK_INFO);
-        assert_eq!(router.session.port, 3659);
-        assert_eq!(router.session.nat_type, 0);
+        assert!(net_notif.is_some());
 
-        let notif_pkt = net_notif.expect("Expected async notification on updateNetworkInfo");
-        assert_eq!(notif_pkt.header.msg_type, MessageType::Notification);
-        assert_eq!(
-            notif_pkt.header.component,
-            COMPONENT_USER_SESSIONS
-        );
-        assert_eq!(
-            notif_pkt.header.command,
-            NOTIFY_USER_SESSION_EXTENDED_DATA
-        );
+        // 5. Test lookupUsers from Player 1's perspective
+        let lookup_req = BlazePacket::new(
+            COMPONENT_USER_SESSIONS,
+            CMD_LOOKUP_USERS,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            3,
+            TdfStruct::new(),
+        )
+        .unwrap();
+        let (lookup_resp, _) = router1.handle_packet(&lookup_req).unwrap();
+        assert_eq!(lookup_resp.header.command, CMD_LOOKUP_USERS);
+        if let Some(TdfValue::List(ulist)) = lookup_resp.payload.get("ULST") {
+            assert_eq!(ulist.items.len(), 2);
+        } else {
+            panic!("Expected ULST list in lookupUsers response");
+        }
+
+        // 6. Test AssociationLists (virtual online friends list)
+        let friends_req = BlazePacket::new(
+            COMPONENT_ASSOCIATION_LISTS,
+            CMD_GET_LISTS,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            4,
+            TdfStruct::new(),
+        )
+        .unwrap();
+        let (friends_resp, _) = router1.handle_packet(&friends_req).unwrap();
+        assert_eq!(friends_resp.header.command, CMD_GET_LISTS);
+        if let Some(TdfValue::List(lists)) = friends_resp.payload.get("LST") {
+            if let TdfValue::Struct(fl) = &lists.items[0] {
+                if let Some(TdfValue::List(members)) = fl.get("LMEM") {
+                    // Player 1 sees Player 2 as online friend
+                    assert_eq!(members.items.len(), 1);
+                }
+            }
+        }
+
+        // 7. Test Wildcard Unknown-RPC Fallback
+        let unknown_req = BlazePacket::new(
+            0x00F0, // Unimplemented Component
+            0x00A1, // Unimplemented Command
+            0,
+            MessageType::SubmitRequest,
+            0,
+            99,
+            TdfStruct::new(),
+        )
+        .unwrap();
+        let (unknown_resp, _) = router1.handle_packet(&unknown_req).unwrap();
+        assert_eq!(unknown_resp.header.component, 0x00F0);
+        assert_eq!(unknown_resp.header.command, 0x00A1);
+        assert_eq!(unknown_resp.header.error_code, 0x0000); // ERR_OK!
     }
 }

@@ -1,12 +1,13 @@
 //! Core Blaze Protocol TCP Server (:42128).
 
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use blaze_core::frame::BlazeHeader;
 use blaze_core::BlazePacket;
 use blaze_tdf::deserialize_tdf;
-use services_blaze::BlazeRouter;
+use services_blaze::{BlazeRouter, SessionStore};
 use crate::listener::{accept_dual_stream, DualStream};
 
 /// Runs the Core Blaze server listener loop.
@@ -15,16 +16,18 @@ pub async fn run_blaze_server(
     tls_acceptor: TlsAcceptor,
     qos_host: String,
     qos_port: u16,
+    store: Arc<SessionStore>,
 ) {
     while let Ok((tcp_stream, peer_addr)) = listener.accept().await {
         let acceptor = tls_acceptor.clone();
         let q_host = qos_host.clone();
+        let session_store = store.clone();
 
         tokio::spawn(async move {
             tracing::info!("[Blaze Server] New client connection from {}", peer_addr);
             match accept_dual_stream(tcp_stream, &acceptor).await {
                 Ok(mut stream) => {
-                    let mut router = BlazeRouter::new(q_host, qos_port);
+                    let mut router = BlazeRouter::new(q_host, qos_port, session_store);
                     if let Err(e) = handle_blaze_session(&mut stream, &mut router).await {
                         tracing::debug!("[Blaze Server] Session closed for {}: {:?}", peer_addr, e);
                     }
