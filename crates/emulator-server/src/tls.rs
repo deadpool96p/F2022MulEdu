@@ -15,18 +15,29 @@ pub fn create_self_signed_tls_acceptor() -> Result<TlsAcceptor, Box<dyn std::err
     params.distinguished_name.push(DnType::OrganizationName, "Electronic Arts Clean-Room Emulator");
 
     params.subject_alt_names = vec![
+        SanType::DnsName("spring18.gosredirector.ea.com".try_into()?),
+        SanType::DnsName("*.gosredirector.ea.com".try_into()?),
         SanType::DnsName("gosredirector.ea.com".try_into()?),
+        SanType::DnsName("*.ea.com".try_into()?),
+        SanType::DnsName("*.ea.net".try_into()?),
         SanType::DnsName("fifa22.pc.ea.com".try_into()?),
         SanType::DnsName("river.data.ea.com".try_into()?),
         SanType::DnsName("pin-river.data.ea.com".try_into()?),
+        SanType::DnsName("freeform-river.data.ea.com".try_into()?),
+        SanType::DnsName("rl.data.ea.com".try_into()?),
         SanType::DnsName("localhost".try_into()?),
         SanType::IpAddress("127.0.0.1".parse()?),
+        SanType::IpAddress("26.178.140.32".parse()?),
     ];
 
     let key_pair = KeyPair::generate()?;
     let cert = params.self_signed(&key_pair)?;
+    let cert_bytes = cert.der().to_vec();
 
-    let cert_der = CertificateDer::from(cert.der().to_vec());
+    // Export certificate to disk for trust inspection
+    let _ = std::fs::write("f22_emu.crt", &cert_bytes);
+
+    let cert_der = CertificateDer::from(cert_bytes);
     let key_der = PrivateKeyDer::Pkcs8(key_pair.serialize_der().into());
 
     let server_config = ServerConfig::builder()
