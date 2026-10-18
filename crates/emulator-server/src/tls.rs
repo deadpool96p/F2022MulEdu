@@ -68,6 +68,8 @@ pub fn create_self_signed_tls_acceptor() -> Result<TlsAcceptor, Box<dyn std::err
 
         // 1. Root CA matching DirtySDK's embedded DigiCert Global Root CA
         let mut ca_params = CertificateParams::default();
+        ca_params.not_before = rcgen::date_time_ymd(2006, 11, 10);
+        ca_params.not_after = rcgen::date_time_ymd(2031, 11, 10);
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         ca_params.distinguished_name.push(DnType::CommonName, "DigiCert Global Root CA");
         ca_params.distinguished_name.push(DnType::OrganizationName, "DigiCert Inc");
@@ -104,6 +106,8 @@ pub fn create_self_signed_tls_acceptor() -> Result<TlsAcceptor, Box<dyn std::err
 
         // 2. Leaf certificate signed by the DigiCert Root CA
         let mut leaf_params = CertificateParams::default();
+        leaf_params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+        leaf_params.not_after = rcgen::date_time_ymd(2030, 12, 31);
         leaf_params.distinguished_name.push(DnType::CommonName, "gosredirector.ea.com");
         leaf_params.distinguished_name.push(DnType::OrganizationName, "Electronic Arts Inc");
         leaf_params.distinguished_name.push(DnType::CountryName, "US");
