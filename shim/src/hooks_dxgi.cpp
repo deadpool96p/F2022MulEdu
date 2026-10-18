@@ -67,11 +67,81 @@ static bool CreateD3D11RTV(IDXGISwapChain* pSwapChain) {
     return false;
 }
 
+using PFN_ExecuteCommandLists = void(WINAPI*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
+static PFN_ExecuteCommandLists g_original_ExecuteCommandLists = nullptr;
+
+static void WINAPI Hooked_ExecuteCommandLists(ID3D12CommandQueue* pQueue, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
+    if (!g_d3d12_cmd_queue && pQueue) {
+        if (pQueue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+            g_d3d12_cmd_queue = pQueue;
+            LogInfo("Captured active D3D12 Direct Command Queue from ExecuteCommandLists.");
+        }
+    }
+    g_original_ExecuteCommandLists(pQueue, NumCommandLists, ppCommandLists);
+}
+
 static void CleanupD3D12RTV() {
     for (auto* rt : g_d3d12_render_targets) {
         if (rt) rt->Release();
     }
     g_d3d12_render_targets.clear();
+}
+
+static bool CreateD3D12RTV(IDXGISwapChain* pSwapChain) {
+    CleanupD3D12RTV();
+
+    DXGI_SWAP_CHAIN_DESC desc;
+    if (FAILED(pSwapChain->GetDesc(&desc))) {
+        return false;
+    }
+    g_buffer_count = desc.BufferCount > 0 ? desc.BufferCount : 2;
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtv_desc = {};
+    rtv_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtv_desc.NumDescriptors = g_buffer_count;
+    rtv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+    if (!g_d3d12_rtv_heap) {
+        if (FAILED(g_d3d12_device->CreateDescriptorHeap(&rtv_desc, __uuidof(ID3D12DescriptorHeap), (void**)&g_d3d12_rtv_heap))) {
+            LogError("Failed to create D3D12 RTV descriptor heap.");
+            return false;
+        }
+    }
+
+    SIZE_T rtv_handle_size = g_d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = g_d3d12_rtv_heap->GetCPUDescriptorHandleForHeapStart();
+
+    g_d3d12_render_targets.resize(g_buffer_count, nullptr);
+    if (g_d3d12_cmd_allocators.empty()) {
+        g_d3d12_cmd_allocators.resize(g_buffer_count, nullptr);
+    }
+
+    for (UINT i = 0; i < g_buffer_count; ++i) {
+        if (FAILED(pSwapChain->GetBuffer(i, __uuidof(ID3D12Resource), (void**)&g_d3d12_render_targets[i]))) {
+            LogError("Failed to get D3D12 backbuffer from swapchain.");
+            return false;
+        }
+
+        D3D12_CPU_DESCRIPTOR_HANDLE handle = { rtv_handle.ptr + (i * rtv_handle_size) };
+        g_d3d12_device->CreateRenderTargetView(g_d3d12_render_targets[i], nullptr, handle);
+
+        if (!g_d3d12_cmd_allocators[i]) {
+            if (FAILED(g_d3d12_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, __uuidof(ID3D12CommandAllocator), (void**)&g_d3d12_cmd_allocators[i]))) {
+                LogError("Failed to create D3D12 command allocator.");
+                return false;
+            }
+        }
+    }
+
+    if (!g_d3d12_cmd_list) {
+        if (FAILED(g_d3d12_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, g_d3d12_cmd_allocators[0], nullptr, __uuidof(ID3D12GraphicsCommandList), (void**)&g_d3d12_cmd_list))) {
+            LogError("Failed to create D3D12 command list.");
+            return false;
+        }
+        g_d3d12_cmd_list->Close();
+    }
+
+    return true;
 }
 
 static bool InitImGuiD3D11(IDXGISwapChain* pSwapChain, ID3D11Device* pDevice) {
@@ -99,11 +169,19 @@ static bool InitImGuiD3D11(IDXGISwapChain* pSwapChain, ID3D11Device* pDevice) {
 }
 
 static bool InitImGuiD3D12(IDXGISwapChain* pSwapChain, ID3D12Device* pDevice) {
+    if (!g_d3d12_cmd_queue) {
+        pSwapChain->GetDevice(__uuidof(ID3D12CommandQueue), (void**)&g_d3d12_cmd_queue);
+    }
+    if (!g_d3d12_cmd_queue) {
+        LogError("InitImGuiD3D12: CommandQueue not yet acquired. Will retry.");
+        return false;
+    }
+
     g_d3d12_device = pDevice;
 
     DXGI_SWAP_CHAIN_DESC desc;
     pSwapChain->GetDesc(&desc);
-    g_buffer_count = desc.BufferCount;
+    g_buffer_count = desc.BufferCount > 0 ? desc.BufferCount : 2;
 
     // Create Descriptor Heap for ImGui Font SRV
     D3D12_DESCRIPTOR_HEAP_DESC srv_desc = {};
@@ -112,6 +190,11 @@ static bool InitImGuiD3D12(IDXGISwapChain* pSwapChain, ID3D12Device* pDevice) {
     srv_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     if (FAILED(g_d3d12_device->CreateDescriptorHeap(&srv_desc, __uuidof(ID3D12DescriptorHeap), (void**)&g_d3d12_srv_heap))) {
         LogError("Failed to create D3D12 SRV descriptor heap for ImGui.");
+        return false;
+    }
+
+    if (!CreateD3D12RTV(pSwapChain)) {
+        LogError("Failed to initialize D3D12 RTVs and Command Allocators.");
         return false;
     }
 
@@ -166,7 +249,12 @@ static HRESULT WINAPI Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterv
                 // Try DirectX 12
                 ID3D12Device* pD3D12 = nullptr;
                 if (SUCCEEDED(pSwapChain->GetDevice(__uuidof(ID3D12Device), (void**)&pD3D12)) && pD3D12) {
-                    InitImGuiD3D12(pSwapChain, pD3D12);
+                    if (!g_d3d12_cmd_queue) {
+                        pSwapChain->GetDevice(__uuidof(ID3D12CommandQueue), (void**)&g_d3d12_cmd_queue);
+                    }
+                    if (g_d3d12_cmd_queue) {
+                        InitImGuiD3D12(pSwapChain, pD3D12);
+                    }
                 }
             }
         }
@@ -191,14 +279,54 @@ static HRESULT WINAPI Hooked_Present(IDXGISwapChain* pSwapChain, UINT SyncInterv
                 ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
             }
         } else if (g_render_api == RenderAPI::D3D12) {
-            ImGui_ImplDX12_NewFrame();
-            ImGui_ImplWin32_NewFrame();
-            ImGui::NewFrame();
+            IDXGISwapChain3* pSwapChain3 = nullptr;
+            UINT back_buffer_idx = 0;
+            if (SUCCEEDED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain3), (void**)&pSwapChain3))) {
+                back_buffer_idx = pSwapChain3->GetCurrentBackBufferIndex();
+                pSwapChain3->Release();
+            }
 
-            RenderMinimalOverlay();
+            if (g_d3d12_cmd_queue && g_d3d12_cmd_list && back_buffer_idx < g_d3d12_render_targets.size() && g_d3d12_render_targets[back_buffer_idx]) {
+                ImGui_ImplDX12_NewFrame();
+                ImGui_ImplWin32_NewFrame();
+                ImGui::NewFrame();
 
-            ImGui::Render();
-            // In D3D12, rendering draw data is dispatched through the command list
+                RenderMinimalOverlay();
+
+                ImGui::Render();
+
+                auto* cmd_allocator = g_d3d12_cmd_allocators[back_buffer_idx];
+                cmd_allocator->Reset();
+                g_d3d12_cmd_list->Reset(cmd_allocator, nullptr);
+
+                D3D12_RESOURCE_BARRIER barrier = {};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+                barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+                barrier.Transition.pResource = g_d3d12_render_targets[back_buffer_idx];
+                barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+
+                g_d3d12_cmd_list->ResourceBarrier(1, &barrier);
+
+                SIZE_T rtv_handle_size = g_d3d12_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+                D3D12_CPU_DESCRIPTOR_HANDLE rtv_handle = { g_d3d12_rtv_heap->GetCPUDescriptorHandleForHeapStart().ptr + (back_buffer_idx * rtv_handle_size) };
+
+                g_d3d12_cmd_list->OMSetRenderTargets(1, &rtv_handle, FALSE, nullptr);
+                ID3D12DescriptorHeap* heaps[] = { g_d3d12_srv_heap };
+                g_d3d12_cmd_list->SetDescriptorHeaps(1, heaps);
+
+                ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), g_d3d12_cmd_list);
+
+                barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
+                barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
+                g_d3d12_cmd_list->ResourceBarrier(1, &barrier);
+
+                g_d3d12_cmd_list->Close();
+
+                ID3D12CommandList* const ppCmdLists[] = { g_d3d12_cmd_list };
+                g_d3d12_cmd_queue->ExecuteCommandLists(1, ppCmdLists);
+            }
         }
     }
 
@@ -218,6 +346,8 @@ static HRESULT WINAPI Hooked_ResizeBuffers(IDXGISwapChain* pSwapChain, UINT Buff
     if (SUCCEEDED(hr)) {
         if (g_render_api == RenderAPI::D3D11) {
             CreateD3D11RTV(pSwapChain);
+        } else if (g_render_api == RenderAPI::D3D12) {
+            CreateD3D12RTV(pSwapChain);
         }
     }
 
@@ -287,20 +417,52 @@ bool InstallDXGIHooks() {
     DestroyWindow(hWnd);
     UnregisterClassA("DXGI_Dummy_Class", wc.hInstance);
 
-    if (MH_CreateHook(present_target, reinterpret_cast<void*>(&Hooked_Present),
-                      reinterpret_cast<void**>(&g_original_present)) != MH_OK) {
-        LogError("MinHook failed to hook IDXGISwapChain::Present.");
+    MH_STATUS s_pres = MH_CreateHook(present_target, reinterpret_cast<void*>(&Hooked_Present),
+                                     reinterpret_cast<void**>(&g_original_present));
+    if (s_pres != MH_OK) {
+        LogError(std::string("MinHook failed to hook IDXGISwapChain::Present: ") + MH_StatusToString(s_pres));
         return false;
     }
 
-    if (MH_CreateHook(resize_buffers_target, reinterpret_cast<void*>(&Hooked_ResizeBuffers),
-                      reinterpret_cast<void**>(&g_original_resize_buffers)) != MH_OK) {
-        LogError("MinHook failed to hook IDXGISwapChain::ResizeBuffers.");
+    MH_STATUS s_res = MH_CreateHook(resize_buffers_target, reinterpret_cast<void*>(&Hooked_ResizeBuffers),
+                                    reinterpret_cast<void**>(&g_original_resize_buffers));
+    if (s_res != MH_OK) {
+        LogError(std::string("MinHook failed to hook IDXGISwapChain::ResizeBuffers: ") + MH_StatusToString(s_res));
         return false;
     }
 
     MH_EnableHook(present_target);
     MH_EnableHook(resize_buffers_target);
+
+    // Also attempt to hook ID3D12CommandQueue::ExecuteCommandLists to capture active D3D12 queue
+    HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
+    if (!hD3D12) {
+        hD3D12 = LoadLibraryA("d3d12.dll");
+    }
+    if (hD3D12) {
+        auto pfn_D3D12CreateDevice = reinterpret_cast<HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**)>(
+            GetProcAddress(hD3D12, "D3D12CreateDevice")
+        );
+        if (pfn_D3D12CreateDevice) {
+            ID3D12Device* pDummyDevice = nullptr;
+            if (SUCCEEDED(pfn_D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), (void**)&pDummyDevice))) {
+                D3D12_COMMAND_QUEUE_DESC qdesc = {};
+                qdesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+                ID3D12CommandQueue* pDummyQueue = nullptr;
+                if (SUCCEEDED(pDummyDevice->CreateCommandQueue(&qdesc, __uuidof(ID3D12CommandQueue), (void**)&pDummyQueue))) {
+                    void** qvtable = *reinterpret_cast<void***>(pDummyQueue);
+                    void* exec_target = qvtable[10]; // ExecuteCommandLists is index 10
+                    if (MH_CreateHook(exec_target, reinterpret_cast<void*>(&Hooked_ExecuteCommandLists),
+                                      reinterpret_cast<void**>(&g_original_ExecuteCommandLists)) == MH_OK) {
+                        MH_EnableHook(exec_target);
+                        LogInfo("ID3D12CommandQueue::ExecuteCommandLists (VTable index 10) hooked successfully.");
+                    }
+                    pDummyQueue->Release();
+                }
+                pDummyDevice->Release();
+            }
+        }
+    }
 
     LogInfo("IDXGISwapChain::Present (VTable index 8) and ResizeBuffers (VTable index 13) hooked successfully.");
     return true;
@@ -315,8 +477,28 @@ void RemoveDXGIHooks() {
         MH_DisableHook(reinterpret_cast<void*>(g_original_resize_buffers));
         g_original_resize_buffers = nullptr;
     }
+    if (g_original_ExecuteCommandLists) {
+        MH_DisableHook(reinterpret_cast<void*>(g_original_ExecuteCommandLists));
+        g_original_ExecuteCommandLists = nullptr;
+    }
     CleanupD3D11RTV();
     CleanupD3D12RTV();
+    for (auto* alloc : g_d3d12_cmd_allocators) {
+        if (alloc) alloc->Release();
+    }
+    g_d3d12_cmd_allocators.clear();
+    if (g_d3d12_cmd_list) {
+        g_d3d12_cmd_list->Release();
+        g_d3d12_cmd_list = nullptr;
+    }
+    if (g_d3d12_rtv_heap) {
+        g_d3d12_rtv_heap->Release();
+        g_d3d12_rtv_heap = nullptr;
+    }
+    if (g_d3d12_srv_heap) {
+        g_d3d12_srv_heap->Release();
+        g_d3d12_srv_heap = nullptr;
+    }
     if (g_initialized) {
         if (g_render_api == RenderAPI::D3D11) {
             ImGui_ImplDX11_Shutdown();

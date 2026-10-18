@@ -20,15 +20,18 @@ static PFN_XInputGetState g_original_XInputGetState = nullptr;
 static bool g_combo_pressed_last = false;
 
 static LRESULT CALLBACK HookedWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
-    if (msg == WM_KEYDOWN) {
-        if (wParam == VK_F1) {
-            g_overlay_focused = !g_overlay_focused;
-            LogInfo(std::string("Top-bar overlay toggled via F1: ") + (g_overlay_focused ? "ACTIVE" : "HIDDEN"));
-            return 0;
-        } else if (wParam == VK_F2) {
-            g_status_pill_visible = !g_status_pill_visible;
-            LogInfo(std::string("Status pill toggled via F2: ") + (g_status_pill_visible ? "VISIBLE" : "HIDDEN"));
-            return 0;
+    if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
+        bool is_repeat = (lParam & (1 << 30)) != 0;
+        if (!is_repeat) {
+            if (wParam == VK_F1) {
+                g_overlay_focused = !g_overlay_focused;
+                LogInfo(std::string("Top-bar overlay toggled via F1: ") + (g_overlay_focused ? "ACTIVE" : "HIDDEN"));
+                return 0;
+            } else if (wParam == VK_F2) {
+                g_status_pill_visible = !g_status_pill_visible;
+                LogInfo(std::string("Status pill toggled via F2: ") + (g_status_pill_visible ? "VISIBLE" : "HIDDEN"));
+                return 0;
+            }
         }
     }
 
@@ -123,15 +126,12 @@ static DWORD WINAPI Hooked_XInputGetState(DWORD dwUserIndex, XINPUT_STATE* pStat
         }
         g_combo_pressed_last = combo_pressed;
 
-        // If overlay is focused, mask gamepad inputs from reaching Frostbite
-        if (g_overlay_focused) {
-            pState->Gamepad.wButtons = 0;
-            pState->Gamepad.bLeftTrigger = 0;
-            pState->Gamepad.bRightTrigger = 0;
-            pState->Gamepad.sThumbLX = 0;
-            pState->Gamepad.sThumbLY = 0;
-            pState->Gamepad.sThumbRX = 0;
-            pState->Gamepad.sThumbRY = 0;
+        // Only mask gamepad buttons if the user is actively typing in the overlay's text field
+        // NEVER zero out analog sticks or triggers, so gameplay and menu navigation remain smooth!
+        if (g_overlay_focused && ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput) {
+            pState->Gamepad.wButtons &= ~(XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_Y |
+                                          XINPUT_GAMEPAD_DPAD_UP | XINPUT_GAMEPAD_DPAD_DOWN |
+                                          XINPUT_GAMEPAD_DPAD_LEFT | XINPUT_GAMEPAD_DPAD_RIGHT);
         }
     }
 

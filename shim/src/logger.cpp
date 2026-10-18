@@ -10,10 +10,37 @@ namespace f22 {
 static std::mutex g_log_mutex;
 static std::ofstream g_log_file;
 static bool g_log_initialized = false;
+static std::string g_log_dir = "";
+
+void SetLogDirectory(const std::string& dir) {
+    std::lock_guard<std::mutex> lock(g_log_mutex);
+    g_log_dir = dir;
+    if (g_log_file.is_open()) {
+        g_log_file.close();
+    }
+    g_log_initialized = false;
+}
 
 static void EnsureLogFile() {
     if (!g_log_initialized) {
-        g_log_file.open("f22_shim.log", std::ios::out | std::ios::app);
+        if (!g_log_dir.empty()) {
+            std::string full_path = g_log_dir;
+            if (full_path.back() != '\\' && full_path.back() != '/') {
+                full_path += "\\";
+            }
+            full_path += "f22_shim.log";
+            g_log_file.open(full_path, std::ios::out | std::ios::app);
+        }
+
+        if (!g_log_file.is_open()) {
+            g_log_file.open("f22_shim.log", std::ios::out | std::ios::app);
+        }
+
+        if (!g_log_file.is_open()) {
+            CreateDirectoryA("C:\\Temp", nullptr);
+            g_log_file.open("C:\\Temp\\f22_shim.log", std::ios::out | std::ios::app);
+        }
+
         g_log_initialized = true;
     }
 }

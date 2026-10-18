@@ -16,6 +16,9 @@ using PFN_CreateDXGIFactory1 = HRESULT(WINAPI*)(REFIID riid, void **ppFactory);
 using PFN_CreateDXGIFactory2 = HRESULT(WINAPI*)(UINT Flags, REFIID riid, void **ppFactory);
 using PFN_DXGIDeclareAdapterRemovalSupport = HRESULT(WINAPI*)(void);
 using PFN_DXGIGetDebugInterface1 = HRESULT(WINAPI*)(UINT Flags, REFIID riid, void **pDebug);
+using PFN_DXGIReportActiveObjects = HRESULT(WINAPI*)(void);
+using PFN_DXGID3D10CreateDevice = HRESULT(WINAPI*)(void*, void*, void*, void*, void*, void*);
+using PFN_DXGID3D10RegisterLayers = HRESULT(WINAPI*)(const void*, UINT);
 
 static HMODULE g_real_dxgi = nullptr;
 static PFN_CreateDXGIFactory g_pfn_CreateDXGIFactory = nullptr;
@@ -23,8 +26,15 @@ static PFN_CreateDXGIFactory1 g_pfn_CreateDXGIFactory1 = nullptr;
 static PFN_CreateDXGIFactory2 g_pfn_CreateDXGIFactory2 = nullptr;
 static PFN_DXGIDeclareAdapterRemovalSupport g_pfn_DXGIDeclareAdapterRemovalSupport = nullptr;
 static PFN_DXGIGetDebugInterface1 g_pfn_DXGIGetDebugInterface1 = nullptr;
+static PFN_DXGIReportActiveObjects g_pfn_DXGIReportActiveObjects = nullptr;
+static PFN_DXGID3D10CreateDevice g_pfn_DXGID3D10CreateDevice = nullptr;
+static PFN_DXGID3D10RegisterLayers g_pfn_DXGID3D10RegisterLayers = nullptr;
 
 bool InitDXGIProxy() {
+    if (g_real_dxgi) {
+        return true;
+    }
+
     wchar_t sys_path[MAX_PATH];
     if (GetSystemDirectoryW(sys_path, MAX_PATH) == 0) {
         LogError("Failed to get system directory for dxgi.dll");
@@ -48,6 +58,12 @@ bool InitDXGIProxy() {
         GetProcAddress(g_real_dxgi, "DXGIDeclareAdapterRemovalSupport"));
     g_pfn_DXGIGetDebugInterface1 = reinterpret_cast<PFN_DXGIGetDebugInterface1>(
         GetProcAddress(g_real_dxgi, "DXGIGetDebugInterface1"));
+    g_pfn_DXGIReportActiveObjects = reinterpret_cast<PFN_DXGIReportActiveObjects>(
+        GetProcAddress(g_real_dxgi, "DXGIReportActiveObjects"));
+    g_pfn_DXGID3D10CreateDevice = reinterpret_cast<PFN_DXGID3D10CreateDevice>(
+        GetProcAddress(g_real_dxgi, "DXGID3D10CreateDevice"));
+    g_pfn_DXGID3D10RegisterLayers = reinterpret_cast<PFN_DXGID3D10RegisterLayers>(
+        GetProcAddress(g_real_dxgi, "DXGID3D10RegisterLayers"));
 
     LogInfo("Loaded real System32 dxgi.dll successfully.");
     return true;
@@ -160,13 +176,73 @@ HRESULT WINAPI DXGIGetDebugInterface1(UINT Flags, REFIID riid, void **pDebug) {
     return E_FAIL;
 }
 
+HRESULT WINAPI DXGIReportActiveObjects(void) {
+    if (!f22::g_pfn_DXGIReportActiveObjects) {
+        f22::InitDXGIProxy();
+    }
+    if (f22::g_pfn_DXGIReportActiveObjects) {
+        return f22::g_pfn_DXGIReportActiveObjects();
+    }
+    return S_OK;
+}
+
+HRESULT WINAPI DXGID3D10CreateDevice(void* p1, void* p2, void* p3, void* p4, void* p5, void* p6) {
+    if (!f22::g_pfn_DXGID3D10CreateDevice) {
+        f22::InitDXGIProxy();
+    }
+    if (f22::g_pfn_DXGID3D10CreateDevice) {
+        return f22::g_pfn_DXGID3D10CreateDevice(p1, p2, p3, p4, p5, p6);
+    }
+    return E_FAIL;
+}
+
+HRESULT WINAPI DXGID3D10RegisterLayers(const void* pLayers, UINT NumLayers) {
+    if (!f22::g_pfn_DXGID3D10RegisterLayers) {
+        f22::InitDXGIProxy();
+    }
+    if (f22::g_pfn_DXGID3D10RegisterLayers) {
+        return f22::g_pfn_DXGID3D10RegisterLayers(pLayers, NumLayers);
+    }
+    return S_OK;
+}
+
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     switch (fdwReason) {
-    case DLL_PROCESS_ATTACH:
+    case DLL_PROCESS_ATTACH: {
         DisableThreadLibraryCalls(hinstDLL);
+
+        // Step 1: Early Diagnostic File Logging before any other initialization
+        char dll_path[MAX_PATH] = {0};
+        char log_path[MAX_PATH] = {0};
+        if (GetModuleFileNameA(hinstDLL, dll_path, MAX_PATH) > 0) {
+            char* last_slash = strrchr(dll_path, '\\');
+            if (last_slash) {
+                *(last_slash + 1) = '\0';
+                snprintf(log_path, sizeof(log_path), "%sf22_shim.log", dll_path);
+                f22::SetLogDirectory(dll_path);
+            }
+        }
+
+        FILE* f = fopen(log_path[0] ? log_path : "f22_shim.log", "w");
+        if (!f) {
+            f = fopen("f22_shim.log", "w");
+        }
+        if (!f) {
+            CreateDirectoryA("C:\\Temp", nullptr);
+            f = fopen("C:\\Temp\\f22_shim.log", "w");
+        }
+        if (f) {
+            fprintf(f, "[+] dxgi.dll DllMain DLL_PROCESS_ATTACH invoked successfully\n");
+            fprintf(f, "[+] Process ID: %lu, Thread ID: %lu\n", GetCurrentProcessId(), GetCurrentThreadId());
+            fprintf(f, "[+] Module directory: %s\n", dll_path[0] ? dll_path : "<unknown>");
+            fflush(f);
+            fclose(f);
+        }
+
         f22::InitDXGIProxy();
         CreateThread(nullptr, 0, f22::ShimWorkerThread, nullptr, 0, nullptr);
         break;
+    }
     case DLL_PROCESS_DETACH:
         f22::RemoveDXGIHooks();
         f22::SteamBridge::Instance().Shutdown();

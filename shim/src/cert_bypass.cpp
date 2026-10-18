@@ -106,10 +106,13 @@ bool InstallCertBypassHooks() {
         void *p_cert_verify = reinterpret_cast<void*>(
             GetProcAddress(crypt32, "CertVerifyCertificateChainPolicy"));
         if (p_cert_verify) {
-            if (MH_CreateHook(p_cert_verify,
+            MH_STATUS s = MH_CreateHook(p_cert_verify,
                               reinterpret_cast<void*>(&Hooked_CertVerifyCertificateChainPolicy),
-                              reinterpret_cast<void**>(&g_orig_CertVerifyCertificateChainPolicy)) == MH_OK) {
+                              reinterpret_cast<void**>(&g_orig_CertVerifyCertificateChainPolicy));
+            if (s == MH_OK) {
                 LogInfo("[SSL Bypass] Hooked CertVerifyCertificateChainPolicy successfully.");
+            } else {
+                LogError(std::string("[SSL Bypass] Failed to hook CertVerifyCertificateChainPolicy: ") + MH_StatusToString(s));
             }
         }
     }

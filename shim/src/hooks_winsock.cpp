@@ -395,43 +395,36 @@ bool InstallWinsockHooks() {
     void *p_recvfrom = reinterpret_cast<void*>(GetProcAddress(ws2, "recvfrom"));
     void *p_WSARecvFrom = reinterpret_cast<void*>(GetProcAddress(ws2, "WSARecvFrom"));
 
-    if (p_getaddrinfo) {
-        MH_CreateHook(p_getaddrinfo, reinterpret_cast<void*>(&Hooked_getaddrinfo),
-                      reinterpret_cast<void**>(&g_orig_getaddrinfo));
-    }
-    if (p_GetAddrInfoW) {
-        MH_CreateHook(p_GetAddrInfoW, reinterpret_cast<void*>(&Hooked_GetAddrInfoW),
-                      reinterpret_cast<void**>(&g_orig_GetAddrInfoW));
-    }
-    if (p_connect) {
-        MH_CreateHook(p_connect, reinterpret_cast<void*>(&Hooked_connect),
-                      reinterpret_cast<void**>(&g_orig_connect));
-    }
-    if (p_WSAConnect) {
-        MH_CreateHook(p_WSAConnect, reinterpret_cast<void*>(&Hooked_WSAConnect),
-                      reinterpret_cast<void**>(&g_orig_WSAConnect));
-    }
+    auto create_hook_checked = [](void* target, void* detour, void** original, const char* name) {
+        if (!target) {
+            LogWarn(std::string("WinSock export not found: ") + name);
+            return;
+        }
+        MH_STATUS s = MH_CreateHook(target, detour, original);
+        if (s != MH_OK) {
+            LogError(std::string("Failed to hook WinSock ") + name + ": " + MH_StatusToString(s));
+        }
+    };
 
-    if (p_bind) {
-        MH_CreateHook(p_bind, reinterpret_cast<void*>(&Hooked_bind),
-                      reinterpret_cast<void**>(&g_orig_bind));
-    }
-    if (p_sendto) {
-        MH_CreateHook(p_sendto, reinterpret_cast<void*>(&Hooked_sendto),
-                      reinterpret_cast<void**>(&g_orig_sendto));
-    }
-    if (p_WSASendTo) {
-        MH_CreateHook(p_WSASendTo, reinterpret_cast<void*>(&Hooked_WSASendTo),
-                      reinterpret_cast<void**>(&g_orig_WSASendTo));
-    }
-    if (p_recvfrom) {
-        MH_CreateHook(p_recvfrom, reinterpret_cast<void*>(&Hooked_recvfrom),
-                      reinterpret_cast<void**>(&g_orig_recvfrom));
-    }
-    if (p_WSARecvFrom) {
-        MH_CreateHook(p_WSARecvFrom, reinterpret_cast<void*>(&Hooked_WSARecvFrom),
-                      reinterpret_cast<void**>(&g_orig_WSARecvFrom));
-    }
+    create_hook_checked(p_getaddrinfo, reinterpret_cast<void*>(&Hooked_getaddrinfo),
+                        reinterpret_cast<void**>(&g_orig_getaddrinfo), "getaddrinfo");
+    create_hook_checked(p_GetAddrInfoW, reinterpret_cast<void*>(&Hooked_GetAddrInfoW),
+                        reinterpret_cast<void**>(&g_orig_GetAddrInfoW), "GetAddrInfoW");
+    create_hook_checked(p_connect, reinterpret_cast<void*>(&Hooked_connect),
+                        reinterpret_cast<void**>(&g_orig_connect), "connect");
+    create_hook_checked(p_WSAConnect, reinterpret_cast<void*>(&Hooked_WSAConnect),
+                        reinterpret_cast<void**>(&g_orig_WSAConnect), "WSAConnect");
+
+    create_hook_checked(p_bind, reinterpret_cast<void*>(&Hooked_bind),
+                        reinterpret_cast<void**>(&g_orig_bind), "bind");
+    create_hook_checked(p_sendto, reinterpret_cast<void*>(&Hooked_sendto),
+                        reinterpret_cast<void**>(&g_orig_sendto), "sendto");
+    create_hook_checked(p_WSASendTo, reinterpret_cast<void*>(&Hooked_WSASendTo),
+                        reinterpret_cast<void**>(&g_orig_WSASendTo), "WSASendTo");
+    create_hook_checked(p_recvfrom, reinterpret_cast<void*>(&Hooked_recvfrom),
+                        reinterpret_cast<void**>(&g_orig_recvfrom), "recvfrom");
+    create_hook_checked(p_WSARecvFrom, reinterpret_cast<void*>(&Hooked_WSARecvFrom),
+                        reinterpret_cast<void**>(&g_orig_WSARecvFrom), "WSARecvFrom");
 
     return true;
 }

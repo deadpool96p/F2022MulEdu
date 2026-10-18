@@ -54,6 +54,7 @@ Config& GetConfig();
 void LoadConfig();
 
 // Logging
+void SetLogDirectory(const std::string& dir);
 void Log(std::string_view level, std::string_view message);
 void LogInfo(std::string_view message);
 void LogWarn(std::string_view message);

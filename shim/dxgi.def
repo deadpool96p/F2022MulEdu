@@ -5,3 +5,6 @@ EXPORTS
     CreateDXGIFactory2
     DXGIDeclareAdapterRemovalSupport
     DXGIGetDebugInterface1
+    DXGIReportActiveObjects
+    DXGID3D10CreateDevice
+    DXGID3D10RegisterLayers

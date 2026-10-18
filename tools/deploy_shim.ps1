@@ -100,24 +100,33 @@ if ($Uninstall) {
 # Default action: Install
 Write-Host "[Install] Deploying emulator shim and Steamworks files to: $GameDir" -ForegroundColor Cyan
 
-# Ensure Steam dependencies are staged
+# 1. Clear any old log files to ensure a clean diagnostic session
+if (Test-Path $TargetLog) {
+    Remove-Item -Path $TargetLog -Force
+    Write-Host "  [-] Cleared old log: $TargetLog" -ForegroundColor Yellow
+}
+if (Test-Path "C:\Temp\f22_shim.log") {
+    Remove-Item -Path "C:\Temp\f22_shim.log" -Force
+    Write-Host "  [-] Cleared old log: C:\Temp\f22_shim.log" -ForegroundColor Yellow
+}
+
+# 2. Ensure Steam dependencies are staged
 if ((-not (Test-Path $ShimSteamDll)) -or (-not (Test-Path $ShimSteamAppId))) {
     Write-Host "[Steam] Fetching Steam dependencies..." -ForegroundColor Yellow
     & (Join-Path $ScriptDir "fetch_steam_deps.ps1")
 }
 
-if (-not (Test-Path $ShimDll)) {
-    Write-Host "[Build] Compiled dxgi.dll not found. Compiling with CMake..." -ForegroundColor Yellow
-    $msvcrtBin = "C:\Users\soham\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.MSVCRT.LLVM_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin"
-    $env:PATH = "$msvcrtBin;C:\Program Files\LLVM\bin;$env:PATH"
+# 3. Always compile fresh dxgi.dll shim via CMake and Ninja (Release mode)
+Write-Host "[Build] Compiling fresh dxgi.dll proxy shim (Release)..." -ForegroundColor Yellow
+$msvcrtBin = "C:\Users\soham\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.MSVCRT.LLVM_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin"
+$env:PATH = "$msvcrtBin;C:\Program Files\LLVM\bin;$env:PATH"
 
-    Push-Location (Join-Path $RepoRoot "shim")
-    try {
-        cmake -B build -S . -G Ninja
-        cmake --build build
-    } finally {
-        Pop-Location
-    }
+Push-Location (Join-Path $RepoRoot "shim")
+try {
+    cmake -B build -S . -G Ninja -DCMAKE_BUILD_TYPE=Release
+    cmake --build build --config Release
+} finally {
+    Pop-Location
 }
 
 if (-not (Test-Path $ShimDll)) {
@@ -125,23 +134,26 @@ if (-not (Test-Path $ShimDll)) {
     exit 1
 }
 
-# Copy dxgi.dll
+# 4. Copy dxgi.dll
 Copy-Item -Path $ShimDll -Destination $TargetDll -Force
+$deployedItem = Get-Item -Path $TargetDll
 Write-Host "  [+] Installed: dxgi.dll -> $TargetDll" -ForegroundColor Green
+Write-Host "      File Size: $($deployedItem.Length) bytes ($([math]::Round($deployedItem.Length / 1KB, 2)) KB)" -ForegroundColor DarkCyan
+Write-Host "      Timestamp: $($deployedItem.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'))" -ForegroundColor DarkCyan
 
-# Copy steam_api64.dll (if not already present or replace)
+# 5. Copy steam_api64.dll (if not already present or replace)
 if (Test-Path $ShimSteamDll) {
     Copy-Item -Path $ShimSteamDll -Destination $TargetSteamDll -Force
     Write-Host "  [+] Installed: steam_api64.dll -> $TargetSteamDll" -ForegroundColor Green
 }
 
-# Copy steam_appid.txt (480)
+# 6. Copy steam_appid.txt (480)
 if (Test-Path $ShimSteamAppId) {
     Copy-Item -Path $ShimSteamAppId -Destination $TargetSteamAppId -Force
     Write-Host "  [+] Installed: steam_appid.txt (480) -> $TargetSteamAppId" -ForegroundColor Green
 }
 
-# Copy INI if not present
+# 7. Copy INI if not present
 if (-not (Test-Path $TargetIni)) {
     Copy-Item -Path $ShimIni -Destination $TargetIni -Force
     Write-Host "  [+] Installed: f22_emu.ini -> $TargetIni" -ForegroundColor Green
