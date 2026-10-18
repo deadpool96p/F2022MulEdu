@@ -136,6 +136,85 @@ pub async fn run_control_server(
                     HttpResponse::ok_json(&json)
                 }
 
+                ("POST", "/api/v1/steam/identity") => {
+                    match serde_json::from_slice::<services_blaze::SteamProfile>(&req.body) {
+                        Ok(profile) => {
+                            let steam_id = profile.steam_id;
+                            let name = profile.persona_name.clone();
+                            session_store.register_steam_identity(profile);
+                            let json = format!(
+                                r#"{{"status":"ok","steam_id":{},"persona_name":"{}"}}"#,
+                                steam_id, name
+                            );
+                            HttpResponse::ok_json(&json)
+                        }
+                        Err(e) => {
+                            tracing::warn!("[Control Server] Invalid SteamProfile JSON: {}", e);
+                            HttpResponse::bad_request(&format!(
+                                r#"{{"status":"error","message":"{}"}}"#,
+                                e
+                            ))
+                        }
+                    }
+                }
+
+                ("POST", "/api/v1/steam/lobby-sync") => {
+                    let body_str = String::from_utf8_lossy(&req.body);
+                    let room_code = extract_json_string(&body_str, "room_code").unwrap_or_default();
+                    let lobby_id = extract_json_u64(&body_str, "steam_lobby_id").unwrap_or(0);
+                    session_store.bind_steam_lobby(&room_code, lobby_id);
+
+                    let json = format!(
+                        r#"{{"status":"ok","room_code":"{}","steam_lobby_id":{}}}"#,
+                        room_code, lobby_id
+                    );
+                    HttpResponse::ok_json(&json)
+                }
+
+                ("POST", "/api/v1/steam/invite-accepted") => {
+                    let body_str = String::from_utf8_lossy(&req.body);
+                    let room_code = extract_json_string(&body_str, "room_code").unwrap_or_default();
+
+                    let mut players = session_store.list_active_sessions();
+                    players.sort_by_key(|p| p.user_id);
+                    let guest_sess = players.last().cloned();
+
+                    let mut joined = false;
+                    if let Some(guest) = guest_sess {
+                        session_store.set_target_room_code(guest.user_id, Some(room_code.clone()));
+
+                        if let Some(game) = game_registry.find_by_room_code(&room_code) {
+                            if let Ok(joined_game) = game_registry.join_game(game.game_id, &guest) {
+                                joined = true;
+                                if let Some(host) = session_store.get_session(joined_game.host_user_id) {
+                                    if let Ok(setup_notif) =
+                                        build_notify_game_setup(&joined_game, &host, Some(&guest))
+                                    {
+                                        session_store.send_notification(guest.user_id, setup_notif);
+                                    }
+                                    if let Ok(joining_notif) =
+                                        build_notify_player_joining(&joined_game, &guest)
+                                    {
+                                        session_store.send_notification(host.user_id, joining_notif);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    tracing::info!(
+                        "[Control Server] Steam invite accepted for room '{}' (Joined: {})",
+                        room_code,
+                        joined
+                    );
+
+                    let json = format!(
+                        r#"{{"status":"ok","joined":{},"room_code":"{}"}}"#,
+                        joined, room_code
+                    );
+                    HttpResponse::ok_json(&json)
+                }
+
                 _ => HttpResponse::not_found(),
             };
 
@@ -156,12 +235,12 @@ fn extract_json_string(json: &str, field: &str) -> Option<String> {
     Some(json[quote_start..quote_end].trim().to_string())
 }
 
-/// Helper function to extract an unsigned integer field from simple JSON.
+/// Helper function to extract an unsigned integer field from simple JSON (quoted or unquoted).
 fn extract_json_u64(json: &str, field: &str) -> Option<u64> {
     let key = format!("\"{}\"", field);
     let key_pos = json.find(&key)?;
     let colon_pos = json[key_pos..].find(':')? + key_pos;
-    let after_colon = json[colon_pos + 1..].trim_start();
+    let after_colon = json[colon_pos + 1..].trim_start().trim_start_matches('"');
     let num_str: String = after_colon
         .chars()
         .take_while(|c| c.is_ascii_digit())

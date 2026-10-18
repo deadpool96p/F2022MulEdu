@@ -60,6 +60,15 @@ impl HttpResponse {
         }
     }
 
+    pub fn bad_request(body: &str) -> Self {
+        Self {
+            status_code: 400,
+            reason_phrase: "Bad Request",
+            content_type: "application/json",
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
     /// Serializes the response into raw HTTP wire bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = Vec::new();

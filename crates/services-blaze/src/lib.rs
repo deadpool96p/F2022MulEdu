@@ -18,7 +18,7 @@ pub use auth::*;
 pub use gamemanager::*;
 pub use router::BlazeRouter;
 pub use session::SessionState;
-pub use session_store::{SessionData, SessionStore};
+pub use session_store::{SessionData, SessionStore, SteamFriend, SteamProfile};
 pub use usersessions::*;
 pub use util::*;
 

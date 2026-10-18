@@ -33,25 +33,42 @@ pub fn handle_get_lists(
     lid_struct.set("LTYP", TdfValue::Integer(1)); // 1 = Friends List
     friend_list_struct.set("LID", TdfValue::Struct(lid_struct));
 
-    // Populate active online friends from SessionStore
+    // Populate active online friends from SessionStore and synced Steam friends
     let all_players = session_store.list_active_sessions();
     let mut members = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    seen_ids.insert(current_user_id);
 
     for player in all_players {
-        if player.user_id == current_user_id {
-            // Do not list self as friend
-            continue;
+        if seen_ids.insert(player.user_id) {
+            let mut member_struct = TdfStruct::new();
+            member_struct.set("BLID", TdfValue::Integer(0));
+            member_struct.set("EID", TdfValue::Integer(player.user_id));
+            member_struct.set("NAME", TdfValue::String(player.persona_name.clone()));
+            member_struct.set("STUS", TdfValue::Integer(2)); // 2 = Online
+            member_struct.set("TIMS", TdfValue::Integer(1700000000));
+            member_struct.set("XREF", TdfValue::Integer(0));
+
+            members.push(TdfValue::Struct(member_struct));
         }
+    }
 
-        let mut member_struct = TdfStruct::new();
-        member_struct.set("BLID", TdfValue::Integer(0));
-        member_struct.set("EID", TdfValue::Integer(player.user_id));
-        member_struct.set("NAME", TdfValue::String(player.persona_name.clone()));
-        member_struct.set("STUS", TdfValue::Integer(2)); // 2 = Online
-        member_struct.set("TIMS", TdfValue::Integer(1700000000));
-        member_struct.set("XREF", TdfValue::Integer(0));
+    // Include synced Steam friends for the current player
+    if let Some(current_sess) = session_store.get_session(current_user_id) {
+        for (steam_id, friend_name) in &current_sess.online_friends {
+            let mapped_id = (*steam_id & 0x7FFF_FFFF).max(20000);
+            if seen_ids.insert(mapped_id) {
+                let mut member_struct = TdfStruct::new();
+                member_struct.set("BLID", TdfValue::Integer(0));
+                member_struct.set("EID", TdfValue::Integer(mapped_id));
+                member_struct.set("NAME", TdfValue::String(friend_name.clone()));
+                member_struct.set("STUS", TdfValue::Integer(2)); // 2 = Online
+                member_struct.set("TIMS", TdfValue::Integer(1700000000));
+                member_struct.set("XREF", TdfValue::Integer(0));
 
-        members.push(TdfValue::Struct(member_struct));
+                members.push(TdfValue::Struct(member_struct));
+            }
+        }
     }
 
     friend_list_struct.set("LMEM", TdfValue::List(TdfList::new(TdfType::Struct, members)));
@@ -112,6 +129,52 @@ mod tests {
                     }
                     assert!(names.contains(&"Bob".to_string()));
                     assert!(names.contains(&"Charlie".to_string()));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_steam_friends_in_association_lists() {
+        let store = SessionStore::new();
+        store.register_steam_identity(crate::session_store::SteamProfile {
+            steam_id: 76561198000000001,
+            persona_name: "SteamPlayer".to_string(),
+            friends: vec![
+                crate::session_store::SteamFriend {
+                    steam_id: 76561198000000002,
+                    name: "GamerBro".to_string(),
+                },
+            ],
+        });
+
+        let u1 = store.create_session(None);
+
+        let req = BlazePacket::new(
+            COMPONENT_ASSOCIATION_LISTS,
+            CMD_GET_LISTS,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            1,
+            TdfStruct::new(),
+        )
+        .unwrap();
+
+        let resp = handle_get_lists(&req, u1.user_id, &store).unwrap();
+        let lst = resp.payload.get("LST").unwrap();
+        if let TdfValue::List(outer_list) = lst {
+            if let TdfValue::Struct(friend_list) = &outer_list.items[0] {
+                if let Some(TdfValue::List(members)) = friend_list.get("LMEM") {
+                    let mut names = Vec::new();
+                    for m in &members.items {
+                        if let TdfValue::Struct(st) = m {
+                            if let Some(TdfValue::String(name)) = st.get("NAME") {
+                                names.push(name.clone());
+                            }
+                        }
+                    }
+                    assert!(names.contains(&"GamerBro".to_string()));
                 }
             }
         }

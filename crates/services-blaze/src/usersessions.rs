@@ -150,7 +150,11 @@ pub fn handle_lookup_user(
             internal_ip: current_session.internal_ip.clone(),
             port: current_session.port,
             nat_type: current_session.nat_type,
+            steam_id: None,
+            steam_name: None,
+            online_friends: Vec::new(),
             target_room_code: None,
+            steam_lobby_id: None,
             last_seen: std::time::Instant::now(),
         }
     });
