@@ -131,6 +131,42 @@ impl BlazeHeader {
         buf
     }
 
+    /// Serializes the 16-byte modern Blaze header (used by FIFA 22 Frostbite 3).
+    pub fn to_bytes_16(&self) -> [u8; 16] {
+        let mut buf = [0u8; 16];
+        buf[0..4].copy_from_slice(&self.length.to_be_bytes());
+        buf[4..6].copy_from_slice(&self.error_code.to_be_bytes());
+        buf[6..8].copy_from_slice(&self.component.to_be_bytes());
+        buf[8..10].copy_from_slice(&self.command.to_be_bytes());
+        buf[10] = ((self.msg_type as u8) << 4) | (self.qos & 0x0F);
+        buf[11] = 0;
+        buf[12..16].copy_from_slice(&(self.seq_no as u32).to_le_bytes());
+        buf
+    }
+
+    /// Deserializes a 16-byte modern Blaze header from a byte slice.
+    pub fn from_bytes_16(buf: &[u8; 16]) -> io::Result<Self> {
+        let length = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]);
+        let error_code = u16::from_be_bytes([buf[4], buf[5]]);
+        let component = u16::from_be_bytes([buf[6], buf[7]]);
+        let command = u16::from_be_bytes([buf[8], buf[9]]);
+        let type_raw = (buf[10] >> 4) & 0x0F;
+        let qos = buf[10] & 0x0F;
+        let seq_no = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]) as u16;
+
+        let msg_type = MessageType::from_u8(type_raw).unwrap_or(MessageType::SubmitRequest);
+
+        Ok(Self {
+            length,
+            component,
+            command,
+            error_code,
+            msg_type,
+            qos,
+            seq_no,
+        })
+    }
+
     /// Deserializes a 12-byte header from a byte slice.
     pub fn from_bytes(buf: &[u8; Self::HEADER_SIZE]) -> io::Result<Self> {
         let length = ((buf[0] as u32) << 16) | ((buf[1] as u32) << 8) | (buf[2] as u32);
@@ -250,6 +286,18 @@ impl BlazePacket {
 
         let mut buf = Vec::with_capacity(BlazeHeader::HEADER_SIZE + payload_bytes.len());
         buf.extend_from_slice(&header.to_bytes());
+        buf.extend_from_slice(&payload_bytes);
+        Ok(buf)
+    }
+
+    /// Serializes the entire packet using the 16-byte header format (FIFA 22 Frostbite 3).
+    pub fn encode_16(&self) -> io::Result<Vec<u8>> {
+        let payload_bytes = serialize_tdf(&self.payload)?;
+        let mut header = self.header;
+        header.length = payload_bytes.len() as u32;
+
+        let mut buf = Vec::with_capacity(16 + payload_bytes.len());
+        buf.extend_from_slice(&header.to_bytes_16());
         buf.extend_from_slice(&payload_bytes);
         Ok(buf)
     }

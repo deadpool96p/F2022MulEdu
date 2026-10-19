@@ -81,11 +81,15 @@ impl BlazeRouter {
             // Authentication Component (0x0001)
             (COMPONENT_AUTH, CMD_EXPRESS_LOGIN)
             | (COMPONENT_AUTH, CMD_LOGIN)
-            | (COMPONENT_AUTH, CMD_SILENT_LOGIN) => {
+            | (COMPONENT_AUTH, CMD_SILENT_LOGIN)
+            | (COMPONENT_AUTH, 0x0001) => {
                 let resp = handle_login(req, &mut self.session, &self.store)?;
                 Ok((resp, None))
             }
             (COMPONENT_AUTH, CMD_LIST_USER_ENTITLEMENTS) => {
+                if !self.session.is_logged_in {
+                    let _ = handle_login(req, &mut self.session, &self.store)?;
+                }
                 let resp = handle_list_user_entitlements(req)?;
                 Ok((resp, None))
             }

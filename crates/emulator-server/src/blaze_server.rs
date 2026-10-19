@@ -44,78 +44,126 @@ pub async fn run_blaze_server(
     }
 }
 
-async fn read_blaze_packet(stream: &mut DualStream) -> std::io::Result<Option<BlazePacket>> {
-    let mut raw_buf = [0u8; 4096];
-    let n = stream.read(&mut raw_buf).await?;
-    if n == 0 {
-        return Ok(None);
+fn try_parse_packet(buffer: &mut Vec<u8>, is_16_byte: &mut bool) -> Option<BlazePacket> {
+    if buffer.len() < 12 {
+        return None;
     }
 
-    tracing::info!(
-        "[Blaze Server] Wire data received ({} bytes):\n{}",
-        n,
-        blaze_core::hex_dump(&raw_buf[..n])
-    );
+    // Modern 16-byte header format (FIFA 22 Frostbite 3):
+    // [00 00 00 00] (length)
+    // [00 00]       (error code / flags)
+    // [00 XX]       (component)
+    // [00 YY]       (command)
+    // [ZZ 00]       (msg_type / flags)
+    // [00 00 00 00] (seq_no LE)
+    if *is_16_byte || (buffer.len() >= 16 && buffer[0..4] == [0, 0, 0, 0] && buffer[4] == 0 && buffer[5] == 0 && (buffer[6] == 0 || buffer[6] == 0x78)) {
+        *is_16_byte = true;
+        if buffer.len() < 16 {
+            return None;
+        }
+        let length = u32::from_be_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
+        let total_packet_len = 16 + length;
+        if buffer.len() < total_packet_len {
+            return None;
+        }
 
-    // Check if packet matches the 12-byte modern Fire2 / Frostbite header format:
-    // [00 00 00 00] (4-byte length = 0)
-    // [00 00]       (2-byte error code / flags = 0)
-    // [00 09]       (2-byte component = 0x0009 Util)
-    // [00 02]       (2-byte command = 0x0002 Ping)
-    // [00 00]       (2-byte seq = 0)
-    let (header, payload_bytes) = if n >= 12 && raw_buf[0..4] == [0, 0, 0, 0] && raw_buf[6..8] == [0, 9] {
-        let length = u32::from_be_bytes([raw_buf[0], raw_buf[1], raw_buf[2], raw_buf[3]]);
-        let error_code = u16::from_be_bytes([raw_buf[4], raw_buf[5]]);
-        let component = u16::from_be_bytes([raw_buf[6], raw_buf[7]]);
-        let command = u16::from_be_bytes([raw_buf[8], raw_buf[9]]);
-        let seq_no = u16::from_be_bytes([raw_buf[10], raw_buf[11]]);
-        let header = BlazeHeader::new(
-            length,
-            component,
-            command,
-            error_code,
-            blaze_core::MessageType::SubmitRequest,
-            0,
-            seq_no,
+        let header_slice: [u8; 16] = buffer[0..16].try_into().unwrap();
+        let header = match BlazeHeader::from_bytes_16(&header_slice) {
+            Ok(h) => h,
+            Err(_) => return None,
+        };
+
+        let payload_slice = &buffer[16..total_packet_len];
+        let payload = if payload_slice.is_empty() {
+            blaze_tdf::TdfStruct::new()
+        } else {
+            deserialize_tdf(payload_slice).unwrap_or_else(|_| blaze_tdf::TdfStruct::new())
+        };
+
+        buffer.drain(0..total_packet_len);
+        tracing::info!(
+            "[Blaze Server] Parsed 16-byte frame: Comp=0x{:04X}, Cmd=0x{:04X}, Seq={}, Len={}, MsgType={:?}",
+            header.component,
+            header.command,
+            header.seq_no,
+            header.length,
+            header.msg_type
         );
-        let payload = if n > 12 { &raw_buf[12..n] } else { &[] };
-        (header, payload)
-    } else if n >= BlazeHeader::HEADER_SIZE {
-        let mut header_buf = [0u8; BlazeHeader::HEADER_SIZE];
-        header_buf.copy_from_slice(&raw_buf[..BlazeHeader::HEADER_SIZE]);
-        let header = BlazeHeader::from_bytes(&header_buf)?;
-        let payload_end = (BlazeHeader::HEADER_SIZE + (header.length as usize)).min(n);
-        let payload = &raw_buf[BlazeHeader::HEADER_SIZE..payload_end];
-        (header, payload)
-    } else {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            format!("Received incomplete frame: {} bytes", n),
-        ));
+        return Some(BlazePacket { header, payload });
+    }
+
+    // Legacy 12-byte header format
+    let length = (((buffer[0] as u32) << 16) | ((buffer[1] as u32) << 8) | (buffer[2] as u32)) as usize;
+    let total_packet_len = 12 + length;
+    if buffer.len() < total_packet_len {
+        return None;
+    }
+
+    let header_slice: [u8; 12] = buffer[0..12].try_into().unwrap();
+    let header = match BlazeHeader::from_bytes(&header_slice) {
+        Ok(h) => h,
+        Err(_) => return None,
     };
 
+    let payload_slice = &buffer[12..total_packet_len];
+    let payload = if payload_slice.is_empty() {
+        blaze_tdf::TdfStruct::new()
+    } else {
+        deserialize_tdf(payload_slice).unwrap_or_else(|_| blaze_tdf::TdfStruct::new())
+    };
+
+    buffer.drain(0..total_packet_len);
     tracing::info!(
-        "[Blaze Server] Header parsed: Comp=0x{:04X}, Cmd=0x{:04X}, Seq={}, Len={}, MsgType={:?}",
+        "[Blaze Server] Parsed 12-byte frame: Comp=0x{:04X}, Cmd=0x{:04X}, Seq={}, Len={}, MsgType={:?}",
         header.component,
         header.command,
         header.seq_no,
         header.length,
         header.msg_type
     );
+    Some(BlazePacket { header, payload })
+}
 
-    let payload = if payload_bytes.is_empty() {
-        blaze_tdf::TdfStruct::new()
-    } else {
-        match deserialize_tdf(payload_bytes) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!("[Blaze Server] TDF deserialize error (ignoring for request): {:?}", e);
-                blaze_tdf::TdfStruct::new()
-            }
+async fn process_packet(
+    stream: &mut DualStream,
+    router: &mut BlazeRouter,
+    req_packet: &BlazePacket,
+    tx: &tokio::sync::mpsc::UnboundedSender<BlazePacket>,
+    registered_uid: &mut u64,
+    is_16_byte: bool,
+) -> std::io::Result<()> {
+    if router.session.user_id != 0 {
+        router.store.touch_session(router.session.user_id);
+    }
+
+    let (resp_packet, notif_opt) = router.handle_packet(req_packet)?;
+
+    if router.session.user_id != 0 && router.session.user_id != *registered_uid {
+        if *registered_uid != 0 {
+            router.store.remove_notification_channel(*registered_uid);
         }
-    };
+        *registered_uid = router.session.user_id;
+        router.store.register_notification_channel(*registered_uid, tx.clone());
+    }
 
-    Ok(Some(BlazePacket { header, payload }))
+    let resp_bytes = if is_16_byte {
+        resp_packet.encode_16()?
+    } else {
+        resp_packet.encode()?
+    };
+    stream.write_all(&resp_bytes).await?;
+
+    if let Some(notif) = notif_opt {
+        let notif_bytes = if is_16_byte {
+            notif.encode_16()?
+        } else {
+            notif.encode()?
+        };
+        stream.write_all(&notif_bytes).await?;
+    }
+
+    stream.flush().await?;
+    Ok(())
 }
 
 async fn handle_blaze_session(
@@ -125,12 +173,25 @@ async fn handle_blaze_session(
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BlazePacket>();
     let mut registered_uid: u64 = 0;
     let timeout_duration = std::time::Duration::from_secs(45);
+    let mut rx_buf = Vec::with_capacity(8192);
+    let mut read_chunk = [0u8; 4096];
+    let mut is_16_byte = false;
 
     loop {
+        // Drain any complete packet already present in buffer
+        if let Some(req_packet) = try_parse_packet(&mut rx_buf, &mut is_16_byte) {
+            process_packet(stream, router, &req_packet, &tx, &mut registered_uid, is_16_byte).await?;
+            continue;
+        }
+
         tokio::select! {
             // Full-duplex unsolicited async notification from server to client
             Some(notif_pkt) = rx.recv() => {
-                let notif_bytes = notif_pkt.encode()?;
+                let notif_bytes = if is_16_byte {
+                    notif_pkt.encode_16()?
+                } else {
+                    notif_pkt.encode()?
+                };
                 stream.write_all(&notif_bytes).await?;
                 stream.flush().await?;
                 tracing::debug!(
@@ -140,16 +201,28 @@ async fn handle_blaze_session(
                     router.session.user_id
                 );
             }
-            // Client RPC request monitored by 45s keep-alive timeout
-            timeout_res = tokio::time::timeout(timeout_duration, read_blaze_packet(stream)) => {
-                let req_packet = match timeout_res {
-                    Ok(Ok(Some(pkt))) => pkt,
-                    Ok(Ok(None)) => {
+            // Read incoming bytes from client
+            timeout_res = tokio::time::timeout(timeout_duration, stream.read(&mut read_chunk)) => {
+                match timeout_res {
+                    Ok(Ok(0)) => {
                         tracing::info!(
                             "[Blaze Server] Client UID {} closed connection (EOF)",
                             router.session.user_id
                         );
                         break;
+                    }
+                    Ok(Ok(n)) => {
+                        tracing::info!(
+                            "[Blaze Server] Wire data received ({} bytes):\n{}",
+                            n,
+                            blaze_core::hex_dump(&read_chunk[..n])
+                        );
+                        rx_buf.extend_from_slice(&read_chunk[..n]);
+
+                        // Drain and process all packets available in rx_buf
+                        while let Some(req_packet) = try_parse_packet(&mut rx_buf, &mut is_16_byte) {
+                            process_packet(stream, router, &req_packet, &tx, &mut registered_uid, is_16_byte).await?;
+                        }
                     }
                     Ok(Err(e)) => {
                         tracing::warn!(
@@ -165,35 +238,7 @@ async fn handle_blaze_session(
                         );
                         break;
                     }
-                };
-
-                // Touch session to record keep-alive activity
-                if router.session.user_id != 0 {
-                    router.store.touch_session(router.session.user_id);
                 }
-
-                let (resp_packet, notif_opt) = router.handle_packet(&req_packet)?;
-
-                // If user logged in and received a valid UID, register/update notification channel
-                if router.session.user_id != 0 && router.session.user_id != registered_uid {
-                    if registered_uid != 0 {
-                        router.store.remove_notification_channel(registered_uid);
-                    }
-                    registered_uid = router.session.user_id;
-                    router.store.register_notification_channel(registered_uid, tx.clone());
-                }
-
-                // Send RPC response
-                let resp_bytes = resp_packet.encode()?;
-                stream.write_all(&resp_bytes).await?;
-
-                // Send immediate inline notification if generated
-                if let Some(notif) = notif_opt {
-                    let notif_bytes = notif.encode()?;
-                    stream.write_all(&notif_bytes).await?;
-                }
-
-                stream.flush().await?;
             }
         }
     }
