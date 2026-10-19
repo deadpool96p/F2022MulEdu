@@ -45,18 +45,55 @@ pub async fn run_blaze_server(
 }
 
 async fn read_blaze_packet(stream: &mut DualStream) -> std::io::Result<Option<BlazePacket>> {
-    let mut header_buf = [0u8; BlazeHeader::HEADER_SIZE];
-    if let Err(e) = stream.read_exact(&mut header_buf).await {
-        if e.kind() == std::io::ErrorKind::UnexpectedEof {
-            return Ok(None);
-        }
-        return Err(e);
+    let mut raw_buf = [0u8; 4096];
+    let n = stream.read(&mut raw_buf).await?;
+    if n == 0 {
+        return Ok(None);
     }
+
     tracing::info!(
-        "[Blaze Server] Header received: {:02X?}",
-        &header_buf
+        "[Blaze Server] Wire data received ({} bytes):\n{}",
+        n,
+        blaze_core::hex_dump(&raw_buf[..n])
     );
-    let header = BlazeHeader::from_bytes(&header_buf)?;
+
+    // Check if packet matches the 12-byte modern Fire2 / Frostbite header format:
+    // [00 00 00 00] (4-byte length = 0)
+    // [00 00]       (2-byte error code / flags = 0)
+    // [00 09]       (2-byte component = 0x0009 Util)
+    // [00 02]       (2-byte command = 0x0002 Ping)
+    // [00 00]       (2-byte seq = 0)
+    let (header, payload_bytes) = if n >= 12 && raw_buf[0..4] == [0, 0, 0, 0] && raw_buf[6..8] == [0, 9] {
+        let length = u32::from_be_bytes([raw_buf[0], raw_buf[1], raw_buf[2], raw_buf[3]]);
+        let error_code = u16::from_be_bytes([raw_buf[4], raw_buf[5]]);
+        let component = u16::from_be_bytes([raw_buf[6], raw_buf[7]]);
+        let command = u16::from_be_bytes([raw_buf[8], raw_buf[9]]);
+        let seq_no = u16::from_be_bytes([raw_buf[10], raw_buf[11]]);
+        let header = BlazeHeader::new(
+            length,
+            component,
+            command,
+            error_code,
+            blaze_core::MessageType::SubmitRequest,
+            0,
+            seq_no,
+        );
+        let payload = if n > 12 { &raw_buf[12..n] } else { &[] };
+        (header, payload)
+    } else if n >= BlazeHeader::HEADER_SIZE {
+        let mut header_buf = [0u8; BlazeHeader::HEADER_SIZE];
+        header_buf.copy_from_slice(&raw_buf[..BlazeHeader::HEADER_SIZE]);
+        let header = BlazeHeader::from_bytes(&header_buf)?;
+        let payload_end = (BlazeHeader::HEADER_SIZE + (header.length as usize)).min(n);
+        let payload = &raw_buf[BlazeHeader::HEADER_SIZE..payload_end];
+        (header, payload)
+    } else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            format!("Received incomplete frame: {} bytes", n),
+        ));
+    };
+
     tracing::info!(
         "[Blaze Server] Header parsed: Comp=0x{:04X}, Cmd=0x{:04X}, Seq={}, Len={}, MsgType={:?}",
         header.component,
@@ -66,9 +103,17 @@ async fn read_blaze_packet(stream: &mut DualStream) -> std::io::Result<Option<Bl
         header.msg_type
     );
 
-    let mut payload_buf = vec![0u8; header.length as usize];
-    stream.read_exact(&mut payload_buf).await?;
-    let payload = deserialize_tdf(&payload_buf)?;
+    let payload = if payload_bytes.is_empty() {
+        blaze_tdf::TdfStruct::new()
+    } else {
+        match deserialize_tdf(payload_bytes) {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("[Blaze Server] TDF deserialize error (ignoring for request): {:?}", e);
+                blaze_tdf::TdfStruct::new()
+            }
+        }
+    };
 
     Ok(Some(BlazePacket { header, payload }))
 }

@@ -273,10 +273,11 @@ static void RenderSideSelectGamerCards(const ServerStatus& status) {
 
     float card_width = 175.0f;
     float card_height = 56.0f;
-    float spacing = 12.0f;
+    float spacing = 16.0f;
     float total_width = (card_width * 4.0f) + (spacing * 3.0f);
     float start_x = work_pos.x + (work_size.x - total_width) * 0.5f;
-    float start_y = work_pos.y + 60.0f;
+    // Position directly above FIFA 22's controller selection boxes (~54% screen height)
+    float start_y = work_pos.y + (work_size.y * 0.54f);
 
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration |
                             ImGuiWindowFlags_NoMove |
