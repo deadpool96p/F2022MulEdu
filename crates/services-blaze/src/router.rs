@@ -79,18 +79,18 @@ impl BlazeRouter {
             }
 
             // Authentication Component (0x0001)
-            (COMPONENT_AUTH, CMD_EXPRESS_LOGIN)
-            | (COMPONENT_AUTH, CMD_LOGIN)
-            | (COMPONENT_AUTH, CMD_SILENT_LOGIN)
-            | (COMPONENT_AUTH, 0x0001) => {
-                let resp = handle_login(req, &mut self.session, &self.store)?;
-                Ok((resp, None))
-            }
-            (COMPONENT_AUTH, CMD_LIST_USER_ENTITLEMENTS) => {
+            (COMPONENT_AUTH, CMD_LIST_USER_ENTITLEMENTS)
+            | (COMPONENT_AUTH, 0x0032)
+            | (COMPONENT_AUTH, 0x0047)
+            | (COMPONENT_AUTH, 0x005A) => {
                 if !self.session.is_logged_in {
                     let _ = handle_login(req, &mut self.session, &self.store)?;
                 }
                 let resp = handle_list_user_entitlements(req)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_AUTH, _) => {
+                let resp = handle_login(req, &mut self.session, &self.store)?;
                 Ok((resp, None))
             }
 
@@ -187,6 +187,30 @@ impl BlazeRouter {
             (COMPONENT_CENSUS_DATA, _) => {
                 let resp = handle_census_data(req, self.store.count())?;
                 Ok((resp, None))
+            }
+
+            // PerfComponent (0x08BA) — FifaOnline::PerfComponentClient.
+            //
+            // The client batches 0x08BA/0x0005 together with Util::ping (0x0009/0x0002)
+            // inside a single 32-byte segment (two 16-byte Fire2 frames), which marks it
+            // as a synchronous perf probe rather than an independent RPC. Following the
+            // same Heat2 schema invariant as Util::PingResponse (rule #2), we respond with
+            // an EMPTY struct. STIM is NOT a valid tag here — emitting it triggers
+            // BLAZE_ERR_TDF_TAG_NOT_FOUND and the 10s watchdog EOF.
+            //
+            // HYPOTHESIS (unverified — no Ghidra-confirmed 0x08BA/0x0005 schema exists yet;
+            // see docs/disassembly_and_engine_multiplayer_plan.md Phase 3 gap). If the real
+            // schema requires fields, capture the wire bytes with tools/dissector/blaze.lua
+            // in Wireshark and replace this empty response with the exact tags.
+            (0x08BA, _) => {
+                tracing::info!(
+                    "[Blaze Router] Handled PerfComponent 0x08BA Command 0x{:04X} (Seq={}) \
+                     -> empty PerfResponse (STIM hypothesis: not a valid Heat2 tag here)",
+                    req.header.command,
+                    req.header.seq_no
+                );
+                let resp_pkt = BlazePacket::response(&req.header, TdfStruct::new())?;
+                Ok((resp_pkt, None))
             }
 
             // Wildcard Unknown-RPC Fallback: log payload and return ERR_OK

@@ -2,7 +2,7 @@
 
 use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
-use blaze_core::BlazePacket;
+use blaze_core::{BlazeHeader, BlazePacket, MessageType};
 use blaze_tdf::{TdfMap, TdfStruct, TdfType, TdfValue};
 
 pub const COMPONENT_UTIL: u16 = 0x0009;
@@ -31,7 +31,10 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
         TdfValue::Integer(0x0004), // GameManager
         TdfValue::Integer(0x0007), // Stats
         TdfValue::Integer(0x0009), // Util
+        TdfValue::Integer(0x000A), // CensusData
         TdfValue::Integer(0x0019), // Users
+        TdfValue::Integer(0x001C), // GameReporting
+        TdfValue::Integer(0x08BA), // PerfComponent
         TdfValue::Integer(0x7802), // UserSessions
     ];
     resp.set("CIDS", TdfValue::List(blaze_tdf::TdfList::new(TdfType::Integer, components)));
@@ -114,8 +117,17 @@ pub fn handle_fetch_client_config(req: &BlazePacket) -> io::Result<BlazePacket> 
 }
 
 /// Handles ping (0x0002).
+///
+/// Per .agents/rules/blaze_protocol_invariants.md rule #2: in FIFA 22 BlazeSDK
+/// 15.1.1.10.3, Blaze::Util::PingResponse has 0 member fields in its Heat2 schema.
+/// Sending unexpected tags (e.g. STIM) triggers BLAZE_ERR_TDF_TAG_NOT_FOUND in the
+/// Heat2Decoder, which is what caused the 10s watchdog EOF. Response MUST be an
+/// empty struct (length 0, RecordResponse).
 pub fn handle_ping(req: &BlazePacket) -> io::Result<BlazePacket> {
-    tracing::debug!("[Blaze Util] Handled ping (Seq={})", req.header.seq_no);
+    tracing::info!(
+        "[Blaze Util] Handled ping (Seq={}) -> empty PingResponse (0 fields per Heat2 schema)",
+        req.header.seq_no
+    );
     BlazePacket::response(&req.header, TdfStruct::new())
 }
 
@@ -150,6 +162,48 @@ pub fn handle_census_data(req: &BlazePacket, active_users: usize) -> io::Result<
     let mut resp = TdfStruct::new();
     resp.set("CENS", TdfValue::Integer(std::cmp::max(1, active_users as u64)));
     BlazePacket::response(&req.header, resp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blaze_core::{BlazePacket, MessageType};
+
+    fn make_header(seq: u16) -> BlazeHeader {
+        BlazeHeader::new(0, COMPONENT_UTIL, CMD_PING, 0x0000, MessageType::SubmitRequest, 0, seq)
+    }
+
+    /// Regression test for the 10s watchdog EOF.
+    ///
+    /// In FIFA 22 BlazeSDK 15.1.1.10.3, Blaze::Util::PingResponse has 0 member
+    /// fields in its Heat2 schema. Any unexpected tag (e.g. STIM) is rejected by
+    /// Heat2Decoder with BLAZE_ERR_TDF_TAG_NOT_FOUND, which drops the connection
+    /// ~10s later. The response MUST encode as an empty struct.
+    #[test]
+    fn test_ping_response_is_empty_struct_no_stim() {
+        let req = BlazePacket::new(
+            COMPONENT_UTIL,
+            CMD_PING,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            42,
+            TdfStruct::new(),
+        )
+        .unwrap();
+
+        let resp = handle_ping(&req).expect("ping handler must not error");
+        assert_eq!(resp.header.component, COMPONENT_UTIL);
+        assert_eq!(resp.header.command, CMD_PING);
+        assert_eq!(resp.header.error_code, 0x0000);
+        assert_eq!(resp.header.msg_type, MessageType::RecordResponse);
+        assert_eq!(resp.header.seq_no, 42);
+        assert!(
+            resp.payload.fields.is_empty(),
+            "PingResponse must be an empty TDF struct (0 fields); got keys {:?}",
+            resp.payload.fields.keys().collect::<Vec<_>>()
+        );
+    }
 }
 
 /// Handles Stats component queries.
