@@ -115,13 +115,8 @@ pub fn handle_fetch_client_config(req: &BlazePacket) -> io::Result<BlazePacket> 
 
 /// Handles ping (0x0002).
 pub fn handle_ping(req: &BlazePacket) -> io::Result<BlazePacket> {
-    let mut resp = TdfStruct::new();
-    let epoch_sec = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    resp.set("STIM", TdfValue::Integer(epoch_sec));
-    BlazePacket::response(&req.header, resp)
+    tracing::debug!("[Blaze Util] Handled ping (Seq={})", req.header.seq_no);
+    BlazePacket::response(&req.header, TdfStruct::new())
 }
 
 /// Handles setClientData (0x0003).

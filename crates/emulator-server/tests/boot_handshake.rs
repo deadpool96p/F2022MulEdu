@@ -153,7 +153,7 @@ async fn test_full_boot_handshake_flow() {
     let (ping_hdr, ping_tdf) = send_recv(&mut blaze_stream, 0x0009, 0x0002, 13, TdfStruct::new()).await;
     assert_eq!(ping_hdr.component, 0x0009);
     assert_eq!(ping_hdr.command, 0x0002);
-    assert!(ping_tdf.get("STIM").is_some());
+    assert_eq!(ping_hdr.msg_type, MessageType::RecordResponse);
 
     println!(">>> Full boot handshake integration test successfully verified!");
 }

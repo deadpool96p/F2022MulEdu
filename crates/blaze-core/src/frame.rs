@@ -292,7 +292,11 @@ impl BlazePacket {
 
     /// Serializes the entire packet using the 16-byte header format (FIFA 22 Frostbite 3).
     pub fn encode_16(&self) -> io::Result<Vec<u8>> {
-        let payload_bytes = serialize_tdf(&self.payload)?;
+        let payload_bytes = if self.payload.fields.is_empty() {
+            Vec::new()
+        } else {
+            serialize_tdf(&self.payload)?
+        };
         let mut header = self.header;
         header.length = payload_bytes.len() as u32;
 
@@ -403,5 +407,35 @@ mod tests {
             Some(&TdfValue::String("TestLobby".to_string()))
         );
         assert_eq!(decoded.payload.get("GTYP"), Some(&TdfValue::Integer(1)));
+    }
+
+    #[test]
+    fn test_blaze_packet_16_roundtrip() {
+        let empty_pkt = BlazePacket::new(
+            0x0009,
+            0x0002,
+            0x0000,
+            MessageType::RecordResponse,
+            0,
+            3,
+            TdfStruct::new(),
+        )
+        .expect("Empty packet failed");
+
+        let encoded = empty_pkt.encode_16().expect("encode_16 failed");
+        assert_eq!(encoded.len(), 16);
+        assert_eq!(&encoded[0..4], &[0, 0, 0, 0]); // len 0
+        assert_eq!(&encoded[6..8], &[0x00, 0x09]); // comp 9
+        assert_eq!(&encoded[8..10], &[0x00, 0x02]); // cmd 2
+        assert_eq!(encoded[10], 0x10); // RecordResponse
+        assert_eq!(&encoded[12..16], &[3, 0, 0, 0]); // seq 3 LE
+
+        let header = BlazeHeader::from_bytes_16((&encoded[0..16]).try_into().unwrap())
+            .expect("from_bytes_16 failed");
+        assert_eq!(header.component, 0x0009);
+        assert_eq!(header.command, 0x0002);
+        assert_eq!(header.seq_no, 3);
+        assert_eq!(header.length, 0);
+        assert_eq!(header.msg_type, MessageType::RecordResponse);
     }
 }

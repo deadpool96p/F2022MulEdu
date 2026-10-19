@@ -265,5 +265,5 @@ async fn test_full_online_hub_two_player_flow() {
     let (ping_resp, _) =
         send_and_recv_blaze(&mut c1_stream, 0x0009, 0x0002, 7, TdfStruct::new()).await;
     assert_eq!(ping_resp.header.command, 0x0002);
-    assert!(ping_resp.payload.get("STIM").is_some());
+    assert_eq!(ping_resp.header.msg_type, MessageType::RecordResponse);
 }

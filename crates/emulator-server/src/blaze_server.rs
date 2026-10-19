@@ -151,6 +151,14 @@ async fn process_packet(
     } else {
         resp_packet.encode()?
     };
+    tracing::info!(
+        "[Blaze Server] Sending response for Comp=0x{:04X}, Cmd=0x{:04X}, Seq={} ({} bytes):\n{}",
+        resp_packet.header.component,
+        resp_packet.header.command,
+        resp_packet.header.seq_no,
+        resp_bytes.len(),
+        blaze_core::hex_dump(&resp_bytes)
+    );
     stream.write_all(&resp_bytes).await?;
 
     if let Some(notif) = notif_opt {
@@ -159,10 +167,18 @@ async fn process_packet(
         } else {
             notif.encode()?
         };
+        tracing::info!(
+            "[Blaze Server] Sending paired notification for Comp=0x{:04X}, Cmd=0x{:04X} ({} bytes):\n{}",
+            notif.header.component,
+            notif.header.command,
+            notif_bytes.len(),
+            blaze_core::hex_dump(&notif_bytes)
+        );
         stream.write_all(&notif_bytes).await?;
     }
 
     stream.flush().await?;
+    tracing::info!("[Blaze Server] Flushed response to client socket successfully");
     Ok(())
 }
 
