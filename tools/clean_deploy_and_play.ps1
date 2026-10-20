@@ -127,7 +127,7 @@ Write-Host "[5/5] Launching FIFA 22 (build 1.0.77.45722)..." -ForegroundColor Gr
 $ExePath = Join-Path $GameDir "FIFA22.exe"
 if (Test-Path $ExePath) {
     Push-Location $GameDir
-    Start-Process -FilePath $ExePath
+    Start-Process -FilePath $ExePath -WorkingDirectory $GameDir
     Pop-Location
     Write-Host "  [+] FIFA 22 launched successfully!" -ForegroundColor Green
 } else {
