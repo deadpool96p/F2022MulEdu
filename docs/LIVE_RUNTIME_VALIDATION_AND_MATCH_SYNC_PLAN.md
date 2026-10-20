@@ -137,6 +137,7 @@ sequenceDiagram
    - Capture interface: `\Device\NPF_Loopback` (Adapter for loopback traffic).
    - Display Filter: `blaze && (tcp.port == 42128 || tcp.port == 42230)`.
    - Inspect every packet header (`Component`, `Command`, `SeqNo`, `MsgType`) and payload TDF tags.
+   - **Status:** Dissector script exists at `tools/dissector/blaze.lua`. Still needs a live capture against `FIFA22.exe` to close the 0x08BA/0x0005 schema gap flagged in `services-blaze/src/router.rs` (the PerfComponent response is currently an empty struct — a hypothesis, not a Ghidra-confirmed schema).
 2. **Wildcard `ERR_OK` Trap & Logging:**
    - In `services-blaze/src/router.rs`, the wildcard handler logs unknown RPCs:
      ```rust
@@ -144,7 +145,17 @@ sequenceDiagram
      ```
    - Any unhandled RPC logged during kit selection must be implemented with its exact response schema to prevent the client from waiting for a missing response.
 3. **Dedicated Unit & Flow Verification:**
-   - Expand `crates/emulator-server/tests/match_kickoff_flow.rs` to assert that `NotifyGameStateChange(IN_GAME)` and `NotifyGameStarted` arrive synchronously on both notification channels.
+   - **Implemented & verified:** `crates/emulator-server/tests/match_kickoff_flow.rs` runs the full 7-phase sequence end-to-end:
+     - HTTP canonical squad hash (`/content/squads/hash` → 200 + `sha256`)
+     - preAuth → login → NotifyUserAdded for both players
+     - createGame → NotifyGameCreated → NotifyGameSetup (both peers receive the **identical** `SEED`)
+     - updateGameAttributes → NotifyGameAttributeChange (0x0050 + 0x0018) on both channels
+     - PRE_GAME (STAT=3) → symmetric NotifyPlayerStateChange → NotifyGameStateChange (0x0064)
+     - ProtoTunnel UDP registration on `:3659` with `FLAG_REGISTER`/`FLAG_ACK` for both peers
+     - IN_GAME (STAT=4) → symmetric 0x0064 kickoff notification
+     - 60-frame bidirectional `NetGameDist` input replication with per-frame latency assertion (< 15 ms loopback)
+   - Test result: **passing** (`test_full_match_kickoff_and_60hz_sync ... ok`).
+   - **Residual gap:** the test exercises the server's own state machine; it cannot validate that *retail* `FIFA22.exe` accepts the exact TDF tag ordering, since that requires the live in-game smoke test (Stage 1, item 2).
 
 ---
 
@@ -218,6 +229,6 @@ During match execution, monitor the in-game HUD (Hotkey **F2**) to verify simula
 
 ## Immediate Next Actions
 
-1. **Keep Emulator Daemon Active:** `target\release\emulator-server.exe` running locally with the commit `c8c6557` (secure TLS redirect and `X-BLAZE-ERRORCODE: 0` headers).
-2. **Execute In-Game Smoke Test:** Click **Online Friendlies** in FIFA 22 to confirm the client proceeds past redirector resolution into `Util::preAuth` and `Authentication::expressLogin`.
-3. **Capture & Inspect Trace:** Use `tools/dissector/blaze.lua` in Wireshark to verify the exact RPC flow, capturing any missing notification gates between kit selection and kickoff.
+1. **Keep Emulator Daemon Active:** `target\release\emulator-server.exe` running locally. All seven listeners (`42127`, `42128`, `42230`, `44325`, `17498`, `3659`, `42129`) bind `0.0.0.0` dual-stack per `crates/emulator-server/src/lib.rs`, so the Radmin VPN adapter is covered.
+2. **Execute In-Game Smoke Test (requires launching `FIFA22.exe`):** Click **Online Friendlies** in FIFA 22 to confirm the client proceeds past redirector resolution into `Util::preAuth` and `Authentication::expressLogin`. This is the only remaining gate that cannot be validated without the retail binary running — all server-side behavior is covered by the passing test suite.
+3. **Capture & Inspect Trace (requires launching `FIFA22.exe`):** Use `tools/dissector/blaze.lua` in Wireshark to verify the exact RPC flow, capturing any missing notification gates between kit selection and kickoff. Priority target: the 0x08BA/0x0005 PerfComponent response schema, currently an empty-struct hypothesis in `services-blaze/src/router.rs`.
