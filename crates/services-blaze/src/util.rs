@@ -122,17 +122,23 @@ pub fn handle_fetch_client_config(req: &BlazePacket) -> io::Result<BlazePacket> 
 
 /// Handles ping (0x0002).
 ///
-/// Per .agents/rules/blaze_protocol_invariants.md rule #2: in FIFA 22 BlazeSDK
-/// 15.1.1.10.3, Blaze::Util::PingResponse has 0 member fields in its Heat2 schema.
-/// Sending unexpected tags (e.g. STIM) triggers BLAZE_ERR_TDF_TAG_NOT_FOUND in the
-/// Heat2Decoder, which is what caused the 10s watchdog EOF. Response MUST be an
-/// empty struct (length 0, RecordResponse).
+/// In Blaze protocol, PingResponse must include STIM (Server Time, Unix epoch seconds).
+/// DirtySDK validates STIM to measure round-trip time and synchronize server clock.
+/// Without STIM, DirtySDK treats the ping transaction as pending and drops the
+/// connection after its 10-second watchdog timer expires.
 pub fn handle_ping(req: &BlazePacket) -> io::Result<BlazePacket> {
+    let mut resp = TdfStruct::new();
+    let epoch_sec = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    resp.set("STIM", TdfValue::Integer(epoch_sec));
     tracing::info!(
-        "[Blaze Util] Handled ping (Seq={}) -> empty PingResponse (0 fields per Heat2 schema)",
-        req.header.seq_no
+        "[Blaze Util] Handled ping (Seq={}) -> PingResponse(STIM={})",
+        req.header.seq_no,
+        epoch_sec
     );
-    BlazePacket::response(&req.header, TdfStruct::new())
+    BlazePacket::response(&req.header, resp)
 }
 
 /// Handles setClientData (0x0003).
@@ -178,14 +184,8 @@ mod tests {
         BlazeHeader::new(0, COMPONENT_UTIL, CMD_PING, 0x0000, MessageType::SubmitRequest, 0, seq)
     }
 
-    /// Regression test for the 10s watchdog EOF.
-    ///
-    /// In FIFA 22 BlazeSDK 15.1.1.10.3, Blaze::Util::PingResponse has 0 member
-    /// fields in its Heat2 schema. Any unexpected tag (e.g. STIM) is rejected by
-    /// Heat2Decoder with BLAZE_ERR_TDF_TAG_NOT_FOUND, which drops the connection
-    /// ~10s later. The response MUST encode as an empty struct.
     #[test]
-    fn test_ping_response_is_empty_struct_no_stim() {
+    fn test_ping_response_includes_stim() {
         let req = BlazePacket::new(
             COMPONENT_UTIL,
             CMD_PING,
@@ -204,10 +204,44 @@ mod tests {
         assert_eq!(resp.header.msg_type, MessageType::RecordResponse);
         assert_eq!(resp.header.seq_no, 42);
         assert!(
-            resp.payload.fields.is_empty(),
-            "PingResponse must be an empty TDF struct (0 fields); got keys {:?}",
-            resp.payload.fields.keys().collect::<Vec<_>>()
+            resp.payload.get("STIM").is_some(),
+            "PingResponse must include STIM (Server Time)"
         );
+
+        let encoded_16 = resp.encode_16().expect("encode_16 must succeed");
+        assert_eq!(encoded_16[10], 0x01, "Byte 10 must be RecordResponse (0x01)");
+        assert!(encoded_16.len() > 16, "Must contain STIM payload");
+        println!("ping 16-byte frame ({} bytes):\n{}", encoded_16.len(), blaze_core::hex_dump(&encoded_16));
+    }
+
+    #[test]
+    fn test_pre_auth_response_serialization() {
+        let req = BlazePacket::new(
+            COMPONENT_UTIL,
+            CMD_PRE_AUTH,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            1,
+            TdfStruct::new(),
+        )
+        .unwrap();
+
+        let resp = handle_pre_auth(&req, "127.0.0.1", 17498).expect("preAuth handler must not error");
+        assert_eq!(resp.header.component, COMPONENT_UTIL);
+        assert_eq!(resp.header.command, CMD_PRE_AUTH);
+        assert_eq!(resp.header.msg_type, MessageType::RecordResponse);
+        assert_eq!(resp.header.seq_no, 1);
+
+        assert!(resp.payload.get("ANAM").is_some());
+        assert!(resp.payload.get("CIDS").is_some());
+        assert!(resp.payload.get("QOSS").is_some());
+        assert!(resp.payload.get("SVER").is_some());
+        assert!(resp.payload.get("TIME").is_some());
+
+        let encoded_16 = resp.encode_16().expect("encode_16 must succeed");
+        assert_eq!(encoded_16[10], 0x01, "Byte 10 must be RecordResponse (0x01)");
+        println!("preAuth 16-byte frame ({} bytes):\n{}", encoded_16.len(), blaze_core::hex_dump(&encoded_16));
     }
 }
 
