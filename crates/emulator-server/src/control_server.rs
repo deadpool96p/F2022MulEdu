@@ -265,16 +265,32 @@ pub async fn run_control_server(
                         }
                     }
 
-                    tracing::info!("[Control Server] Allocated Room Code '{}'", code);
+                    let host_ip = extract_json_string(&body_str, "host")
+                        .unwrap_or_else(|| "127.0.0.1".to_string());
+                    let host_port = extract_json_u64(&body_str, "port").unwrap_or(42128) as u16;
+                    let conn_str = format!("{}:{}:{}", host_ip, host_port, code);
+
+                    tracing::info!("[Control Server] Allocated Room Code '{}', Connection String: '{}'", code, conn_str);
+                    println!("[Room] Host Room Ready! Connection String: {}", conn_str);
                     let members_json = serde_json::to_string(&room.members).unwrap_or_else(|_| "[]".to_string());
-                    let json = format!(r#"{{"status":"ok","room_code":"{}","slot":0,"members":{}}}"#, code, members_json);
+                    let json = format!(r#"{{"status":"ok","room_code":"{}","connection_string":"{}","slot":0,"members":{}}}"#, code, conn_str, members_json);
                     HttpResponse::ok_json(&json)
                 }
 
                 ("POST", "/api/v1/rooms/join") => {
                     let body_str = String::from_utf8_lossy(&req.body);
-                    let room_code = extract_json_string(&body_str, "room_code")
-                        .unwrap_or_else(|| "DEFAULT".to_string());
+                    let mut room_code = extract_json_string(&body_str, "room_code").unwrap_or_default();
+                    if let Some(conn_str) = extract_json_string(&body_str, "connection_string") {
+                        let parts: Vec<&str> = conn_str.split(':').collect();
+                        if parts.len() >= 3 {
+                            room_code = parts[2].trim().to_string();
+                        } else if !conn_str.is_empty() {
+                            room_code = conn_str;
+                        }
+                    }
+                    if room_code.is_empty() {
+                        room_code = "DEFAULT".to_string();
+                    }
 
                     let guest_name = extract_json_string(&body_str, "persona_name")
                         .unwrap_or_else(|| "Guest".to_string());

@@ -28,6 +28,53 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Ok(());
     }
 
+    // Check for --join <HOST:PORT:TOKEN>
+    let mut join_target: Option<String> = None;
+    let mut j = 1;
+    while j < args.len() {
+        if (args[j] == "--join" || args[j] == "-j") && j + 1 < args.len() {
+            join_target = Some(args[j + 1].clone());
+            j += 2;
+        } else if args[j].starts_with("--join=") {
+            join_target = Some(args[j].trim_start_matches("--join=").to_string());
+            j += 1;
+        } else {
+            j += 1;
+        }
+    }
+
+    if let Some(target) = join_target {
+        println!("[Join] Initiating join with room connection string: {}", target);
+        let parts: Vec<&str> = target.split(':').collect();
+        if parts.len() < 3 {
+            eprintln!("[Error] Invalid connection string format. Expected HOST:PORT:TOKEN, got: {}", target);
+            std::process::exit(1);
+        }
+        let host = parts[0];
+        let token = parts[2];
+        println!("[Join] Target Host: {}, Room Token: {}", host, token);
+        let client_res = tokio::net::TcpStream::connect(format!("{}:42129", host)).await;
+        match client_res {
+            Ok(mut stream) => {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let body = format!(r#"{{"connection_string":"{}","persona_name":"Guest","steam_id":0}}"#, target);
+                let req = format!(
+                    "POST /api/v1/rooms/join HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
+                    host, body.len(), body
+                );
+                let _ = stream.write_all(req.as_bytes()).await;
+                let mut buf = vec![0u8; 1024];
+                if let Ok(n) = stream.read(&mut buf).await {
+                    println!("[Join] Server Response: {}", String::from_utf8_lossy(&buf[..n]));
+                }
+            }
+            Err(e) => {
+                println!("[Join] Target host {} control server reachable check: {}; token {} ready.", host, e, token);
+            }
+        }
+        return Ok(());
+    }
+
     // Check for --trace-blaze <path>
     let mut trace_path: Option<String> = std::env::var("TRACE_BLAZE").ok();
     let mut i = 1;

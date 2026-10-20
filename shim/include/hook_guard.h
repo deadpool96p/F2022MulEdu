@@ -80,22 +80,22 @@ public:
         create_status_ = MH_CreateHook(target_, detour_, original_);
         char buf[256];
         if (create_status_ != MH_OK) {
-            snprintf(buf, sizeof(buf), "[HookGuard] %s::%s at %p -> MH_CreateHook failed: %s",
-                     module_name_.c_str(), func_name_.c_str(), target_, MH_StatusToString(create_status_));
+            snprintf(buf, sizeof(buf), "[HookGuard] %s::%s at %p -> MH_CreateHook failed: %s (NTSTATUS/MH_STATUS=0x%08X)",
+                     module_name_.c_str(), func_name_.c_str(), target_, MH_StatusToString(create_status_), (unsigned int)create_status_);
             LogError(buf);
             return false;
         }
 
         enable_status_ = MH_EnableHook(target_);
         if (enable_status_ != MH_OK) {
-            snprintf(buf, sizeof(buf), "[HookGuard] %s::%s at %p -> MH_EnableHook failed: %s",
-                     module_name_.c_str(), func_name_.c_str(), target_, MH_StatusToString(enable_status_));
+            snprintf(buf, sizeof(buf), "[HookGuard] %s::%s at %p -> MH_EnableHook failed: %s (NTSTATUS/MH_STATUS=0x%08X)",
+                     module_name_.c_str(), func_name_.c_str(), target_, MH_StatusToString(enable_status_), (unsigned int)enable_status_);
             LogError(buf);
             return false;
         }
 
         enabled_ = true;
-        snprintf(buf, sizeof(buf), "[HookGuard] %s::%s at %p -> Successfully installed & enabled (MH_OK)",
+        snprintf(buf, sizeof(buf), "[HookGuard] %s::%s at %p -> Successfully installed & enabled (NTSTATUS/MH_STATUS=0x00000000 STATUS_SUCCESS)",
                  module_name_.c_str(), func_name_.c_str(), target_);
         LogInfo(buf);
         return true;
@@ -103,11 +103,11 @@ public:
 
     void Uninstall() {
         if (enabled_ && target_) {
-            MH_DisableHook(target_);
-            MH_RemoveHook(target_);
+            MH_STATUS dis = MH_DisableHook(target_);
+            MH_STATUS rem = MH_RemoveHook(target_);
             char buf[256];
-            snprintf(buf, sizeof(buf), "[HookGuard] %s::%s at %p -> Uninstalled & cleaned up",
-                     module_name_.c_str(), func_name_.c_str(), target_);
+            snprintf(buf, sizeof(buf), "[HookGuard] %s::%s at %p -> Uninstalled & cleaned up (NTSTATUS/MH_STATUS=0x00000000 STATUS_SUCCESS, disable=%s, remove=%s)",
+                     module_name_.c_str(), func_name_.c_str(), target_, MH_StatusToString(dis), MH_StatusToString(rem));
             LogInfo(buf);
             enabled_ = false;
             target_ = nullptr;

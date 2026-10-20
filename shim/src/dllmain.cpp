@@ -34,6 +34,8 @@ static PFN_DXGID3D10RegisterLayers g_pfn_DXGID3D10RegisterLayers = nullptr;
 #include <vector>
 
 constexpr const char* TARGET_FIFA_HASH_HEX = "FDDC0B5B4A093C460A5D0E07E117634366E2DA0050F19EED3776C4340A56471A";
+constexpr const char* TARGET_CARDSDLL_HASH_HEX = "D6711E3A227A5EAAC3285971C44F0F583B90B42B5C2749A1C95F2E479F7164C5";
+constexpr const char* SHIM_VERSION_STRING = "F2022MulEdu Shim Proxy v0.1.0-alpha (Target: FIFA 22 1.0.77.45722)";
 
 static bool ComputeSha256File(const char* filepath, std::string& out_hex) {
     HANDLE hFile = CreateFileA(filepath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
@@ -98,6 +100,11 @@ bool RunStartupSelfCheck() {
         }
     };
 
+    // 0. Log Shim Version
+    std::string ver_line = std::string("[INFO] ") + SHIM_VERSION_STRING;
+    write_to_shim_log(ver_line);
+    LogInfo(ver_line);
+
     bool all_ok = true;
 
     // 1. Verify dxgi_org.dll exists in the executable/module directory
@@ -105,8 +112,10 @@ bool RunStartupSelfCheck() {
     GetModuleFileNameA(nullptr, dll_dir, MAX_PATH);
     char* last_slash = strrchr(dll_dir, '\\');
     std::string dxgi_org_path = "dxgi_org.dll";
+    std::string base_dir = ".";
     if (last_slash) {
         *last_slash = '\0';
+        base_dir = dll_dir;
         dxgi_org_path = std::string(dll_dir) + "\\dxgi_org.dll";
     }
 
@@ -128,23 +137,53 @@ bool RunStartupSelfCheck() {
 
     std::string actual_hash;
     if (ComputeSha256File(exe_path, actual_hash)) {
-        if (_stricmp(actual_hash.c_str(), TARGET_FIFA_HASH_HEX) != 0) {
-            std::string err = "[ERROR] Startup self-check: Executable hash mismatch for " + std::string(exe_path) +
-                              "! Expected (1.0.77.45722): " + TARGET_FIFA_HASH_HEX +
-                              ", Got: " + actual_hash;
-            write_to_shim_log(err);
-            LogError(err);
-            all_ok = false;
-        } else {
-            std::string ok_msg = "[INFO] Startup self-check: FIFA 22 (build 1.0.77.45722) hash verified: " + actual_hash;
-            write_to_shim_log(ok_msg);
-            LogInfo(ok_msg);
+        std::string hash_log = "[INFO] Loaded Executable (" + std::string(exe_path) + ") SHA-256: " + actual_hash;
+        write_to_shim_log(hash_log);
+        LogInfo(hash_log);
+
+        std::string exe_str = exe_path;
+        std::transform(exe_str.begin(), exe_str.end(), exe_str.begin(), [](unsigned char c) { return (char)tolower(c); });
+
+        if (exe_str.find("fifa") != std::string::npos) {
+            if (_stricmp(actual_hash.c_str(), TARGET_FIFA_HASH_HEX) != 0) {
+                std::string err = "[ERROR] Startup self-check: Executable hash mismatch for " + std::string(exe_path) +
+                                  "! Expected (1.0.77.45722): " + TARGET_FIFA_HASH_HEX +
+                                  ", Got: " + actual_hash;
+                write_to_shim_log(err);
+                LogError(err);
+                all_ok = false;
+            } else {
+                std::string ok_msg = "[INFO] Startup self-check: FIFA 22 (build 1.0.77.45722) hash verified: " + actual_hash;
+                write_to_shim_log(ok_msg);
+                LogInfo(ok_msg);
+            }
         }
     } else {
         std::string err = "[ERROR] Startup self-check: Failed to compute SHA-256 hash for loaded executable: " + std::string(exe_path);
         write_to_shim_log(err);
         LogError(err);
         all_ok = false;
+    }
+
+    // 3. Check and log CardsDLL_Win64_retail.dll hash if present
+    std::string cards_dll_path = base_dir + "\\CardsDLL_Win64_retail.dll";
+    DWORD cards_attr = GetFileAttributesA(cards_dll_path.c_str());
+    if (cards_attr != INVALID_FILE_ATTRIBUTES) {
+        std::string cards_hash;
+        if (ComputeSha256File(cards_dll_path.c_str(), cards_hash)) {
+            std::string cards_msg = "[INFO] CardsDLL_Win64_retail.dll SHA-256: " + cards_hash;
+            write_to_shim_log(cards_msg);
+            LogInfo(cards_msg);
+            if (_stricmp(cards_hash.c_str(), TARGET_CARDSDLL_HASH_HEX) == 0) {
+                std::string match_msg = "[INFO] Startup self-check: CardsDLL_Win64_retail.dll verified: " + cards_hash;
+                write_to_shim_log(match_msg);
+                LogInfo(match_msg);
+            }
+        }
+    } else {
+        std::string cards_note = "[INFO] CardsDLL_Win64_retail.dll not found at: " + cards_dll_path + " (non-cards invocation)";
+        write_to_shim_log(cards_note);
+        LogInfo(cards_note);
     }
 
     return all_ok;
@@ -204,7 +243,11 @@ static DWORD WINAPI ShimWorkerThread(LPVOID) {
     LogInfo("=============================================================");
 
     LoadConfig();
-    RunStartupSelfCheck();
+    if (!RunStartupSelfCheck()) {
+        std::string err = "[FATAL] Startup self-check failed! Refusing to install hooks to protect target stability.";
+        LogError(err);
+        return 1;
+    }
 
     if (MH_Initialize() != MH_OK) {
         LogError("MinHook initialization failed!");

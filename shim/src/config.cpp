@@ -82,6 +82,8 @@ void LoadConfig() {
         } else if (current_section == "SSL") {
             if (key == "BypassCertValidation") {
                 g_config.bypass_cert_validation = (val == "true" || val == "1");
+            } else if (key == "PinnedFingerprint" || key == "PinFingerprint") {
+                g_config.pinned_fingerprint = val;
             }
         }
     }
@@ -101,6 +103,7 @@ void LoadConfig() {
        << ", BlazePort=" << g_config.blaze_port
        << ", TelemetryPort=" << g_config.telemetry_port
        << ", BypassCert=" << (g_config.bypass_cert_validation ? "true" : "false")
+       << ", PinnedFingerprint=" << (g_config.pinned_fingerprint.empty() ? "(none)" : g_config.pinned_fingerprint)
        << ", DryRun=" << (g_config.dry_run ? "true (inspection only)" : "false");
     LogInfo(ss.str());
 }

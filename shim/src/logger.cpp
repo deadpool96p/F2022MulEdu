@@ -9,6 +9,7 @@ namespace f22 {
 
 static std::mutex g_log_mutex;
 static std::ofstream g_log_file;
+static std::ofstream g_appdata_shim_log;
 static bool g_log_initialized = false;
 static std::string g_log_dir = "";
 
@@ -17,6 +18,9 @@ void SetLogDirectory(const std::string& dir) {
     g_log_dir = dir;
     if (g_log_file.is_open()) {
         g_log_file.close();
+    }
+    if (g_appdata_shim_log.is_open()) {
+        g_appdata_shim_log.close();
     }
     g_log_initialized = false;
 }
@@ -39,6 +43,15 @@ static void EnsureLogFile() {
         if (!g_log_file.is_open()) {
             CreateDirectoryA("C:\\Temp", nullptr);
             g_log_file.open("C:\\Temp\\f22_shim.log", std::ios::out | std::ios::app);
+        }
+
+        // Also open %LOCALAPPDATA%\F2022MulEdu\shim.log
+        char local_appdata[MAX_PATH] = {0};
+        if (GetEnvironmentVariableA("LOCALAPPDATA", local_appdata, MAX_PATH) > 0) {
+            std::string dir = std::string(local_appdata) + "\\F2022MulEdu";
+            CreateDirectoryA(dir.c_str(), nullptr);
+            std::string path = dir + "\\shim.log";
+            g_appdata_shim_log.open(path, std::ios::out | std::ios::app);
         }
 
         g_log_initialized = true;
@@ -67,6 +80,10 @@ void Log(std::string_view level, std::string_view message) {
     if (g_log_file.is_open()) {
         g_log_file << formatted;
         g_log_file.flush();
+    }
+    if (g_appdata_shim_log.is_open()) {
+        g_appdata_shim_log << formatted;
+        g_appdata_shim_log.flush();
     }
     OutputDebugStringA(formatted.c_str());
 }

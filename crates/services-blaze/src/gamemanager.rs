@@ -1211,6 +1211,30 @@ pub fn handle_destroy_game(
     BlazePacket::response(&req.header, TdfStruct::new())
 }
 
+/// Notifies both peers in a game to switch to ProtoTunnel relay-only transport.
+pub fn notify_relay_mode_switch(
+    game_id: u64,
+    registry: &GameRegistry,
+    store: &SessionStore,
+) -> io::Result<()> {
+    let mut attrs = HashMap::new();
+    attrs.insert("ATTR_FORCE_RELAY".to_string(), "1".to_string());
+    attrs.insert("ATTR_RELAY_TRANSPORT".to_string(), "ProtoTunnel".to_string());
+
+    if let Some(g) = registry.update_attributes(game_id, attrs.clone()) {
+        let notif = build_notify_game_attrib_change(g.game_id, &attrs)?;
+        let notif_0018 = build_notify_game_attrib_change_0018(g.game_id, &attrs)?;
+        let mut participants = vec![g.host_user_id];
+        if let Some(gid) = g.guest_user_id {
+            participants.push(gid);
+        }
+        store.broadcast_notification(&participants, notif);
+        store.broadcast_notification(&participants, notif_0018);
+        tracing::info!("[GameManager] Auto-switched to relay-only: Broadcast ATTR_FORCE_RELAY=1 to peers in game {}", game_id);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1457,5 +1481,24 @@ mod tests {
         // Not yet 5s elapsed
         assert!(!guard.check_deadlock(101));
         guard.match_ready_achieved(101);
+    }
+
+    #[test]
+    fn test_notify_relay_mode_switch_broadcasts_attributes() {
+        let store = Arc::new(SessionStore::new());
+        let registry = Arc::new(GameRegistry::new());
+
+        let p1 = store.create_session(Some("HostP1"));
+        let p2 = store.create_session(Some("GuestP2"));
+
+        let (game, _) = registry.find_or_create_auto_match(&p1);
+        let _ = registry.find_or_create_auto_match(&p2);
+
+        let res = notify_relay_mode_switch(game.game_id, &registry, &store);
+        assert!(res.is_ok());
+
+        let updated = registry.find_by_player(p1.user_id).unwrap();
+        assert_eq!(updated.attributes.get("ATTR_FORCE_RELAY"), Some(&"1".to_string()));
+        assert_eq!(updated.attributes.get("ATTR_RELAY_TRANSPORT"), Some(&"ProtoTunnel".to_string()));
     }
 }

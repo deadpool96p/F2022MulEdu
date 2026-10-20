@@ -137,6 +137,13 @@ async fn test_steam_independent_room_code_flow() {
     let room_code = host_str[code_idx..code_idx + 6].to_string();
     assert_eq!(room_code.len(), 6);
 
+    let conn_key = "\"connection_string\":\"";
+    let conn_idx = host_str.find(conn_key).unwrap() + conn_key.len();
+    let conn_end = host_str[conn_idx..].find('"').unwrap();
+    let conn_string = host_str[conn_idx..conn_idx + conn_end].to_string();
+    assert!(conn_string.starts_with("127.0.0.1:"));
+    assert!(conn_string.ends_with(&room_code));
+
     // Host receives NotifyGameSetup (0x0014) on Blaze
     let setup_p1 = read_blaze_packet(&mut host_stream).await;
     assert_eq!(setup_p1.header.component, 0x0004);
@@ -153,13 +160,13 @@ async fn test_steam_independent_room_code_flow() {
     let _ = read_blaze_packet(&mut guest_stream).await;
     let _ = read_blaze_packet(&mut guest_stream).await;
 
-    // 8. Guest joins room code via POST /api/v1/rooms/join (Steam-independent)
+    // 8. Guest joins room code via POST /api/v1/rooms/join using connection_string (HOST:PORT:TOKEN)
     let mut guest_http = TcpStream::connect(format!("127.0.0.1:{}", control_port))
         .await
         .unwrap();
     let join_body = format!(
-        r#"{{"room_code":"{}","persona_name":"LAN_Guest","steam_id":0}}"#,
-        room_code
+        r#"{{"connection_string":"{}","persona_name":"LAN_Guest","steam_id":0}}"#,
+        conn_string
     );
     let join_req = format!(
         "POST /api/v1/rooms/join HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {}\r\nContent-Type: application/json\r\n\r\n{}",
@@ -183,7 +190,29 @@ async fn test_steam_independent_room_code_flow() {
     assert_eq!(guest_setup.header.component, 0x0004);
     assert_eq!(guest_setup.header.command, 0x0014);
 
-    // 10. Query Control API Status: verify both members are joined with active room code
+    // 10. Test Symmetric NAT detection & fallback: Probe with SYMMETRIC flag (0x02)
+    let sym_probe = vec![0x09, 0x0A, 0x0B, 0x0C, 0x02, 0x00];
+    guest_udp.send_to(&sym_probe, qos_addr).await.unwrap();
+    let mut sym_resp = vec![0u8; 1024];
+    let (n_sym, _) = guest_udp.recv_from(&mut sym_resp).await.unwrap();
+    assert!(n_sym >= 16);
+    // NAT Type = 2 (SYMMETRIC)
+    assert_eq!(&sym_resp[14..16], &[0, 2]);
+    assert!(services_qos_relay::is_relay_only_mode());
+
+    // Trigger relay notification over Blaze to both peers
+    let active_game = game_registry.find_by_room_code(&room_code).unwrap();
+    let notify_res = services_blaze::notify_relay_mode_switch(active_game.game_id, &game_registry, &session_store);
+    assert!(notify_res.is_ok());
+
+    // Host and guest receive NotifyGameAttribChange with ATTR_FORCE_RELAY
+    let host_relay_notif = read_blaze_packet(&mut host_stream).await;
+    assert_eq!(host_relay_notif.header.command, 0x0050); // NOTIFY_GAME_ATTRIB_CHANGE
+    let _ = read_blaze_packet(&mut host_stream).await; // 0x0018 alt
+    let guest_relay_notif = read_blaze_packet(&mut guest_stream).await;
+    assert_eq!(guest_relay_notif.header.command, 0x0050);
+
+    // 11. Query Control API Status: verify both members are joined with active room code
     let mut status_http = TcpStream::connect(format!("127.0.0.1:{}", control_port))
         .await
         .unwrap();

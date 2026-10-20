@@ -30,6 +30,7 @@ struct Config {
     bool enable_steam = true;
     uint32_t steam_appid = 480;
     bool dry_run = false;
+    std::string pinned_fingerprint = "";
 };
 
 // Real-time UDP Netcode Metrics & Transport Mode
@@ -68,6 +69,7 @@ void LogError(std::string_view message);
 // Subsystem Hooks
 bool InstallWinsockHooks();
 bool InstallCertBypassHooks();
+bool verify_peer(const uint8_t* cert_bytes, size_t cert_len);
 bool InstallDXGIHooks();
 void RemoveDXGIHooks();
 

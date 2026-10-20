@@ -31,6 +31,81 @@
   static PFN_CertGetCertificateChain g_orig_CertGetCertificateChain = nullptr;
   static PFN_BCryptVerifySignature g_orig_BCryptVerifySignature = nullptr;
 
+  static bool ComputeSha256(const uint8_t* data, size_t len, uint8_t out_hash[32]) {
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+    if (!CryptAcquireContext(&hProv, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
+      return false;
+    }
+    if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
+      CryptReleaseContext(hProv, 0);
+      return false;
+    }
+    if (!CryptHashData(hHash, data, static_cast<DWORD>(len), 0)) {
+      CryptDestroyHash(hHash);
+      CryptReleaseContext(hProv, 0);
+      return false;
+    }
+    DWORD hash_len = 32;
+    bool ok = CryptGetHashParam(hHash, HP_HASHVAL, out_hash, &hash_len, 0);
+    CryptDestroyHash(hHash);
+    CryptReleaseContext(hProv, 0);
+    return ok && hash_len == 32;
+  }
+
+  static std::string NormalizeFingerprint(std::string_view fp) {
+    std::string norm;
+    for (char c : fp) {
+      if (c != ':' && c != '-' && c != ' ' && c != '\t') {
+        norm.push_back(static_cast<char>(toupper(static_cast<unsigned char>(c))));
+      }
+    }
+    return norm;
+  }
+
+  bool verify_peer(const uint8_t* cert_bytes, size_t cert_len) {
+    if (!cert_bytes || cert_len == 0) return false;
+
+    uint8_t hash[32] = {0};
+    if (!ComputeSha256(cert_bytes, cert_len, hash)) {
+      LogWarn("[SSL Peer Verification] Failed to compute SHA-256 hash of peer certificate");
+      return false;
+    }
+
+    char colon_hex[100] = {0};
+    char plain_hex[65] = {0};
+    for (int i = 0; i < 32; ++i) {
+      snprintf(plain_hex + i * 2, 3, "%02X", hash[i]);
+      if (i == 0) {
+        snprintf(colon_hex, 4, "%02X", hash[i]);
+      } else {
+        snprintf(colon_hex + strlen(colon_hex), 4, ":%02X", hash[i]);
+      }
+    }
+
+    const std::string& pinned = GetConfig().pinned_fingerprint;
+    if (!pinned.empty()) {
+      std::string norm_pinned = NormalizeFingerprint(pinned);
+      std::string norm_actual = plain_hex;
+      if (norm_pinned != norm_actual) {
+        std::ostringstream err_ss;
+        err_ss << "[SSL Peer Verification] FINGERPRINT MISMATCH! Expected pinned: "
+               << pinned << " (" << norm_pinned << "), Got: " << colon_hex << " (" << norm_actual << ")";
+        LogError(err_ss.str());
+        return false;
+      }
+      std::ostringstream ok_ss;
+      ok_ss << "[SSL Peer Verification] SUCCESS: Peer certificate matches pinned fingerprint: " << colon_hex;
+      LogInfo(ok_ss.str());
+    } else {
+      std::ostringstream ok_ss;
+      ok_ss << "[SSL Peer Verification] SUCCESS: Peer certificate validated (fingerprint: " << colon_hex << ")";
+      LogInfo(ok_ss.str());
+    }
+
+    return true;
+  }
+
   static BOOL WINAPI Hooked_CertVerifyCertificateChainPolicy(
       LPCSTR pszPolicyOID, PCCERT_CHAIN_CONTEXT pChainContext,
       PCERT_CHAIN_POLICY_PARA pPolicyPara,
@@ -38,6 +113,16 @@
     BOOL result = g_orig_CertVerifyCertificateChainPolicy(
         pszPolicyOID, pChainContext, pPolicyPara, pPolicyStatus);
     if (GetConfig().bypass_cert_validation) {
+      if (pChainContext && pChainContext->cChain > 0 && pChainContext->rgpChain[0]->cElement > 0) {
+        PCCERT_CONTEXT pLeaf = pChainContext->rgpChain[0]->rgpElement[0]->pCertContext;
+        if (pLeaf && !verify_peer(pLeaf->pbCertEncoded, pLeaf->cbCertEncoded)) {
+          LogError("[SSL Bypass] verify_peer() failed: Certificate fingerprint mismatch against pinned fingerprint!");
+          if (pPolicyStatus) {
+            pPolicyStatus->dwError = CERT_E_UNTRUSTEDROOT;
+          }
+          return FALSE;
+        }
+      }
       if (pPolicyStatus) {
         if (pPolicyStatus->dwError != 0) {
           std::ostringstream ss;
