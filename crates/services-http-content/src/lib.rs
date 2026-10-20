@@ -271,10 +271,16 @@ pub fn route_http_request(req: &HttpRequest) -> HttpResponse {
             tracing::info!("[HTTP Sink] Serving RS4:FutMatchReadyServerResponse for {}", path);
             HttpResponse::match_ready_response(1, 2, 1)
         }
+        // EA / Cards Server Status & Availability Probe (EOS bypass)
+        p if p.contains("status") || p.contains("server_status") || p.contains("serverStatus") || p.contains("health") || p.contains("dime") => {
+            tracing::info!("[Server Status] Serving active ONLINE server status for {}", path);
+            let json = r#"{"status":"online","code":0,"server_status":0,"serverStatus":0,"messages":[],"protocolVersion":1,"data":{"status":"online","code":0,"available":true}}"#;
+            HttpResponse::ok_json(json)
+        }
         _ => {
             // Fallback 200 OK for any unmapped EA telemetry/ad path to prevent game freeze
             tracing::info!("[HTTP Sink] Fast-pathing unmapped endpoint: {}", path);
-            HttpResponse::ok_json(r#"{"status":"ok"}"#)
+            HttpResponse::ok_json(r#"{"status":"ok","code":0,"server_status":0}"#)
         }
     }
 }
