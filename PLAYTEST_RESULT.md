@@ -38,7 +38,8 @@ The shim proxy (`dxgi.dll`) executes `RunStartupSelfCheck()` on `DLL_PROCESS_ATT
 1. Logs shim version: `F2022MulEdu Shim Proxy v0.1.0-alpha (Target: FIFA 22 1.0.77.45722)`.
 2. Computes and logs SHA-256 of loaded executable (target: `FDDC0B5B4A093C460A5D0E07E117634366E2DA0050F19EED3776C4340A56471A`).
 3. Computes and logs SHA-256 of `CardsDLL_Win64_retail.dll` (target: `D6711E3A227A5EAAC3285971C44F0F583B90B42B5C2749A1C95F2E479F7164C5`).
-4. Verifies `dxgi_org.dll` exists. On hash or file mismatch, writes error to `%LOCALAPPDATA%\F2022MulEdu\shim.log` and **refuses to install hooks**.
+4. Verifies real DXGI backend (`System32\dxgi.dll` or `dxgi_org.dll`). On hash or backend failure, writes error to `%LOCALAPPDATA%\F2022MulEdu\shim.log` and refuses to install hooks.
+5. **Client Cache Clearance:** Ensure FIFA 22 local cache is cleared before testing to prevent stale EOS flags (specifically `%USERPROFILE%\Documents\FIFA 22\settings` and `filesystemcache`).
 
 ### C. Live Blaze Trace Capture & Sign-Off Criteria
 Capture full Blaze trace from both real game processes using `--trace-blaze`. P0 will be signed off as fully complete only when a trace from a real `fifa22.exe` contains:

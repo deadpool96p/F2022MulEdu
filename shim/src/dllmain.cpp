@@ -108,28 +108,25 @@ bool RunStartupSelfCheck() {
 
     bool all_ok = true;
 
-    // 1. Verify dxgi_org.dll exists in the executable/module directory
+    // 1. Verify real DXGI is loaded (either dxgi_org.dll or System32\dxgi.dll)
     char dll_dir[MAX_PATH] = {0};
     GetModuleFileNameA(nullptr, dll_dir, MAX_PATH);
     char* last_slash = strrchr(dll_dir, '\\');
-    std::string dxgi_org_path = "dxgi_org.dll";
     std::string base_dir = ".";
     if (last_slash) {
         *last_slash = '\0';
         base_dir = dll_dir;
-        dxgi_org_path = std::string(dll_dir) + "\\dxgi_org.dll";
     }
 
-    DWORD attr = GetFileAttributesA(dxgi_org_path.c_str());
-    if (attr == INVALID_FILE_ATTRIBUTES) {
-        std::string err = "[ERROR] Startup self-check: dxgi_org.dll not found at: " + dxgi_org_path;
+    if (g_real_dxgi != nullptr) {
+        std::string ok_msg = "[INFO] Startup self-check: Real DXGI backend verified and loaded.";
+        write_to_shim_log(ok_msg);
+        LogInfo(ok_msg);
+    } else {
+        std::string err = "[ERROR] Startup self-check: Real DXGI backend handle is null!";
         write_to_shim_log(err);
         LogError(err);
         all_ok = false;
-    } else {
-        std::string ok_msg = "[INFO] Startup self-check: dxgi_org.dll verified at: " + dxgi_org_path;
-        write_to_shim_log(ok_msg);
-        LogInfo(ok_msg);
     }
 
     // 2. Verify loaded FIFA executable hash matches target build (1.0.77.45722)

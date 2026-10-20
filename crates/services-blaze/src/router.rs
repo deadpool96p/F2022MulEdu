@@ -43,7 +43,7 @@ impl BlazeRouter {
         &mut self,
         req: &BlazePacket,
     ) -> io::Result<(BlazePacket, Option<BlazePacket>)> {
-        match (req.header.component, req.header.command) {
+        let mut res = match (req.header.component, req.header.command) {
             // Util Component (0x0009)
             (COMPONENT_UTIL, CMD_PRE_AUTH) => {
                 let resp = handle_pre_auth(req, &self.qos_host, self.qos_port)?;
@@ -207,15 +207,28 @@ impl BlazeRouter {
             // see docs/disassembly_and_engine_multiplayer_plan.md Phase 3 gap). If the real
             // schema requires fields, capture the wire bytes with tools/dissector/blaze.lua
             // in Wireshark and replace this empty response with the exact tags.
+            // PerfComponent (0x08BA) — FifaOnline::PerfComponentClient.
             (0x08BA, _) => {
                 tracing::info!(
                     "[Blaze Router] Handled PerfComponent 0x08BA Command 0x{:04X} (Seq={}) \
-                     -> empty PerfResponse (STIM hypothesis: not a valid Heat2 tag here)",
+                     -> empty PerfResponse",
                     req.header.command,
                     req.header.seq_no
                 );
                 let resp_pkt = BlazePacket::response(&req.header, TdfStruct::new())?;
                 Ok((resp_pkt, None))
+            }
+
+            // Cards / Store / FUT Components: guarantee error_code = 0 (Success)
+            (0x000F, _) | (0x0010, _) | (0x0018, _) | (0x0021, _) => {
+                tracing::info!(
+                    "[Blaze Router] Intercepted Cards/FUT/Store Component 0x{:04X} Command 0x{:04X} (Seq={}) -> Force Success (0)",
+                    req.header.component,
+                    req.header.command,
+                    req.header.seq_no
+                );
+                let resp = BlazePacket::response(&req.header, TdfStruct::new())?;
+                Ok((resp, None))
             }
 
             // Wildcard Unknown-RPC Fallback: log payload and return ERR_OK
@@ -230,6 +243,24 @@ impl BlazeRouter {
                 let resp = BlazePacket::response(&req.header, TdfStruct::new())?;
                 Ok((resp, None))
             }
+        };
+
+        // Post-processing EOS Safety Guard:
+        // Under no circumstances allow an error_code of 0x006F (111 / CARDS_CB_ERR_SERVICE_UNAVAILABLE)
+        // or 0x0197 (407 / CARDS_CB_ERR_PLAYER_OFFLINE) to be emitted to the client.
+        if let Ok((ref mut resp, _)) = res {
+            if resp.header.error_code == 0x006F || resp.header.error_code == 0x0197 {
+                tracing::warn!(
+                    "[Blaze Router] Intercepted fatal error code 0x{:04X} on Component 0x{:04X} Command 0x{:04X}! Overriding to 0 (Success)",
+                    resp.header.error_code,
+                    req.header.component,
+                    req.header.command
+                );
+                resp.header.error_code = 0;
+            }
         }
+
+        res
     }
 }
+

@@ -91,8 +91,8 @@ pub fn handle_redirector_packet(
     match req.header.command {
         COMMAND_GET_SERVER_INSTANCE => handle_get_server_instance(req, config),
         cmd => {
-            tracing::warn!("Redirector received unknown command 0x{:04X}", cmd);
-            BlazePacket::error_response(&req.header, 0x4004)
+            tracing::info!("Redirector received unknown command 0x{:04X} -> defaulting to ServerInstance redirection", cmd);
+            handle_get_server_instance(req, config)
         }
     }
 }
