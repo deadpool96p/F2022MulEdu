@@ -138,8 +138,8 @@ impl BlazeHeader {
         buf[4..6].copy_from_slice(&self.error_code.to_be_bytes());
         buf[6..8].copy_from_slice(&self.component.to_be_bytes());
         buf[8..10].copy_from_slice(&self.command.to_be_bytes());
-        buf[10] = ((self.msg_type as u8) << 4) | (self.qos & 0x0F);
-        buf[11] = 0;
+        buf[10] = self.msg_type as u8;
+        buf[11] = self.qos;
         buf[12..16].copy_from_slice(&(self.seq_no as u32).to_le_bytes());
         buf
     }
@@ -150,8 +150,16 @@ impl BlazeHeader {
         let error_code = u16::from_be_bytes([buf[4], buf[5]]);
         let component = u16::from_be_bytes([buf[6], buf[7]]);
         let command = u16::from_be_bytes([buf[8], buf[9]]);
-        let type_raw = (buf[10] >> 4) & 0x0F;
-        let qos = buf[10] & 0x0F;
+        let type_raw = if buf[10] <= 0x03 {
+            buf[10]
+        } else {
+            (buf[10] >> 4) & 0x0F
+        };
+        let qos = if buf[10] <= 0x03 {
+            buf[11]
+        } else {
+            buf[10] & 0x0F
+        };
         let seq_no = u32::from_le_bytes([buf[12], buf[13], buf[14], buf[15]]) as u16;
 
         let msg_type = MessageType::from_u8(type_raw).unwrap_or(MessageType::SubmitRequest);
@@ -427,7 +435,8 @@ mod tests {
         assert_eq!(&encoded[0..4], &[0, 0, 0, 0]); // len 0
         assert_eq!(&encoded[6..8], &[0x00, 0x09]); // comp 9
         assert_eq!(&encoded[8..10], &[0x00, 0x02]); // cmd 2
-        assert_eq!(encoded[10], 0x10); // RecordResponse
+        assert_eq!(encoded[10], 0x01); // RecordResponse unshifted
+        assert_eq!(encoded[11], 0x00); // QoS 0
         assert_eq!(&encoded[12..16], &[3, 0, 0, 0]); // seq 3 LE
 
         let header = BlazeHeader::from_bytes_16((&encoded[0..16]).try_into().unwrap())
@@ -437,5 +446,27 @@ mod tests {
         assert_eq!(header.seq_no, 3);
         assert_eq!(header.length, 0);
         assert_eq!(header.msg_type, MessageType::RecordResponse);
+    }
+
+    #[test]
+    fn test_blaze_header_16_byte_packing() {
+        let header = BlazeHeader::new(
+            0,
+            0x0009,
+            0x0002,
+            0x0000,
+            MessageType::RecordResponse,
+            0,
+            42,
+        );
+        let bytes = header.to_bytes_16();
+        assert_eq!(bytes.len(), 16);
+        assert_eq!(bytes[10], 0x01, "Byte 10 must be RecordResponse (0x01)");
+        assert_eq!(bytes[11], 0x00, "Byte 11 must be QoS 0");
+
+        let parsed = BlazeHeader::from_bytes_16(&bytes).expect("Failed to parse 16-byte header");
+        assert_eq!(parsed.msg_type, MessageType::RecordResponse);
+        assert_eq!(parsed.qos, 0);
+        assert_eq!(parsed.seq_no, 42);
     }
 }
