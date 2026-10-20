@@ -276,11 +276,15 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
             std::memset(out_addr, 0, sizeof(struct sockaddr_storage));
             out_sin6->sin6_family = AF_INET6;
             out_sin6->sin6_port = (port == 44325) ? htons(cfg.blaze_port) : sin6->sin6_port;
-            // Map to standard IPv6 loopback ::1
-            inet_pton(AF_INET6, "::1", &(out_sin6->sin6_addr));
+            // Map to standard IPv4-mapped IPv6 (::ffff:127.0.0.1) for Windows dual-stack sockets
+            std::string v6_target = "::ffff:" + cfg.emulator_host;
+            if (inet_pton(AF_INET6, v6_target.c_str(), &(out_sin6->sin6_addr)) != 1) {
+                inet_pton(AF_INET6, "::1", &(out_sin6->sin6_addr));
+            }
             *out_len = sizeof(struct sockaddr_in6);
             return true;
         }
+
     }
 
     return false;

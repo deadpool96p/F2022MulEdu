@@ -22,11 +22,25 @@ pub async fn run_redirector_server(
         let acceptor = tls_acceptor.clone();
         let mut cfg = (*config).clone();
         if let Ok(local_addr) = tcp_stream.local_addr() {
-            let ip_str = local_addr.ip().to_string();
-            if ip_str != "0.0.0.0" {
-                cfg.host = ip_str;
+            let ip = local_addr.ip();
+            match ip {
+                std::net::IpAddr::V4(ipv4) => {
+                    if !ipv4.is_unspecified() {
+                        cfg.host = ipv4.to_string();
+                    }
+                }
+                std::net::IpAddr::V6(ipv6) => {
+                    if let Some(ipv4) = ipv6.to_ipv4_mapped() {
+                        cfg.host = ipv4.to_string();
+                    } else {
+                        // Frostbite DirtySDK cannot parse raw IPv6 strings ("::1") in Blaze ADDR union.
+                        // Always fallback to standard IPv4 loopback "127.0.0.1" for local loopback connections.
+                        cfg.host = "127.0.0.1".to_string();
+                    }
+                }
             }
         }
+
         let cfg = Arc::new(cfg);
 
         tokio::spawn(async move {

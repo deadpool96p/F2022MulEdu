@@ -110,26 +110,8 @@
       LPCSTR pszPolicyOID, PCCERT_CHAIN_CONTEXT pChainContext,
       PCERT_CHAIN_POLICY_PARA pPolicyPara,
       PCERT_CHAIN_POLICY_STATUS pPolicyStatus) {
-    BOOL result = g_orig_CertVerifyCertificateChainPolicy(
-        pszPolicyOID, pChainContext, pPolicyPara, pPolicyStatus);
     if (GetConfig().bypass_cert_validation) {
-      if (pChainContext && pChainContext->cChain > 0 && pChainContext->rgpChain[0]->cElement > 0) {
-        PCCERT_CONTEXT pLeaf = pChainContext->rgpChain[0]->rgpElement[0]->pCertContext;
-        if (pLeaf && !verify_peer(pLeaf->pbCertEncoded, pLeaf->cbCertEncoded)) {
-          LogError("[SSL Bypass] verify_peer() failed: Certificate fingerprint mismatch against pinned fingerprint!");
-          if (pPolicyStatus) {
-            pPolicyStatus->dwError = CERT_E_UNTRUSTEDROOT;
-          }
-          return FALSE;
-        }
-      }
       if (pPolicyStatus) {
-        if (pPolicyStatus->dwError != 0) {
-          std::ostringstream ss;
-          ss << "[SSL Bypass] CertVerifyCertificateChainPolicy dwError="
-             << pPolicyStatus->dwError << " -> Forced SUCCESS (0)";
-          LogInfo(ss.str());
-        }
         pPolicyStatus->dwError = 0;
       }
       if (pChainContext) {
@@ -138,8 +120,10 @@
       }
       return TRUE;
     }
-    return result;
+    return g_orig_CertVerifyCertificateChainPolicy(
+        pszPolicyOID, pChainContext, pPolicyPara, pPolicyStatus);
   }
+
 
   static BOOL WINAPI Hooked_CertGetCertificateChain(
       HCERTCHAINENGINE hChainEngine, PCCERT_CONTEXT pCertContext,

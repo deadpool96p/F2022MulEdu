@@ -116,9 +116,16 @@ pub fn handle_get_server_instance(
     let mut resp_tdf = TdfStruct::new();
 
     // ADDR: Union tag 0x00 (IPAddress) containing { HOST: String, PORT: Integer }
+    let host_str = if config.host == "::1" || config.host == "::" || config.host == "0.0.0.0" {
+        "127.0.0.1".to_string()
+    } else {
+        config.host.clone()
+    };
     let mut ip_addr_struct = TdfStruct::new();
-    ip_addr_struct.set("HOST", TdfValue::String(config.host.clone()));
+    ip_addr_struct.set("HOST", TdfValue::String(host_str));
     ip_addr_struct.set("PORT", TdfValue::Integer(config.port as u64));
+
+
 
     resp_tdf.set(
         "ADDR",

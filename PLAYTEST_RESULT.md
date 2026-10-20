@@ -55,6 +55,17 @@ If the real game client stalls at kit selection or team loading:
 - Dump divergence using `python tools/blaze_trace_diff.py live_host_blaze.jsonl reference_blaze.jsonl`.
 - Stop execution to inspect the diff — do not patch blindly.
 
+### F. Anti-Cheat & Local Loopback Verification
+- **AntiCheat Model:** FIFA 22 (build 1.0.77.45722) uses Denuvo DRM and user-mode DirtySDK (no kernel EA AntiCheat / `EAAntiCheat.GameService.exe`, which was introduced in FIFA 23).
+- **Loopback Safety:** Loopback TCP/UDP sockets to `127.0.0.1` and dual-stack `[::ffff:127.0.0.1]` operate cleanly without driver-level packet drops.
+- **DNS Fallback:** If WinSock DNS hook interception fails, the standard Windows hosts file (`C:\Windows\System32\drivers\etc\hosts`) can map:
+  ```text
+  127.0.0.1 spring18.gosredirector.ea.com
+  127.0.0.1 gosredirector.ea.com
+  127.0.0.1 freeform-river.data.ea.com
+  ```
+
+
 ---
 
 ## 3. P2: Shim Hardening Implementation Evidence
