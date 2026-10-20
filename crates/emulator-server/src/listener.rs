@@ -67,27 +67,35 @@ pub async fn accept_dual_stream(
     tls_acceptor: &TlsAcceptor,
 ) -> io::Result<DualStream> {
     let peer_addr = tcp_stream.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string());
-    let mut peek_buf = [0u8; 4];
-    let n = tcp_stream.peek(&mut peek_buf).await?;
+    let local_addr = tcp_stream.local_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string());
+    tracing::info!("[DualListener] TCP connection accepted: {} -> {}", peer_addr, local_addr);
 
-    if n > 0 && peek_buf[0] == 0x16 {
-        tracing::info!("[DualListener] Detected TLS Handshake (0x16) from {} -> Initiating TLS Handshake", peer_addr);
+    let mut peek_buf = [0u8; 8];
+    let n = tcp_stream.peek(&mut peek_buf).await?;
+    if n == 0 {
+        tracing::warn!("[DualListener] Connection from {} closed immediately by client (peek=0)", peer_addr);
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "Client disconnected immediately"));
+    }
+
+    if peek_buf[0] == 0x16 {
+        tracing::info!("[DualListener] Detected TLS Handshake (0x16) from {} (peeked {} bytes: {:02X?}) -> Initiating TLS Handshake", peer_addr, n, &peek_buf[..n]);
         match tls_acceptor.accept(tcp_stream).await {
             Ok(tls_stream) => {
                 tracing::info!("[DualListener] TLS handshake SUCCEEDED with {}!", peer_addr);
                 Ok(DualStream::Tls(tls_stream))
             }
             Err(e) => {
-                tracing::warn!("[DualListener] TLS handshake failed with {}: {:?}", peer_addr, e);
+                tracing::warn!("[DualListener] TLS handshake FAILED with {}: {:?}", peer_addr, e);
                 Err(io::Error::new(io::ErrorKind::Other, e))
             }
         }
     } else {
         tracing::info!(
-            "[DualListener] Detected Plain TCP stream from {} (Peeked {} bytes: {:02X?})",
+            "[DualListener] Detected Plain TCP stream from {} (peeked {} bytes: {:02X?} / {:?})",
             peer_addr,
             n,
-            &peek_buf[..n]
+            &peek_buf[..n],
+            String::from_utf8_lossy(&peek_buf[..n])
         );
         Ok(DualStream::Plain(tcp_stream))
     }

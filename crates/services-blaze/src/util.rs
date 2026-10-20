@@ -32,8 +32,12 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
         TdfValue::Integer(0x0007), // Stats
         TdfValue::Integer(0x0009), // Util
         TdfValue::Integer(0x000A), // CensusData
+        TdfValue::Integer(0x000F), // Clubs
+        TdfValue::Integer(0x0010), // Cards
+        TdfValue::Integer(0x0018), // Stats/Achievements
         TdfValue::Integer(0x0019), // Users
         TdfValue::Integer(0x001C), // GameReporting
+        TdfValue::Integer(0x0021), // Store/Catalog
         TdfValue::Integer(0x08BA), // PerfComponent
         TdfValue::Integer(0x7802), // UserSessions
     ];
@@ -68,17 +72,17 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
 pub fn handle_post_auth(req: &BlazePacket) -> io::Result<BlazePacket> {
     let mut resp = TdfStruct::new();
 
-    // Telemetry server info
+    // Telemetry server info (:443)
     let mut tele = TdfStruct::new();
     tele.set("ADRS", TdfValue::String("127.0.0.1".to_string()));
-    tele.set("PORT", TdfValue::Integer(80));
+    tele.set("PORT", TdfValue::Integer(443));
     tele.set("SKEY", TdfValue::String("TELE_KEY".to_string()));
     resp.set("TELE", TdfValue::Struct(tele));
 
-    // Ticker server info
+    // Ticker server info (:443)
     let mut tick = TdfStruct::new();
     tick.set("ADRS", TdfValue::String("127.0.0.1".to_string()));
-    tick.set("PORT", TdfValue::Integer(80));
+    tick.set("PORT", TdfValue::Integer(443));
     tick.set("SKEY", TdfValue::String("TICK_KEY".to_string()));
     resp.set("TICK", TdfValue::Struct(tick));
 

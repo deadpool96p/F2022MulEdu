@@ -70,23 +70,79 @@ async fn handle_redirector_connection(
     if &prefix == b"POST" || &prefix == b"GET " {
         handle_http_redirector(stream, &prefix, config).await
     } else {
-        // Read remaining 8 bytes of 12-byte Blaze header
-        let mut header_buf = [0u8; BlazeHeader::HEADER_SIZE];
-        header_buf[..4].copy_from_slice(&prefix);
-        stream.read_exact(&mut header_buf[4..]).await?;
-        let header = BlazeHeader::from_bytes(&header_buf)?;
+        // Read initial chunk into buffer
+        let mut buffer = Vec::with_capacity(1024);
+        buffer.extend_from_slice(&prefix);
 
-        // Read TDF payload
-        let mut payload_buf = vec![0u8; header.length as usize];
-        stream.read_exact(&mut payload_buf).await?;
-        let payload = deserialize_tdf(&payload_buf)?;
+        // Read at least 12 more bytes to determine 12-byte vs 16-byte header
+        let mut rest_hdr = [0u8; 12];
+        stream.read_exact(&mut rest_hdr).await?;
+        buffer.extend_from_slice(&rest_hdr);
+
+        // Check if 16-byte modern header:
+        // 1) Length high 16b: buffer[0] == 0 && buffer[1] == 0
+        // 2) Error code high byte: buffer[4] == 0
+        // 3) MessageType in Byte 10: buffer[10] <= 0x03
+        let is_16_byte = buffer[0] == 0 && buffer[1] == 0 && buffer[4] == 0 && buffer[10] <= 0x03;
+
+        let (header, payload_len, header_size) = if is_16_byte {
+            let header_slice: [u8; 16] = buffer[0..16].try_into().unwrap();
+            let header = BlazeHeader::from_bytes_16(&header_slice)?;
+            (header, header.length as usize, 16)
+        } else {
+            let header_slice: [u8; 12] = buffer[0..12].try_into().unwrap();
+            let header = BlazeHeader::from_bytes(&header_slice)?;
+            (header, header.length as usize, 12)
+        };
+
+        tracing::info!(
+            "[Redirector] Parsed header (is_16_byte={}): Comp=0x{:04X}, Cmd=0x{:04X}, Seq={}, Len={}, MsgType={:?}",
+            is_16_byte,
+            header.component,
+            header.command,
+            header.seq_no,
+            header.length,
+            header.msg_type
+        );
+
+        // Read remaining payload bytes if needed
+        let already_read = buffer.len() - header_size;
+        let mut payload_buf = Vec::with_capacity(payload_len);
+        if already_read > 0 {
+            let take = already_read.min(payload_len);
+            payload_buf.extend_from_slice(&buffer[header_size..header_size + take]);
+        }
+        while payload_buf.len() < payload_len {
+            let mut chunk = vec![0u8; payload_len - payload_buf.len()];
+            stream.read_exact(&mut chunk).await?;
+            payload_buf.extend_from_slice(&chunk);
+        }
+
+        let payload = if payload_buf.is_empty() {
+            blaze_tdf::TdfStruct::new()
+        } else {
+            deserialize_tdf(&payload_buf).unwrap_or_else(|_| blaze_tdf::TdfStruct::new())
+        };
 
         let req_packet = BlazePacket { header, payload };
         let resp_packet = handle_redirector_packet(&req_packet, config)?;
 
-        let encoded_resp = resp_packet.encode()?;
+        let encoded_resp = if is_16_byte {
+            resp_packet.encode_16()?
+        } else {
+            resp_packet.encode()?
+        };
+
+        tracing::info!(
+            "[Redirector] Sending ServerInstance response to client (is_16_byte={}, {} bytes):\n{}",
+            is_16_byte,
+            encoded_resp.len(),
+            blaze_core::hex_dump(&encoded_resp)
+        );
+
         stream.write_all(&encoded_resp).await?;
         stream.flush().await?;
+        tracing::info!("[Redirector] ServerInstance response sent and flushed successfully.");
 
         Ok(())
     }

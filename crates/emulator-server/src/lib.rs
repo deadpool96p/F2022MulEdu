@@ -182,8 +182,14 @@ pub async fn start_services_full(
 
     let telemetry_task = tokio::spawn(run_telemetry_server(
         telemetry_listener,
-        tls_acceptor,
+        tls_acceptor.clone(),
     ));
+
+    // IPv6 Telemetry Listener (:443)
+    if let Ok(l) = TcpListener::bind(format!("[::]:{}", telemetry_port)).await {
+        tracing::info!("  * IPv6 Telemetry Listener           : Port {}", telemetry_port);
+        tokio::spawn(run_telemetry_server(l, tls_acceptor.clone()));
+    }
 
     let qos_task = tokio::spawn(async move {
         if let Err(e) = run_qos_server(qos_socket).await {

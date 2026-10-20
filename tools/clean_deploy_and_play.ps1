@@ -101,11 +101,16 @@ if (Test-Path $CertSrc) {
     Copy-Item -Path $CertSrc -Destination $CertDst -Force
 }
 
-# Remove old shim log
+# Remove old logs
 $TargetLog = Join-Path $GameDir "f22_shim.log"
 if (Test-Path $TargetLog) {
-    Remove-Item -Path $TargetLog -Force
+    Remove-Item -Path $TargetLog -Force -ErrorAction SilentlyContinue
     Write-Host "  [-] Cleared old log: f22_shim.log" -ForegroundColor Gray
+}
+$ServerLog = Join-Path $RepoRoot "emulator_server.log"
+if (Test-Path $ServerLog) {
+    Remove-Item -Path $ServerLog -Force -ErrorAction SilentlyContinue
+    Write-Host "  [-] Cleared old log: emulator_server.log" -ForegroundColor Gray
 }
 
 # 4. Start the emulator server
