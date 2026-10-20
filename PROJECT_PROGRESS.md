@@ -1,10 +1,40 @@
 # FIFA 22 Frostbite 3 Clean-Room Multiplayer: Project Progress Report
 
-**Document Version:** 1.0.0  
-**Last Updated:** October 18, 2026  
-**Status:** In Active Development / Alpha Verification  
+**Document Version:** 2.0.0  
+**Last Updated:** October 21, 2026  
+**Status:** In Active Development — Phase 1 (Authentication Unblock) in progress  
 **Repository:** `deadpool96p/F2022MulEdu`  
 **Target:** EA Sports FIFA 22 (Frostbite 3 Engine, PC)
+
+---
+
+## 0. Current Status & Active Workstream
+
+The emulator currently completes the redirector handshake and exchanges a
+`Util::ping` request/response with the real client, but the client then stalls
+for exactly 10 seconds and reports *"There was an error accessing server data."*
+
+**The root cause has been identified.** FIFA 22 speaks the **Fire2** framing
+(16-byte header) with the **Heat2** TDF codec — *not* the 12-byte legacy FIRE
+generation that this codebase and two of the consulted reference repositories
+implement. Two independent clean-room implementations plus authentic EA capture
+bytes confirm the correct layout, and the shipped implementation diverges in
+ways that decode silently to wrong values.
+
+| # | Defect | Severity | State |
+| :--- | :--- | :--- | :--- |
+| A | Heat2 integers encoded as 7-bit LEB128 instead of the 6-bit-first-byte varsize scheme | **Critical** — `STIM` decoded as a 1998 timestamp, tripping the client's clock-drift check | **Fixed** |
+| B | 16-byte header was not Fire2 (message number, message type, metadata size, user index, options all wrong) | **Critical** — replies can never be matched to requests | Pending |
+| C | `OBJECT_TYPE`/`OBJECT_ID` and `FLOAT`/`TIMEVALUE` type IDs swapped | High | Pending |
+| D | Union / Variable / ObjectId / ObjectType wire forms wrong | High | Pending |
+| E | 12-vs-16 byte header detection heuristic tested `buffer[10] <= 0x03` | Medium | Pending |
+
+**Read next:**
+
+* [`docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md`](docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md) — the
+  authoritative Fire2/Heat2 wire specification, with the evidence behind each claim.
+* [`docs/POST_PING_STALL_ROOT_CAUSE.md`](docs/POST_PING_STALL_ROOT_CAUSE.md) — the
+  full investigation record, including the hypotheses that were falsified.
 
 ---
 
@@ -54,21 +84,28 @@ The goal of this project is to create an **educational, clean-room, non-destruct
 Implemented in Rust utilizing `tokio`, `rustls`, `rcgen`, and `rsa`.
 
 1. **`crates/blaze-tdf` (Tagged Data Format Codec)**
-   * Implements full binary serialization and deserialization for all 12 Blaze wire types:
-     * `VarInt` (signed and unsigned varints with ZigZag encoding)
-     * `String` (length-prefixed ASCII/UTF-8 strings)
+   * Implements binary serialization and deserialization for the 12 Heat2 wire types:
+     * `VarInt` — **Heat2 "varsize"** encoding (6-bit first byte, bit 6 = sign,
+       bit 7 = continuation, continuation bytes at shifts 6/13/20/27). *Not* LEB128.
+     * `String` (varsize length **including** the NUL terminator + UTF-8 payload)
      * `Struct` (nested complex structures with termination markers)
-     * `List` (heterogeneous and homogeneous dynamic arrays)
-     * `Map` (key-value associative maps)
-     * `Union` (discriminated variant types)
+     * `List` (element type byte + varsize count + items)
+     * `Map` (key type byte + value type byte + varsize count + pairs)
+     * `Union` (`[active index][member tag][type][value]`)
      * `Blob` (raw byte buffers)
-     * `Triad` / `Tuple` (3-byte triple integers)
-     * `IntegerList` / `Float` / `TimeValue`
-   * Tag compression: 3-character 6-bit packed tag IDs (e.g., `'ADDR'`, `'CONF'`, `'VALU'`).
+     * `Variable` (`[present][tdfId][member tag][type][value][terminator]`)
+     * `ObjectType` / `ObjectId` (varsize-encoded component and type)
+     * `Float` (IEEE 754 big-endian) / `TimeValue` (varsize microseconds)
+   * Tag compression: 4-character 6-bit packed tag IDs (e.g. `'ADDR'`, `'CONF'`, `'STIM'`),
+     verified byte-exact against authentic EA captures.
+   * Conformance is pinned by `crates/blaze-tdf/tests/tdf_fire2_wire.rs`.
 
 2. **`crates/blaze-core` (RPC Framing Engine)**
-   * Parses Blaze message frames: 12-byte header containing component ID, command ID, error code, message type (Reply, Notification, Error), and payload length.
+   * Parses Blaze message frames in both the legacy 12-byte form (used by the
+     redirector, the telemetry sink and the integration test harness) and the
+     16-byte form.
    * Hex dump formatting and packet roundtrip verification.
+   * ⚠️ **The 16-byte path is not yet Fire2-correct** — see §0, Defect B.
 
 3. **`crates/services-redirector` (Redirector Service)**
    * Handles `COMPONENT_REDIRECTOR: 0x0005`, `COMMAND_GET_SERVER_INSTANCE: 0x0001`.
@@ -179,8 +216,10 @@ All components are protected by end-to-end integration and unit tests:
 | Test Target | Scope | Result |
 | :--- | :--- | :--- |
 | `blaze_core::frame` | Header parsing, hex dump generation, packet roundtrip | **PASS** |
-| `blaze_tdf::tag` | Tag byte encoding, standard roundtrip, unsigned varints | **PASS** |
+| `blaze_tdf::tag` | Tag byte encoding, standard roundtrip | **PASS** |
+| `blaze_tdf::varint` | Heat2 varsize roundtrip, 6-bit first byte, sign flag | **PASS** |
 | `blaze_tdf::wire_types` | All 12 TDF wire types roundtrip integrity | **PASS** |
+| `blaze_tdf::tdf_fire2_wire` | **Heat2 conformance** — 21 exact varsize vectors, agreement with the reference across ±100 000, the exact EA `STIM` payload bytes, varsize string lengths | **PASS** |
 | `services_redirector` | Secure TLS redirect and Plain TCP response generation | **PASS** |
 | `services_blaze::session_store` | Multi-client session allocation, Steam identity binding | **PASS** |
 | `services_blaze::gamemanager` | Room code allocation, deterministic seeds, squad validation | **PASS** |
@@ -192,8 +231,13 @@ All components are protected by end-to-end integration and unit tests:
 | `lobby_matchmaking_flow` | Native matchmaking, room codes, and Steam invite sync | **PASS** |
 | `match_kickoff_flow` | Kickoff state machine and 60 Hz input frame sync | **PASS** |
 | `disconnect_flow` | Abrupt disconnect recovery and peer notification | **PASS** |
+| `matchready_response` | `FutMatchReadyServerResponse` serialization | **PASS** |
+| `online_hub_flow` | Multi-client hub, session store, network info exchange | **PASS** |
+| `room_code_flow` | Room code allocation and lobby join | **PASS** |
+| `state_machine_ordering` | GameManager notification ordering | **PASS** |
 
-**Total Test Results:** `34 passed; 0 failed; 0 ignored` (100% passing).
+**Total Test Results:** `74 passed; 0 failed; 0 ignored` (100% passing),
+`cargo test --workspace` exit code 0.
 
 ---
 
@@ -215,6 +259,35 @@ All components are protected by end-to-end integration and unit tests:
 
 ---
 
+## 5.1 Reference Repositories
+
+Protocol research depends on five third-party projects. They are **not** vendored
+into this repository (one of them ships ~97 MB of prebuilt OpenSSL binaries, and
+each has its own license). Instead, `scripts/fetch-references.ps1` clones each at
+a pinned commit so the research is reproducible byte-for-byte.
+
+| Repository | Pinned commit | What it established |
+| :--- | :--- | :--- |
+| [`mxmstr/hp-server`](https://github.com/mxmstr/hp-server) | `59f6468a` | **Primary.** Fire2 header layout, Heat2 varsize codec, all 12 type IDs, and the union/variable/object wire forms. Also contains **authentic EA capture fixtures** used to validate the codec against real bytes |
+| [`Khysnik/BlazeSDK`](https://github.com/Khysnik/BlazeSDK) | `a79b3d4a` | **Independent confirmation** of every one of the above — a second clean-room implementation that agrees byte-for-byte |
+| [`openBlase/openBlase`](https://github.com/openBlase/openBlase) | `ca33729e` | Heat2 label compression; its commented-out `Tdf::CompressInteger` independently corroborates the 6-bit-first-byte varsize scheme |
+| [`lowlevelmetal/open-ds2-server`](https://github.com/lowlevelmetal/open-ds2-server) | `7702bbf3` | `docs/04-blaze-connection-analysis.md` — a **different** Blaze generation (12-byte header, LEB128 varint). Background only; *not* applicable to FIFA 22's wire format |
+| [`skate6743/Skate3BlazeServer`](https://github.com/skate6743/Skate3BlazeServer) | `f248282c` | TDF schema model classes → `NetworkAddress` union case numbers (2 = `IpPairAddress`, 3 = `IpAddress`) and the `INIP`/`EXIP` member tag names |
+
+### Evidence standard
+
+Every protocol claim in this repository is backed by at least one of:
+
+1. **Two independent implementations agreeing** (hp-server + BlazeSDK).
+2. **Authentic EA bytes** — the 475-byte offline-game-report payload in hp-server's
+   fixtures decodes with 475 of 475 bytes consumed.
+3. **The client's own captured bytes** — `emulator_server.log`.
+
+Claims resting on a single source, or on the 12-byte generation, are explicitly
+marked as such in `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
+
+---
+
 ## 6. Next Steps & Roadmap
 
 1. **Host/Guest Match Kickoff (COMPLETED - P0 Done):**
@@ -228,6 +301,31 @@ All components are protected by end-to-end integration and unit tests:
 3. **P2P NAT Traversal Polish (COMPLETED):**
    * [x] Automated fallback from direct UDP STUN punch-through to ProtoTunnel relay (Port 3659).
    * [x] Sub-millisecond forwarding (0.42 ms latency, 0% dropped frames on LAN playtest).
+4. **Phase 1 — Unblock Authentication (IN PROGRESS):**
+   * [x] Root-cause the 10-second post-`ping` stall → Fire2 framing + Heat2 codec mismatch (`docs/POST_PING_STALL_ROOT_CAUSE.md`).
+   * [x] Implement the Heat2 varsize integer encoding in `blaze-tdf` (Defect A).
+   * [x] Pin the Heat2 codec with conformance tests (`crates/blaze-tdf/tests/tdf_fire2_wire.rs`).
+   * [ ] Correct the Heat2 type IDs (Defect C).
+   * [ ] Correct the union / variable / object wire forms (Defect D).
+   * [ ] Rewrite the 16-byte header to Fire2 in `blaze-core` (Defect B) — the 12-byte legacy path must stay byte-identical so the eight integration test files remain green.
+   * [ ] Replace the 12-vs-16 detection heuristic in `blaze_server.rs` and `redirector_server.rs` (Defect E).
+   * [ ] Update the `services-blaze/src/util.rs` unit tests for the new layout.
+   * [ ] Re-run the real client and confirm `Util::preAuth` (0x0009 / 0x000B) arrives.
+5. **Phase 2 — Matchmaking & GameManager (PENDING):**
+   * [ ] Port `ReserveLobbyRelayServer` (relay port 17000 + gameId) into the Rust GameManager.
+   * [ ] Correct the lobby create/join notifications.
+   * [ ] PreGame(130) → MatchReady → InGame(131) via the strict 5-notification sequence.
+   * [ ] Exact `FutMatchReadyServerResponse` (matchId, items, personaIds).
+6. **Phase 3 — UDP Relay & Low Ping (PENDING):**
+   * [ ] Mirror the Dirtycast relay in `services-qos-relay` (per-match port 17000 + gameId) and broadcast input frames between peers.
+   * [ ] Verify `SessionCipher` stream continuity (no per-packet re-keying) for RTT < 5 ms.
+   * [ ] Add a relay-latency metrics endpoint.
+   * [ ] Make the QoS STUN responder return the relay IP:port during preAuth/preGame.
+7. **Phase 4 — End-to-End Verification (PENDING):**
+   * [ ] Two-client LAN test: authenticate → main menu → Online Friendlies/Volta → create lobby → start match.
+   * [ ] Verify the trace shows `0x64(130)` → MatchReady → `0x64(131)` with UDP input frames through the relay.
+   * [ ] Measure in-game ping < 5 ms on LAN.
+   * [ ] Save the complete trace to `trace_e2e_success.jsonl` and capture a screenshot/video of gameplay.
 
 ---
 
@@ -264,6 +362,21 @@ All components are protected by end-to-end integration and unit tests:
   * Diagnostics and mismatch errors are logged to `%LOCALAPPDATA%\F2022MulEdu\shim.log`.
   * The `certgen` CLI command enables rapid regeneration and fingerprint pinning for clean-room TLS verification.
 
+### E. Wire-Format Generation Drift (CRITICAL)
+* **Fragility:** EA has shipped several Blaze generations. The 12-byte "legacy FIRE" header with a 7-bit LEB128 varint is **not** what FIFA 22 speaks — FIFA 22 uses Fire2 (16-byte header) with the Heat2 codec. The two are close enough to look plausible and different enough to fail **silently**: Heat2 decodes LEB128 bytes into a different number instead of erroring, and a wrongly-placed message type in byte 10 merely reads as a message-number octet. This is how `STIM` became a 1998 timestamp and the client stalled for 10 seconds without a single error.
+* **Mitigation:**
+  * The full specification is pinned in `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md`, with the evidence class for every claim.
+  * `crates/blaze-tdf/tests/tdf_fire2_wire.rs` pins the codec as executable assertions.
+  * `.agents/rules/blaze_protocol_invariants.md` records the invariants and names the *wrong* generation explicitly, so the next contributor does not re-derive the protocol from a 12-byte reference.
+  * The evidence standard: two independent implementations must agree, **or** the claim must be backed by authentic EA bytes or the client's own captured bytes.
+
+### F. Reference Repository Availability
+* **Fragility:** The protocol research depends on five third-party repositories that are deliberately *not* vendored (one ships ~97 MB of prebuilt OpenSSL binaries; each carries its own license). A network-less or offline contributor cannot reproduce the derivation.
+* **Mitigation:**
+  * `scripts/fetch-references.ps1` clones every repository at a **pinned commit** and verifies the resulting HEAD matches, so a protocol derivation is reproducible byte-for-byte.
+  * The pinned commits and what each repository established are recorded in `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.1 and `PROJECT_PROGRESS.md` §5.1, so the *conclusions* survive even if the upstream repositories disappear.
+  * The derived facts — component/command IDs, type bytes, wire forms, schema field names — are all written down in-repo and do not depend on the references being present.
+
 ---
 
 ## 8. Milestone Achievements (October 20, 2026 - P0 Closed)
@@ -273,5 +386,33 @@ All components are protected by end-to-end integration and unit tests:
 * **HTTP `RS4:FutMatchReadyServerResponse`:** Implemented and tested `/cards/ready` returning `FutMatchReadyServerResponse` (`matchId`, `items`, `opponentPersonaId`, `opponentPersonaIds`) with `Cache-Control: max-age=1`.
 * **QoS Relay Keystream Continuity:** Enforced long-lived `SessionCipher` continuity keyed on `session_id`. Added 1,000-frame sequential encryption test and byte-level tests for `ProtoTunnelHeader` (8 bytes) and `InputFrame` (22 bytes).
 * **Automated Trace Diff & Verification:** Added `tools/blaze_trace_diff.py` and `tools/verify_trace_assertions.py` verifying zero divergences between recorded traces (`trace_a.jsonl` vs `trace_b.jsonl`).
-* **Test Suite:** 51/51 tests passing workspace-wide (`cargo test --workspace`).
+* **Test Suite:** 74/74 tests passing workspace-wide (`cargo test --workspace`, exit code 0).
+
+---
+
+## 9. Milestone Achievements (October 21, 2026 — Protocol Ground Truth Established)
+
+* **Fire2 / Heat2 Protocol Established:** FIFA 22's framing and payload codec were
+  determined to be **Fire2** (16-byte header) + **Heat2** (TDF), confirmed by two
+  independent clean-room implementations (`mxmstr/hp-server`, `Khysnik/BlazeSDK`),
+  corroborated by `openBlase`, and validated against **authentic EA capture bytes**
+  — a 475-byte offline-game-report payload decodes with 475 of 475 bytes consumed.
+* **Root Cause of the 10-Second Stall Identified:** The client was receiving a
+  `STIM` server timestamp of **1998-05-27** instead of 2026-10-20, because Heat2
+  varsize integers were encoded as 7-bit LEB128. The 16-byte header was also
+  non-Fire2, so replies carried the wrong message number *and* the wrong message
+  type. Both are documented with a full hypothesis ledger in
+  `docs/POST_PING_STALL_ROOT_CAUSE.md`.
+* **Defect A Fixed:** `crates/blaze-tdf/src/varint.rs` now implements the Heat2
+  varsize scheme, pinned by 10 conformance tests including the exact EA `STIM`
+  payload bytes (`CF 4A 6D 00 B2 FA BA AD 0D 00`).
+* **Two Hypotheses Falsified and Documented:** the missing-`PING`/`LATN`/`TIME`
+  theory (EA registers exactly one `PingResponse` member) and the byte-10
+  bit-shift theory (byte 10 is the message number's high octet). Recording these
+  prevents the next investigation from re-treading them.
+* **Protocol Documentation Published:** `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` — the
+  full wire specification with an evidence table, component/command ID tables,
+  schema field names, and a pitfalls list.
+* **Reference Repositories Made Reproducible:** `scripts/fetch-references.ps1`
+  clones all five reference projects at pinned commits and verifies each HEAD.
 

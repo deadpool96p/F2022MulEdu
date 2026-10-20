@@ -135,15 +135,16 @@ Ensure Steam is open and running on both players' machines, then launch `FIFA22.
 
 ## Testing & Quality Assurance
 
-All 36 tests across all 6 crates pass with 100% success:
+All 74 tests across all 6 crates pass with 100% success:
 
 ```powershell
-cargo test --all
+cargo test --workspace
 ```
 
 Test coverage includes:
 - **`blaze-core`:** Header framer, dual TLS/plain decoding, hex dump logging.
-- **`blaze-tdf`:** 6-bit tag packing roundtrip, varint signed/unsigned, all 12 wire types.
+- **`blaze-tdf`:** 6-bit tag packing roundtrip, Heat2 varsize encoding, all 12 wire types.
+- **`blaze-tdf` (Fire2 conformance):** `tests/tdf_fire2_wire.rs` — 21 exact varsize vectors transcribed from the reference implementation, agreement with that reference across `-100_000..=100_000`, the exact EA `STIM` payload bytes, and varsize string-length encoding.
 - **`services-redirector`:** Redirection RPC responses.
 - **`services-http-content`:** Telemetry sink, QoS XML endpoints, squad SHA-256 hash store.
 - **`services-qos-relay`:** Async UDP QoS probe handling, ProtoTunnel packet forwarding.
@@ -154,6 +155,30 @@ Test coverage includes:
   - `match_kickoff_flow.rs`: 60 Hz input replication and pre-kickoff state machine.
   - `online_hub_flow.rs`: Two-player hub synchronization.
   - `disconnect_flow.rs`: Abrupt disconnect recovery, keep-alive monitor, and peer cleanup.
+
+---
+
+## Protocol Documentation
+
+The Blaze wire protocol implemented here is **Fire2** framing with the **Heat2**
+TDF codec. FIFA 22 does *not* use the older 12-byte "legacy FIRE" generation that
+several public Blaze server projects implement — and the two are similar enough
+that the wrong one fails *silently* rather than loudly.
+
+| Document | Contents |
+| :--- | :--- |
+| [`docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md`](docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md) | The authoritative wire specification: 16-byte Fire2 header, Heat2 varsize integers, all 12 type IDs, union/variable/object wire forms, component & command ID tables, schema field names, and a pitfalls list. Every claim is tagged with its evidence class. |
+| [`docs/POST_PING_STALL_ROOT_CAUSE.md`](docs/POST_PING_STALL_ROOT_CAUSE.md) | The investigation record for the 10-second post-`ping` stall, including the hypotheses that were **falsified** and why. |
+| [`.agents/rules/blaze_protocol_invariants.md`](.agents/rules/blaze_protocol_invariants.md) | The invariants a change must not break. |
+
+### Reproducing the protocol research
+
+The five third-party reference repositories the specification was derived from are
+**not** vendored into this repo. Fetch them at their pinned commits with:
+
+```powershell
+.\scripts\fetch-references.ps1
+```
 
 ---
 

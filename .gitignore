@@ -50,3 +50,16 @@ crates/emulator-server/*.crt
 crates/emulator-server/*.key
 crates/emulator-server/*.pem
 crates/emulator-server/*.bin
+
+# Third-party reference repositories (fetched via scripts/fetch-references.ps1)
+# These are separate projects with their own licenses; one vendors ~97 MB of
+# prebuilt OpenSSL binaries. Pinned commits are documented in
+# docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md.
+/references/
+
+# Raw strings extracted from the proprietary FIFA22.exe. The derived protocol
+# facts are documented in docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md instead.
+/blaze_schema_strings.txt
+
+# Local Claude Code tooling inventory
+/SKILLS_PLUGINS_LIST.md
