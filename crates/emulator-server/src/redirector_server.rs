@@ -130,9 +130,8 @@ async fn handle_http_redirector(
 
     let is_json = req_str.to_ascii_lowercase().contains("application/json");
 
-    // Honor connectionprofile (standardSecure_v4 requires TLS on Blaze port)
-    let is_secure_req = req_str.contains("standardSecure_v4") || config.secure;
-    let secure_val = if is_secure_req { 1 } else { 0 };
+    // When config.secure is false, downgrade to Plain TCP (0) to allow clean certificate-free socket flow
+    let secure_val = if config.secure { 1 } else { 0 };
 
     let response_body = if is_json {
         format!(

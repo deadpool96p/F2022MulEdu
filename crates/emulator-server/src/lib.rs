@@ -5,6 +5,7 @@
 //! QoS/STUN UDP Responder (:17498), and ProtoTunnel Relay Engine (:3659).
 
 pub mod blaze_server;
+pub mod blaze_tracer;
 pub mod control_server;
 pub mod listener;
 pub mod redirector_server;
@@ -16,7 +17,9 @@ pub use control_server::run_control_server;
 pub use listener::{accept_dual_stream, DualStream};
 pub use redirector_server::run_redirector_server;
 pub use telemetry_server::run_telemetry_server;
-pub use tls::create_self_signed_tls_acceptor;
+pub use tls::{
+    create_self_signed_tls_acceptor, format_fingerprint, regenerate_certificates, sha256_digest,
+};
 
 pub use services_blaze::{GameRegistry, GameSession, SessionStore};
 pub use services_qos_relay::{run_qos_server, run_relay_server, PeerTable};
@@ -91,6 +94,16 @@ pub async fn start_services_full(
         redir_cfg.clone(),
     ));
 
+    // IPv6 Redirector Listener
+    if let Ok(l) = TcpListener::bind(format!("[::]:{}", redirector_port)).await {
+        tracing::info!("  * IPv6 Redirector Listener          : Port {}", redirector_port);
+        tokio::spawn(run_redirector_server(
+            l,
+            tls_acceptor.clone(),
+            redir_cfg.clone(),
+        ));
+    }
+
     // Secondary Redirector listener on port 42230 (FIFA 22 standard redirector port)
     if redirector_port != 42230 {
         if let Ok(l) = TcpListener::bind("0.0.0.0:42230").await {
@@ -101,8 +114,15 @@ pub async fn start_services_full(
                 redir_cfg.clone(),
             ));
         }
+        if let Ok(l) = TcpListener::bind("[::]:42230").await {
+            tracing::info!("  * Secondary IPv6 Redirector Listener: Port 42230");
+            tokio::spawn(run_redirector_server(
+                l,
+                tls_acceptor.clone(),
+                redir_cfg.clone(),
+            ));
+        }
     }
-
 
     let session_store = Arc::new(SessionStore::new());
     let game_registry = Arc::new(GameRegistry::new());
@@ -115,6 +135,50 @@ pub async fn start_services_full(
         session_store.clone(),
         game_registry.clone(),
     ));
+
+    // IPv6 Blaze Listener
+    if let Ok(l) = TcpListener::bind(format!("[::]:{}", blaze_port)).await {
+        tracing::info!("  * IPv6 Blaze Listener               : Port {}", blaze_port);
+        tokio::spawn(run_blaze_server(
+            l,
+            tls_acceptor.clone(),
+            "127.0.0.1".to_string(),
+            qos_port,
+            session_store.clone(),
+            game_registry.clone(),
+        ));
+    }
+
+    // Secondary Blaze listener on port 44325 (EA standard production Blaze cluster port)
+    if blaze_port != 44325 {
+        if let Ok(l) = TcpListener::bind("0.0.0.0:44325").await {
+            tracing::info!("  * Secondary Blaze Listener          : Port 44325");
+            tokio::spawn(run_blaze_server(
+                l,
+                tls_acceptor.clone(),
+                "127.0.0.1".to_string(),
+                qos_port,
+                session_store.clone(),
+                game_registry.clone(),
+            ));
+        }
+        if let Ok(l) = TcpListener::bind("[::]:44325").await {
+            tracing::info!("  * Secondary IPv6 Blaze Listener     : Port 44325");
+            tokio::spawn(run_blaze_server(
+                l,
+                tls_acceptor.clone(),
+                "127.0.0.1".to_string(),
+                qos_port,
+                session_store.clone(),
+                game_registry.clone(),
+            ));
+        }
+    }
+
+    // IPv6 Control Listener
+    if let Ok(l) = TcpListener::bind("[::]:42129").await {
+        tokio::spawn(run_control_server(l, session_store.clone(), game_registry.clone()));
+    }
 
     let telemetry_task = tokio::spawn(run_telemetry_server(
         telemetry_listener,

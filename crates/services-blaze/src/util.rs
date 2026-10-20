@@ -2,7 +2,7 @@
 
 use std::io;
 use std::time::{SystemTime, UNIX_EPOCH};
-use blaze_core::{BlazeHeader, BlazePacket, MessageType};
+use blaze_core::BlazePacket;
 use blaze_tdf::{TdfMap, TdfStruct, TdfType, TdfValue};
 
 pub const COMPONENT_UTIL: u16 = 0x0009;
@@ -167,8 +167,9 @@ pub fn handle_census_data(req: &BlazePacket, active_users: usize) -> io::Result<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use blaze_core::{BlazePacket, MessageType};
+    use blaze_core::{BlazeHeader, BlazePacket, MessageType};
 
+    #[allow(dead_code)]
     fn make_header(seq: u16) -> BlazeHeader {
         BlazeHeader::new(0, COMPONENT_UTIL, CMD_PING, 0x0000, MessageType::SubmitRequest, 0, seq)
     }

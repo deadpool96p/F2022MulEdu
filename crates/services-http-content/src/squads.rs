@@ -30,8 +30,24 @@ impl Default for SquadStore {
 
 impl SquadStore {
     pub fn new() -> Self {
-        // Default canonical squad database binary blob
-        let default_data = b"FIFA_22_CANONICAL_SQUADS_DB_OFFICIAL_ROSTER_V1".to_vec();
+        // Check standard game asset directories for canonical layout/squad TOC
+        let candidate_paths = [
+            "G:\\Games\\FIFA 22\\Data\\layout.toc",
+            "C:\\Program Files (x86)\\Steam\\steamapps\\common\\FIFA 22\\Data\\layout.toc",
+            "Data\\layout.toc",
+        ];
+        let mut initial_data = None;
+        for path in &candidate_paths {
+            if let Ok(bytes) = std::fs::read(path) {
+                if !bytes.is_empty() {
+                    tracing::info!("[SquadStore] Initialized canonical database from game asset: {} ({} bytes)", path, bytes.len());
+                    initial_data = Some(bytes);
+                    break;
+                }
+            }
+        }
+
+        let default_data = initial_data.unwrap_or_else(|| b"FIFA_22_CANONICAL_SQUADS_DB_OFFICIAL_ROSTER_V1".to_vec());
         let default_hash = compute_sha256(&default_data);
         Self {
             canonical_data: RwLock::new(default_data),
@@ -85,7 +101,7 @@ mod tests {
     fn test_squad_store_hash_and_update() {
         let store = SquadStore::new();
         let (initial_hash, initial_size) = store.get_hash_and_size();
-        assert_eq!(initial_size, 46);
+        assert!(initial_size > 0);
         assert!(!initial_hash.is_empty());
 
         let custom_roster = b"CUSTOM_ROSTER_DATA_2022".to_vec();

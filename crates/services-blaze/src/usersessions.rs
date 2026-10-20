@@ -17,6 +17,67 @@ pub const CMD_UPDATE_NETWORK_INFO: u16 = 0x0008;
 pub const CMD_UPDATE_CLIENT_DATA: u16 = 0x0014;
 
 pub const NOTIFY_USER_SESSION_EXTENDED_DATA: u16 = 0x0001;
+pub const NOTIFY_USER_ADDED: u16 = 0x0002;
+pub const NOTIFY_USER_REMOVED: u16 = 0x0003;
+pub const NOTIFY_USER_UPDATED: u16 = 0x0005;
+
+/// Builds the unsolicited NotifyUserAdded (0x7802:0x0002) notification.
+/// This informs BlazeSDK's UserSessionManager of the authenticated user's session.
+pub fn build_notify_user_added(session: &SessionState) -> io::Result<BlazePacket> {
+    let mut root = TdfStruct::new();
+
+    // 1. DATA: UserSessionExtendedData
+    let mut data = TdfStruct::new();
+
+    let mut addr_struct = TdfStruct::new();
+    addr_struct.set("HOST", TdfValue::String(session.external_ip.clone()));
+    addr_struct.set("IP", TdfValue::Integer(0x7F000001)); // 127.0.0.1
+    addr_struct.set("PORT", TdfValue::Integer(session.port as u64));
+    data.set(
+        "ADDR",
+        TdfValue::Union(TdfUnion::with_value(0x00, TdfValue::Struct(addr_struct))),
+    );
+
+    data.set("BPS", TdfValue::String("bio-iad".to_string()));
+    data.set("CTY", TdfValue::Integer(1)); // CLIENT_TYPE_GAMEPLAY_USER
+    data.set("HWFL", TdfValue::Integer(0));
+    data.set("UID", TdfValue::Integer(session.user_id));
+
+    let mut qos = TdfStruct::new();
+    qos.set("BWIN", TdfValue::Integer(1000000));
+    qos.set("BWOT", TdfValue::Integer(1000000));
+    qos.set("DBW", TdfValue::Integer(0));
+    qos.set("NATT", TdfValue::Integer(session.nat_type as u64));
+    qos.set("UBW", TdfValue::Integer(0));
+    data.set("QOS", TdfValue::Struct(qos));
+
+    root.set("DATA", TdfValue::Struct(data));
+
+    // 2. USER: UserData
+    let mut user = TdfStruct::new();
+    user.set("AID", TdfValue::Integer(session.user_id));
+    user.set(
+        "ALST",
+        TdfValue::List(TdfList::new(
+            TdfType::Integer,
+            vec![TdfValue::Integer(session.user_id)],
+        )),
+    );
+    user.set("EXID", TdfValue::Integer(session.persona_id));
+    user.set("ID", TdfValue::Integer(session.user_id));
+    user.set("NAME", TdfValue::String(session.display_name.clone()));
+    user.set("PID", TdfValue::Integer(session.persona_id));
+    root.set("USER", TdfValue::Struct(user));
+
+    tracing::info!(
+        "[UserSessions] Built NotifyUserAdded for '{}' (UID={}, PID={})",
+        session.display_name,
+        session.user_id,
+        session.persona_id
+    );
+
+    BlazePacket::notification(COMPONENT_USER_SESSIONS, NOTIFY_USER_ADDED, root)
+}
 
 /// Handles updateNetworkInfo (0x0008).
 /// Returns the RPC response AND an async UserSessionExtendedDataUpdate notification.

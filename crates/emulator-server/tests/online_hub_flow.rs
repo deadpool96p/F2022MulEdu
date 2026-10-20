@@ -42,8 +42,8 @@ async fn send_and_recv_blaze(
     let payload = deserialize_tdf(&body_buf).unwrap();
     let first_pkt = BlazePacket { header, payload };
 
-    // If updateNetworkInfo, an async notification immediately follows
-    let second_pkt = if comp == 0x7802 && cmd == 0x0008 {
+    // If updateNetworkInfo or login, an async notification immediately follows
+    let second_pkt = if (comp == 0x7802 && cmd == 0x0008) || comp == 0x0001 {
         let mut n_hdr_buf = [0u8; BlazeHeader::HEADER_SIZE];
         stream.read_exact(&mut n_hdr_buf).await.unwrap();
         let n_header = BlazeHeader::from_bytes(&n_hdr_buf).unwrap();

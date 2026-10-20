@@ -71,6 +71,7 @@ async fn test_flow_a_native_menu_matchmaking() {
     p1_login.set("DSNM", TdfValue::String("NativePlayer1".to_string()));
     send_blaze_req(&mut p1_stream, 0x0001, 0x001C, 2, p1_login).await;
     let _ = read_blaze_packet(&mut p1_stream).await;
+    let _ = read_blaze_packet(&mut p1_stream).await; // NotifyUserAdded (0x7802)
 
     // Connect Player 2
     let mut p2_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
@@ -83,6 +84,7 @@ async fn test_flow_a_native_menu_matchmaking() {
     p2_login.set("DSNM", TdfValue::String("NativePlayer2".to_string()));
     send_blaze_req(&mut p2_stream, 0x0001, 0x001C, 2, p2_login).await;
     let _ = read_blaze_packet(&mut p2_stream).await;
+    let _ = read_blaze_packet(&mut p2_stream).await; // NotifyUserAdded (0x7802)
 
     // Player 1 clicks "Search Match" (startMatchmaking)
     send_blaze_req(&mut p1_stream, 0x0004, 0x0007, 3, TdfStruct::new()).await;
@@ -146,12 +148,14 @@ async fn test_flow_b_room_code_control_api() {
         .unwrap();
     send_blaze_req(&mut p1_stream, 0x0001, 0x001C, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut p1_stream).await;
+    let _ = read_blaze_packet(&mut p1_stream).await; // NotifyUserAdded (0x7802)
 
     let mut p2_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
         .await
         .unwrap();
     send_blaze_req(&mut p2_stream, 0x0001, 0x001C, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut p2_stream).await;
+    let _ = read_blaze_packet(&mut p2_stream).await; // NotifyUserAdded (0x7802)
 
     // 1. Query GET /api/v1/status
     let mut http_client = TcpStream::connect(format!("127.0.0.1:{}", control_port))
@@ -270,6 +274,7 @@ async fn test_flow_c_steam_identity_and_invite_sync() {
 
     send_blaze_req(&mut p1_stream, 0x0001, 0x001C, 2, TdfStruct::new()).await;
     let p1_login_resp = read_blaze_packet(&mut p1_stream).await;
+    let _ = read_blaze_packet(&mut p1_stream).await; // NotifyUserAdded (0x7802)
     assert_eq!(
         p1_login_resp.payload.get("DSNM").unwrap(),
         &TdfValue::String("SteamStriker".to_string())
@@ -339,6 +344,7 @@ async fn test_flow_c_steam_identity_and_invite_sync() {
     p2_login.set("DSNM", TdfValue::String("InvitedFriend".to_string()));
     send_blaze_req(&mut p2_stream, 0x0001, 0x001C, 2, p2_login).await;
     let _ = read_blaze_packet(&mut p2_stream).await;
+    let _ = read_blaze_packet(&mut p2_stream).await; // NotifyUserAdded (0x7802)
 
     // 7. Player 2 accepts Steam invite via POST /api/v1/steam/invite-accepted
     let mut accept_client = TcpStream::connect(format!("127.0.0.1:{}", control_port))

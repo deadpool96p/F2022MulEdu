@@ -49,14 +49,13 @@ fn try_parse_packet(buffer: &mut Vec<u8>, is_16_byte: &mut bool) -> Option<Blaze
         return None;
     }
 
-    // Modern 16-byte header format (FIFA 22 Frostbite 3):
-    // [00 00 00 00] (length)
-    // [00 00]       (error code / flags)
-    // [00 XX]       (component)
-    // [00 YY]       (command)
-    // [ZZ 00]       (msg_type / flags)
-    // [00 00 00 00] (seq_no LE)
-    if *is_16_byte || (buffer.len() >= 16 && buffer[0..4] == [0, 0, 0, 0] && buffer[4] == 0 && buffer[5] == 0 && (buffer[6] == 0 || buffer[6] == 0x78)) {
+    // Modern 16-byte header format (FIFA 22 Frostbite 3 / BlazeSDK 15):
+    // 1) Length high 16b: buffer[0] == 0 && buffer[1] == 0
+    // 2) Error code high byte: buffer[4] == 0
+    // 3) MessageType in Byte 10: buffer[10] <= 0x03
+    let is_modern = *is_16_byte || (buffer.len() >= 16 && buffer[0] == 0 && buffer[1] == 0 && buffer[4] == 0 && buffer[10] <= 0x03);
+
+    if is_modern {
         *is_16_byte = true;
         if buffer.len() < 16 {
             return None;
@@ -136,6 +135,14 @@ async fn process_packet(
         router.store.touch_session(router.session.user_id);
     }
 
+    let req_bytes = if is_16_byte {
+        req_packet.encode_16().unwrap_or_default()
+    } else {
+        req_packet.encode().unwrap_or_default()
+    };
+    router.games.deadlock_guard.record_message("IN", req_packet.header.component, req_packet.header.command, &req_bytes);
+    crate::blaze_tracer::record_trace("IN", req_packet.header.component, req_packet.header.command, &req_bytes);
+
     let (resp_packet, notif_opt) = router.handle_packet(req_packet)?;
 
     if router.session.user_id != 0 && router.session.user_id != *registered_uid {
@@ -151,6 +158,9 @@ async fn process_packet(
     } else {
         resp_packet.encode()?
     };
+    router.games.deadlock_guard.record_message("OUT", resp_packet.header.component, resp_packet.header.command, &resp_bytes);
+    crate::blaze_tracer::record_trace("OUT", resp_packet.header.component, resp_packet.header.command, &resp_bytes);
+
     tracing::info!(
         "[Blaze Server] Sending response for Comp=0x{:04X}, Cmd=0x{:04X}, Seq={} ({} bytes):\n{}",
         resp_packet.header.component,
@@ -167,6 +177,9 @@ async fn process_packet(
         } else {
             notif.encode()?
         };
+        router.games.deadlock_guard.record_message("OUT", notif.header.component, notif.header.command, &notif_bytes);
+        crate::blaze_tracer::record_trace("OUT", notif.header.component, notif.header.command, &notif_bytes);
+
         tracing::info!(
             "[Blaze Server] Sending paired notification for Comp=0x{:04X}, Cmd=0x{:04X} ({} bytes):\n{}",
             notif.header.component,
@@ -187,7 +200,9 @@ async fn handle_blaze_session(
     router: &mut BlazeRouter,
 ) -> std::io::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<BlazePacket>();
+
     let mut registered_uid: u64 = 0;
+
     let timeout_duration = std::time::Duration::from_secs(45);
     let mut rx_buf = Vec::with_capacity(8192);
     let mut read_chunk = [0u8; 4096];
@@ -208,6 +223,8 @@ async fn handle_blaze_session(
                 } else {
                     notif_pkt.encode()?
                 };
+                router.games.deadlock_guard.record_message("OUT", notif_pkt.header.component, notif_pkt.header.command, &notif_bytes);
+                crate::blaze_tracer::record_trace("OUT", notif_pkt.header.component, notif_pkt.header.command, &notif_bytes);
                 stream.write_all(&notif_bytes).await?;
                 stream.flush().await?;
                 tracing::debug!(

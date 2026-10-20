@@ -1,5 +1,6 @@
 #include "input_hook.h"
 #include "f22_shim.h"
+#include "hook_guard.h"
 #include "../steam_bridge.hpp"
 #include <MinHook.h>
 #include <xinput.h>
@@ -20,6 +21,7 @@ static bool g_status_pill_visible = true;
 // XInput function pointer
 typedef DWORD (WINAPI *PFN_XInputGetState)(DWORD dwUserIndex, XINPUT_STATE* pState);
 static PFN_XInputGetState g_original_XInputGetState = nullptr;
+static std::unique_ptr<HookGuard> s_xinput_guard;
 static bool g_combo_pressed_last = false;
 
 static LRESULT CALLBACK HookedWndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -313,9 +315,13 @@ bool InstallXInputHooks() {
         return false;
     }
 
-    if (MH_CreateHook(target, reinterpret_cast<void*>(&Hooked_XInputGetState),
-                      reinterpret_cast<void**>(&g_original_XInputGetState)) == MH_OK) {
-        MH_EnableHook(target);
+    s_xinput_guard = std::make_unique<HookGuard>(
+        "xinput1_3/1_4", "XInputGetState", target,
+        reinterpret_cast<void*>(&Hooked_XInputGetState),
+        reinterpret_cast<void**>(&g_original_XInputGetState)
+    );
+
+    if (s_xinput_guard->IsInstalled()) {
         LogInfo("XInputGetState hooked successfully for gamepad navigation & input masking.");
         return true;
     }
@@ -325,10 +331,8 @@ bool InstallXInputHooks() {
 }
 
 void RemoveXInputHooks() {
-    if (g_original_XInputGetState) {
-        MH_DisableHook(reinterpret_cast<void*>(g_original_XInputGetState));
-        g_original_XInputGetState = nullptr;
-    }
+    s_xinput_guard.reset();
+    g_original_XInputGetState = nullptr;
 }
 
 bool IsOverlayFocused() {

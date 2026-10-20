@@ -2,6 +2,9 @@
 REM FIFA 22 Multiplayer — Start Backend + Companion UI (Alternative C)
 REM No dxgi.dll hook needed. Game untouched.
 
+echo [*] Auto-synchronizing active Steam Persona...
+python tools\sync_steam_profile.py
+
 echo [*] Checking emulator server ports...
 
 REM Start server (reuse existing start_emulator.ps1 logic in .bat form)

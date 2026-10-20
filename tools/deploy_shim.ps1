@@ -161,6 +161,20 @@ if (-not (Test-Path $TargetIni)) {
     Write-Host "  [.] Existing f22_emu.ini preserved (remove first to re-deploy default template)." -ForegroundColor Gray
 }
 
+# 8. Deploy Root CA Modulus and Certificate for ProtoSSL verification
+$ModulusSrc = Join-Path $RepoRoot "f22_ca_modulus.bin"
+$ModulusDst = Join-Path $GameDir "f22_ca_modulus.bin"
+if (Test-Path $ModulusSrc) {
+    Copy-Item -Path $ModulusSrc -Destination $ModulusDst -Force
+    Write-Host "  [+] Installed: f22_ca_modulus.bin -> $ModulusDst" -ForegroundColor Green
+}
+$CaCertSrc = Join-Path $RepoRoot "f22_ca.crt"
+$CaCertDst = Join-Path $GameDir "f22_ca.crt"
+if (Test-Path $CaCertSrc) {
+    Copy-Item -Path $CaCertSrc -Destination $CaCertDst -Force
+    Write-Host "  [+] Installed: f22_ca.crt -> $CaCertDst" -ForegroundColor Green
+}
+
 Write-Host "=================================================================" -ForegroundColor Cyan
 Write-Host " FIFA 22 Multiplayer Shim Installed Successfully!              " -ForegroundColor Green
 Write-Host " Start emulator-server, then launch FIFA22.exe.                 " -ForegroundColor Green

@@ -83,15 +83,20 @@ impl BlazeRouter {
             | (COMPONENT_AUTH, 0x0032)
             | (COMPONENT_AUTH, 0x0047)
             | (COMPONENT_AUTH, 0x005A) => {
-                if !self.session.is_logged_in {
+                let notif = if !self.session.is_logged_in {
                     let _ = handle_login(req, &mut self.session, &self.store)?;
-                }
-                let resp = handle_list_user_entitlements(req)?;
-                Ok((resp, None))
+                    let notif_pkt = build_notify_user_added(&self.session)?;
+                    Some(notif_pkt)
+                } else {
+                    None
+                };
+                let resp = handle_list_user_entitlements(req, &self.session)?;
+                Ok((resp, notif))
             }
             (COMPONENT_AUTH, _) => {
                 let resp = handle_login(req, &mut self.session, &self.store)?;
-                Ok((resp, None))
+                let notif_pkt = build_notify_user_added(&self.session)?;
+                Ok((resp, Some(notif_pkt)))
             }
 
             // UserSessions Component (0x7802 / 0x0019)

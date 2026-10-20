@@ -35,6 +35,228 @@ pub fn extract_rsa_2048_modulus(cert_der: &[u8]) -> Option<[u8; 256]> {
     None
 }
 
+/// Computes standard FIPS 180-4 SHA-256 digest of data.
+pub fn sha256_digest(data: &[u8]) -> [u8; 32] {
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+    ];
+    let k: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ];
+
+    let bit_len = (data.len() as u64) * 8;
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while (msg.len() + 8) % 64 != 0 {
+        msg.push(0x00);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in msg.chunks_exact(64) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([chunk[4 * i], chunk[4 * i + 1], chunk[4 * i + 2], chunk[4 * i + 3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+        }
+
+        let mut a = h[0];
+        let mut b = h[1];
+        let mut c = h[2];
+        let mut d = h[3];
+        let mut e = h[4];
+        let mut f = h[5];
+        let mut g = h[6];
+        let mut hh = h[7];
+
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(k[i]).wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(hh);
+    }
+
+    let mut out = [0u8; 32];
+    for (i, val) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&val.to_be_bytes());
+    }
+    out
+}
+
+/// Formats a 32-byte SHA-256 digest into an uppercase colon-delimited string (e.g. "AA:BB:CC:...").
+pub fn format_fingerprint(hash: &[u8; 32]) -> String {
+    hash.iter()
+        .map(|b| format!("{:02X}", b))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// Generates fresh persistent RSA-2048 DigiCert Root CA and Server certificates,
+/// saving them to disk and returning (server_der, ca_der, server_key_der).
+pub fn generate_and_save_certs(
+    custom_cn: Option<&str>,
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), Box<dyn std::error::Error + Send + Sync>> {
+    let ca_cert_path = Path::new("f22_ca.crt");
+    let ca_key_path = Path::new("f22_ca.key");
+    let leaf_cert_path = Path::new("f22_server.crt");
+    let leaf_key_path = Path::new("f22_server.key");
+    let modulus_path = Path::new("f22_ca_modulus.bin");
+
+    tracing::info!("[TLS] Generating fresh persistent RSA 2048 DigiCert Root CA and Server certificate");
+
+    use rsa::pkcs8::EncodePrivateKey;
+    use rsa::traits::PublicKeyParts;
+    use rsa::RsaPrivateKey;
+    use rsa::rand_core::OsRng;
+
+    let mut rng = OsRng;
+
+    // 1. Root CA matching DirtySDK's embedded DigiCert Global Root CA
+    let mut ca_params = CertificateParams::default();
+    ca_params.not_before = rcgen::date_time_ymd(2006, 11, 10);
+    ca_params.not_after = rcgen::date_time_ymd(2031, 11, 10);
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.distinguished_name.push(DnType::CommonName, "DigiCert Global Root CA");
+    ca_params.distinguished_name.push(DnType::OrganizationName, "DigiCert Inc");
+    ca_params.distinguished_name.push(DnType::OrganizationalUnitName, "www.digicert.com");
+    ca_params.distinguished_name.push(DnType::CountryName, "US");
+
+    let ca_rsa = RsaPrivateKey::new(&mut rng, 2048)?;
+    let ca_rsa_der = ca_rsa.to_pkcs8_der()?;
+    let ca_key_pair = KeyPair::try_from(ca_rsa_der.as_bytes())?;
+    let ca_cert = ca_params.self_signed(&ca_key_pair)?;
+    let ca_der = ca_cert.der().to_vec();
+    let ca_key_der = ca_key_pair.serialize_der();
+
+    // Extract and export the 256-byte RSA modulus
+    let modulus_be = ca_rsa.n().to_bytes_be();
+    let mut modulus = [0u8; 256];
+    if modulus_be.len() == 256 {
+        modulus.copy_from_slice(&modulus_be);
+    } else if modulus_be.len() > 256 {
+        modulus.copy_from_slice(&modulus_be[modulus_be.len() - 256..]);
+    } else {
+        modulus[256 - modulus_be.len()..].copy_from_slice(&modulus_be);
+    }
+
+    let _ = std::fs::write(modulus_path, &modulus);
+    tracing::info!("[TLS] Exported 256-byte Root CA RSA modulus to f22_ca_modulus.bin");
+
+    // Also copy to game directory if present
+    let game_modulus_path = Path::new(r"G:\Games\FIFA 22\f22_ca_modulus.bin");
+    if game_modulus_path.parent().map(|p| p.exists()).unwrap_or(false) {
+        let _ = std::fs::write(game_modulus_path, &modulus);
+        tracing::info!("[TLS] Deployed f22_ca_modulus.bin directly to G:\\Games\\FIFA 22\\");
+    }
+
+    // 2. Leaf certificate signed by the DigiCert Root CA
+    let cn = custom_cn.unwrap_or("gosredirector.ea.com");
+    let mut leaf_params = CertificateParams::default();
+    leaf_params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+    leaf_params.not_after = rcgen::date_time_ymd(2030, 12, 31);
+    leaf_params.distinguished_name.push(DnType::CommonName, cn);
+    leaf_params.distinguished_name.push(DnType::OrganizationName, "Electronic Arts Inc");
+    leaf_params.distinguished_name.push(DnType::CountryName, "US");
+
+    let mut sans = vec![
+        SanType::DnsName(cn.to_string().try_into()?),
+        SanType::DnsName("spring18.gosredirector.ea.com".try_into()?),
+        SanType::DnsName("*.gosredirector.ea.com".try_into()?),
+        SanType::DnsName("gosredirector.ea.com".try_into()?),
+        SanType::DnsName("*.ea.com".try_into()?),
+        SanType::DnsName("*.ea.net".try_into()?),
+        SanType::DnsName("fifa22.pc.ea.com".try_into()?),
+        SanType::DnsName("river.data.ea.com".try_into()?),
+        SanType::DnsName("pin-river.data.ea.com".try_into()?),
+        SanType::DnsName("freeform-river.data.ea.com".try_into()?),
+        SanType::DnsName("rl.data.ea.com".try_into()?),
+        SanType::DnsName("localhost".try_into()?),
+        SanType::IpAddress("127.0.0.1".parse()?),
+        SanType::IpAddress("26.178.140.32".parse()?),
+    ];
+    // Remove duplicate SANs
+    sans.dedup();
+    leaf_params.subject_alt_names = sans;
+
+    let leaf_rsa = RsaPrivateKey::new(&mut rng, 2048)?;
+    let leaf_rsa_der = leaf_rsa.to_pkcs8_der()?;
+    let leaf_key_pair = KeyPair::try_from(leaf_rsa_der.as_bytes())?;
+    let leaf_cert = leaf_params.signed_by(&leaf_key_pair, &ca_cert, &ca_key_pair)?;
+    let leaf_der = leaf_cert.der().to_vec();
+    let leaf_key_der = leaf_key_pair.serialize_der();
+
+    let _ = std::fs::write(ca_cert_path, &ca_der);
+    let _ = std::fs::write(ca_key_path, &ca_key_der);
+    let _ = std::fs::write(leaf_cert_path, &leaf_der);
+    let _ = std::fs::write(leaf_key_path, &leaf_key_der);
+
+    // Also write PEM formats
+    let _ = std::fs::write("f22_ca.pem", ca_cert.pem());
+    let _ = std::fs::write("f22_server.pem", leaf_cert.pem());
+
+    // Install Root CA into Windows Certificate Store
+    install_cert_into_windows_root(ca_cert_path);
+
+    Ok((leaf_der, ca_der, leaf_key_der))
+}
+
+/// CLI subcommand implementation to regenerate f22_server.crt/f22_ca.crt with configurable CN
+/// and print the SHA-256 fingerprint for shim pinning.
+pub fn regenerate_certificates(
+    custom_cn: Option<&str>,
+) -> Result<(String, String), Box<dyn std::error::Error + Send + Sync>> {
+    let (server_der, ca_der, _) = generate_and_save_certs(custom_cn)?;
+    let server_fp = format_fingerprint(&sha256_digest(&server_der));
+    let ca_fp = format_fingerprint(&sha256_digest(&ca_der));
+
+    println!("============================================================");
+    println!(" FIFA 22 Clean-Room Certificate Generation (certgen)");
+    println!("============================================================");
+    println!("Common Name (CN):              {}", custom_cn.unwrap_or("gosredirector.ea.com"));
+    println!("Server Certificate:            f22_server.crt (PEM: f22_server.pem)");
+    println!("Root CA Certificate:          f22_ca.crt (PEM: f22_ca.pem)");
+    println!("Root CA Modulus:               f22_ca_modulus.bin (256 bytes)");
+    println!("------------------------------------------------------------");
+    println!("SHA-256 Fingerprint (Server):  {}", server_fp);
+    println!("SHA-256 Fingerprint (Root CA): {}", ca_fp);
+    println!("Shim Pinning Hex:              {}", server_fp.replace(':', ""));
+    println!("============================================================");
+
+    Ok((server_fp, ca_fp))
+}
+
 /// Generates or loads a persistent RSA-2048 Certificate Authority and Server certificate covering EA domains,
 /// returning an active tokio-rustls TlsAcceptor.
 pub fn create_self_signed_tls_acceptor() -> Result<TlsAcceptor, Box<dyn std::error::Error + Send + Sync>> {
@@ -57,98 +279,7 @@ pub fn create_self_signed_tls_acceptor() -> Result<TlsAcceptor, Box<dyn std::err
             std::fs::read(leaf_key_path)?,
         )
     } else {
-        tracing::info!("[TLS] Generating new persistent RSA 2048 DigiCert Root CA and Server certificate");
-
-        use rsa::pkcs8::EncodePrivateKey;
-        use rsa::traits::PublicKeyParts;
-        use rsa::RsaPrivateKey;
-        use rsa::rand_core::OsRng;
-
-        let mut rng = OsRng;
-
-        // 1. Root CA matching DirtySDK's embedded DigiCert Global Root CA
-        let mut ca_params = CertificateParams::default();
-        ca_params.not_before = rcgen::date_time_ymd(2006, 11, 10);
-        ca_params.not_after = rcgen::date_time_ymd(2031, 11, 10);
-        ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        ca_params.distinguished_name.push(DnType::CommonName, "DigiCert Global Root CA");
-        ca_params.distinguished_name.push(DnType::OrganizationName, "DigiCert Inc");
-        ca_params.distinguished_name.push(DnType::OrganizationalUnitName, "www.digicert.com");
-        ca_params.distinguished_name.push(DnType::CountryName, "US");
-
-        let ca_rsa = RsaPrivateKey::new(&mut rng, 2048)?;
-        let ca_rsa_der = ca_rsa.to_pkcs8_der()?;
-        let ca_key_pair = KeyPair::try_from(ca_rsa_der.as_bytes())?;
-        let ca_cert = ca_params.self_signed(&ca_key_pair)?;
-        let ca_der = ca_cert.der().to_vec();
-        let ca_key_der = ca_key_pair.serialize_der();
-
-        // Extract and export the 256-byte RSA modulus
-        let modulus_be = ca_rsa.n().to_bytes_be();
-        let mut modulus = [0u8; 256];
-        if modulus_be.len() == 256 {
-            modulus.copy_from_slice(&modulus_be);
-        } else if modulus_be.len() > 256 {
-            modulus.copy_from_slice(&modulus_be[modulus_be.len() - 256..]);
-        } else {
-            modulus[256 - modulus_be.len()..].copy_from_slice(&modulus_be);
-        }
-
-        let _ = std::fs::write(modulus_path, &modulus);
-        tracing::info!("[TLS] Exported 256-byte Root CA RSA modulus to f22_ca_modulus.bin");
-
-        // Also copy to game directory if present
-        let game_modulus_path = Path::new(r"G:\Games\FIFA 22\f22_ca_modulus.bin");
-        if game_modulus_path.parent().map(|p| p.exists()).unwrap_or(false) {
-            let _ = std::fs::write(game_modulus_path, &modulus);
-            tracing::info!("[TLS] Deployed f22_ca_modulus.bin directly to G:\\Games\\FIFA 22\\");
-        }
-
-        // 2. Leaf certificate signed by the DigiCert Root CA
-        let mut leaf_params = CertificateParams::default();
-        leaf_params.not_before = rcgen::date_time_ymd(2020, 1, 1);
-        leaf_params.not_after = rcgen::date_time_ymd(2030, 12, 31);
-        leaf_params.distinguished_name.push(DnType::CommonName, "gosredirector.ea.com");
-        leaf_params.distinguished_name.push(DnType::OrganizationName, "Electronic Arts Inc");
-        leaf_params.distinguished_name.push(DnType::CountryName, "US");
-
-        leaf_params.subject_alt_names = vec![
-            SanType::DnsName("spring18.gosredirector.ea.com".try_into()?),
-            SanType::DnsName("*.gosredirector.ea.com".try_into()?),
-            SanType::DnsName("gosredirector.ea.com".try_into()?),
-            SanType::DnsName("*.ea.com".try_into()?),
-            SanType::DnsName("*.ea.net".try_into()?),
-            SanType::DnsName("fifa22.pc.ea.com".try_into()?),
-            SanType::DnsName("river.data.ea.com".try_into()?),
-            SanType::DnsName("pin-river.data.ea.com".try_into()?),
-            SanType::DnsName("freeform-river.data.ea.com".try_into()?),
-            SanType::DnsName("rl.data.ea.com".try_into()?),
-            SanType::DnsName("localhost".try_into()?),
-            SanType::IpAddress("127.0.0.1".parse()?),
-            SanType::IpAddress("26.178.140.32".parse()?),
-        ];
-
-        let leaf_rsa = RsaPrivateKey::new(&mut rng, 2048)?;
-        let leaf_rsa_der = leaf_rsa.to_pkcs8_der()?;
-        let leaf_key_pair = KeyPair::try_from(leaf_rsa_der.as_bytes())?;
-        let leaf_cert = leaf_params.signed_by(&leaf_key_pair, &ca_cert, &ca_key_pair)?;
-        let leaf_der = leaf_cert.der().to_vec();
-        let leaf_key_der = leaf_key_pair.serialize_der();
-
-        let _ = std::fs::write(ca_cert_path, &ca_der);
-        let _ = std::fs::write(ca_key_path, &ca_key_der);
-        let _ = std::fs::write(leaf_cert_path, &leaf_der);
-        let _ = std::fs::write(leaf_key_path, &leaf_key_der);
-
-
-        // Also write PEM formats
-        let _ = std::fs::write("f22_ca.pem", ca_cert.pem());
-        let _ = std::fs::write("f22_server.pem", leaf_cert.pem());
-
-        // Install Root CA into Windows Certificate Store
-        install_cert_into_windows_root(ca_cert_path);
-
-        (leaf_der, ca_der, leaf_key_der)
+        generate_and_save_certs(None)?
     };
 
     let cert_chain = vec![
@@ -172,6 +303,25 @@ fn install_cert_into_windows_root(cert_path: &Path) {
         let _ = std::process::Command::new("certutil")
             .args(["-user", "-f", "-addstore", "TrustedPublisher", path_str])
             .output();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sha256_digest_empty() {
+        let empty_digest = sha256_digest(b"");
+        let hex = format_fingerprint(&empty_digest).replace(':', "").to_lowercase();
+        assert_eq!(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    }
+
+    #[test]
+    fn test_sha256_digest_quick_brown_fox() {
+        let digest = sha256_digest(b"The quick brown fox jumps over the lazy dog");
+        let hex = format_fingerprint(&digest).replace(':', "").to_lowercase();
+        assert_eq!(hex, "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592");
     }
 }
 

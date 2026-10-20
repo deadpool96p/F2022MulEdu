@@ -67,24 +67,41 @@ pub fn handle_login(
 }
 
 /// Handles listUserEntitlements (0x0046).
-pub fn handle_list_user_entitlements(req: &BlazePacket) -> io::Result<BlazePacket> {
+/// Conforms precisely to FIFA 22 Frostbite 3 Heat2 schema for Blaze::Authentication::Entitlements.
+pub fn handle_list_user_entitlements(
+    req: &BlazePacket,
+    session: &SessionState,
+) -> io::Result<BlazePacket> {
     let mut resp = TdfStruct::new();
 
-    // Standard online entitlement item
+    // Standard online entitlement item exactly matching FIFA 22 Blaze 15 schema
     let mut entitlement = TdfStruct::new();
-    entitlement.set("DEAT", TdfValue::Integer(0));
+    entitlement.set("DEVI", TdfValue::String(String::new()));
+    entitlement.set("GDAY", TdfValue::String("2021-10-01T00:00:00.000Z".to_string()));
     entitlement.set("GNAM", TdfValue::String("FIFA22".to_string()));
+    entitlement.set("ID", TdfValue::Integer(session.user_id));
     entitlement.set("ISCO", TdfValue::Integer(0));
-    entitlement.set("ISST", TdfValue::Integer(0));
-    entitlement.set("NAME", TdfValue::String("ONLINE_ACCESS".to_string()));
+    entitlement.set("PID", TdfValue::Integer(session.persona_id));
+    entitlement.set("PJID", TdfValue::Integer(0));
+    entitlement.set("PRCA", TdfValue::String("ONLINE_ACCESS".to_string()));
+    entitlement.set("PRID", TdfValue::String("ONLINE_ACCESS".to_string()));
     entitlement.set("STAT", TdfValue::Integer(1));
+    entitlement.set("STRC", TdfValue::String(String::new()));
     entitlement.set("TAG", TdfValue::String("ONLINE_ACCESS".to_string()));
+    entitlement.set("TDAY", TdfValue::String(String::new()));
     entitlement.set("TYPE", TdfValue::Integer(1));
-    entitlement.set("VERS", TdfValue::Integer(0));
+    entitlement.set("UCNT", TdfValue::Integer(0));
+    entitlement.set("VER", TdfValue::Integer(0));
 
     let items = vec![TdfValue::Struct(entitlement)];
     resp.set("NLST", TdfValue::List(TdfList::new(TdfType::Struct, items)));
 
-    tracing::info!("[Blaze Auth] Handled listUserEntitlements");
+    tracing::info!(
+        "[Blaze Auth] Handled listUserEntitlements for '{}' (UID={}, PID={})",
+        session.display_name,
+        session.user_id,
+        session.persona_id
+    );
     BlazePacket::response(&req.header, resp)
 }
+

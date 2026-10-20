@@ -154,7 +154,7 @@ impl SessionStore {
                 // Map SteamID directly into Persona ID bit-space (positive 64-bit integer)
                 let pid = (prof.steam_id & 0x7FFF_FFFF).max(user_id);
                 let name = match requested_name {
-                    Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+                    Some(n) if !n.trim().is_empty() && n.trim() != "Player" => n.trim().to_string(),
                     _ => prof.persona_name.clone(),
                 };
                 let friends = prof

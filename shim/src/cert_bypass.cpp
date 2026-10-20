@@ -1,4 +1,5 @@
 #include "f22_shim.h"
+#include "hook_guard.h"
 #include <MinHook.h>
 #include <bcrypt.h>
 #include <psapi.h>
@@ -219,19 +220,16 @@
   }
 
   bool InstallCertBypassHooks() {
+    static std::vector<std::unique_ptr<HookGuard>> s_cert_guards;
+    s_cert_guards.clear();
+
     auto create_hook_checked = [](void *target, void *detour, void **original,
                                   const char *name) {
       if (!target) {
         LogWarn(std::string("[SSL Bypass] Function not found: ") + name);
         return;
       }
-      MH_STATUS s = MH_CreateHook(target, detour, original);
-      if (s != MH_OK) {
-        LogError(std::string("[SSL Bypass] Failed to hook ") + name + ": " +
-                 MH_StatusToString(s));
-      } else {
-        LogInfo(std::string("[SSL Bypass] Hooked ") + name + " successfully.");
-      }
+      s_cert_guards.push_back(std::make_unique<HookGuard>("crypt32/bcrypt/schannel", name, target, detour, original));
     };
 
     // 1. Hook CryptoAPI (crypt32.dll)

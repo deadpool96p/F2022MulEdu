@@ -45,6 +45,11 @@ set(SHIM_SOURCES
 
 add_library(dxgi_proxy SHARED ${SHIM_SOURCES})
 
+option(SHIM_DRY_RUN "Build shim in dry-run mode (forwarding to real EA endpoints for inspection)" OFF)
+if(SHIM_DRY_RUN)
+    target_compile_definitions(dxgi_proxy PRIVATE SHIM_DRY_RUN=1)
+endif()
+
 target_include_directories(dxgi_proxy PRIVATE
     include
     vendor/minhook/include
@@ -65,6 +70,7 @@ target_link_libraries(dxgi_proxy PRIVATE
     dwmapi
     winhttp
     xinput
+    advapi32
 )
 
 target_link_options(dxgi_proxy PRIVATE

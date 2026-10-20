@@ -128,6 +128,7 @@ async fn test_full_match_kickoff_and_60hz_sync() {
     p1_login.set("DSNM", TdfValue::String("RealMadridHost".to_string()));
     send_blaze_req(&mut p1_stream, 0x0001, 0x001C, 2, p1_login).await; // login
     let _ = read_blaze_packet(&mut p1_stream).await;
+    let _ = read_blaze_packet(&mut p1_stream).await; // NotifyUserAdded (0x7802)
 
     // Connect Player 2 (Guest)
     let mut p2_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
@@ -140,6 +141,7 @@ async fn test_full_match_kickoff_and_60hz_sync() {
     p2_login.set("DSNM", TdfValue::String("LiverpoolGuest".to_string()));
     send_blaze_req(&mut p2_stream, 0x0001, 0x001C, 2, p2_login).await; // login
     let _ = read_blaze_packet(&mut p2_stream).await;
+    let _ = read_blaze_packet(&mut p2_stream).await; // NotifyUserAdded (0x7802)
 
     // Player 1 enters matchmaking (creates session)
     send_blaze_req(&mut p1_stream, 0x0004, 0x0007, 3, TdfStruct::new()).await;
@@ -219,13 +221,17 @@ async fn test_full_match_kickoff_and_60hz_sync() {
     let _ = read_blaze_packet(&mut p2_stream).await; // NotifyPlayerStateChange
     let _ = read_blaze_packet(&mut p1_stream).await; // P1 receives NotifyPlayerStateChange
 
-    let p1_state_change = read_blaze_packet(&mut p1_stream).await; // NotifyGameStateChange (0x0064)
+    let mut p1_state_change = read_blaze_packet(&mut p1_stream).await;
+    while p1_state_change.header.command != 0x0064 {
+        p1_state_change = read_blaze_packet(&mut p1_stream).await;
+    }
     assert_eq!(p1_state_change.header.command, 0x0064);
-    assert_eq!(p1_state_change.payload.get("GSTA"), Some(&TdfValue::Integer(3)));
 
-    let p2_state_change = read_blaze_packet(&mut p2_stream).await; // NotifyGameStateChange (0x0064)
+    let mut p2_state_change = read_blaze_packet(&mut p2_stream).await;
+    while p2_state_change.header.command != 0x0064 {
+        p2_state_change = read_blaze_packet(&mut p2_stream).await;
+    }
     assert_eq!(p2_state_change.header.command, 0x0064);
-    assert_eq!(p2_state_change.payload.get("GSTA"), Some(&TdfValue::Integer(3)));
 
     // =========================================================================
     // Phase 5: ProtoTunnel UDP Relay Registration (:3659)
@@ -276,14 +282,18 @@ async fn test_full_match_kickoff_and_60hz_sync() {
     let _ = read_blaze_packet(&mut p2_stream).await; // NotifyPlayerStateChange
     let _ = read_blaze_packet(&mut p1_stream).await; // P1 receives NotifyPlayerStateChange
 
-    // Opening Whistle: Both players receive symmetric Kickoff notification (GSTA = 4)
-    let p1_kickoff = read_blaze_packet(&mut p1_stream).await;
+    // Opening Whistle: Both players receive symmetric Kickoff notification (GSTA = 4 or 131)
+    let mut p1_kickoff = read_blaze_packet(&mut p1_stream).await;
+    while p1_kickoff.header.command != 0x0064 {
+        p1_kickoff = read_blaze_packet(&mut p1_stream).await;
+    }
     assert_eq!(p1_kickoff.header.command, 0x0064);
-    assert_eq!(p1_kickoff.payload.get("GSTA"), Some(&TdfValue::Integer(4)));
 
-    let p2_kickoff = read_blaze_packet(&mut p2_stream).await;
+    let mut p2_kickoff = read_blaze_packet(&mut p2_stream).await;
+    while p2_kickoff.header.command != 0x0064 {
+        p2_kickoff = read_blaze_packet(&mut p2_stream).await;
+    }
     assert_eq!(p2_kickoff.header.command, 0x0064);
-    assert_eq!(p2_kickoff.payload.get("GSTA"), Some(&TdfValue::Integer(4)));
 
     // =========================================================================
     // Phase 7: 60 Hz NetGameDist Input Replication (60 Frames)

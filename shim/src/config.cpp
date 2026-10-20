@@ -70,6 +70,8 @@ void LoadConfig() {
                 g_config.enable_steam = (val == "true" || val == "1");
             } else if (key == "SteamAppId") {
                 try { g_config.steam_appid = static_cast<uint32_t>(std::stoul(val)); } catch (...) {}
+            } else if (key == "DryRun" || key == "ShimDryRun") {
+                g_config.dry_run = (val == "true" || val == "1");
             }
         } else if (current_section == "Steam") {
             if (key == "EnableSteam") {
@@ -84,12 +86,22 @@ void LoadConfig() {
         }
     }
 
+#ifdef SHIM_DRY_RUN
+    g_config.dry_run = true;
+#endif
+
+    const char* cmdline = GetCommandLineA();
+    if (cmdline && strstr(cmdline, "--shim-dry-run")) {
+        g_config.dry_run = true;
+    }
+
     std::ostringstream ss;
     ss << "Config loaded: Host=" << g_config.emulator_host
        << ", RedirectorPort=" << g_config.redirector_port
        << ", BlazePort=" << g_config.blaze_port
        << ", TelemetryPort=" << g_config.telemetry_port
-       << ", BypassCert=" << (g_config.bypass_cert_validation ? "true" : "false");
+       << ", BypassCert=" << (g_config.bypass_cert_validation ? "true" : "false")
+       << ", DryRun=" << (g_config.dry_run ? "true (inspection only)" : "false");
     LogInfo(ss.str());
 }
 

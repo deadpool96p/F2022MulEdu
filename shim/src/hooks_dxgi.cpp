@@ -1,5 +1,6 @@
 #include "hooks_dxgi.h"
 #include "f22_shim.h"
+#include "hook_guard.h"
 #include "overlay/input_hook.h"
 #include "overlay/minimal_overlay.h"
 #include "control_client.h"
@@ -48,6 +49,7 @@ static std::vector<ID3D12Resource*> g_d3d12_render_targets;
 static std::vector<ID3D12CommandAllocator*> g_d3d12_cmd_allocators;
 static ID3D12GraphicsCommandList* g_d3d12_cmd_list = nullptr;
 static UINT g_buffer_count = 2;
+static std::vector<std::unique_ptr<HookGuard>> s_dxgi_guards;
 
 static void CleanupD3D11RTV() {
     if (g_d3d11_rtv) {
@@ -417,22 +419,19 @@ bool InstallDXGIHooks() {
     DestroyWindow(hWnd);
     UnregisterClassA("DXGI_Dummy_Class", wc.hInstance);
 
-    MH_STATUS s_pres = MH_CreateHook(present_target, reinterpret_cast<void*>(&Hooked_Present),
-                                     reinterpret_cast<void**>(&g_original_present));
-    if (s_pres != MH_OK) {
-        LogError(std::string("MinHook failed to hook IDXGISwapChain::Present: ") + MH_StatusToString(s_pres));
-        return false;
-    }
+    s_dxgi_guards.clear();
 
-    MH_STATUS s_res = MH_CreateHook(resize_buffers_target, reinterpret_cast<void*>(&Hooked_ResizeBuffers),
-                                    reinterpret_cast<void**>(&g_original_resize_buffers));
-    if (s_res != MH_OK) {
-        LogError(std::string("MinHook failed to hook IDXGISwapChain::ResizeBuffers: ") + MH_StatusToString(s_res));
-        return false;
-    }
+    s_dxgi_guards.push_back(std::make_unique<HookGuard>(
+        "dxgi.dll", "IDXGISwapChain::Present", present_target,
+        reinterpret_cast<void*>(&Hooked_Present),
+        reinterpret_cast<void**>(&g_original_present)
+    ));
 
-    MH_EnableHook(present_target);
-    MH_EnableHook(resize_buffers_target);
+    s_dxgi_guards.push_back(std::make_unique<HookGuard>(
+        "dxgi.dll", "IDXGISwapChain::ResizeBuffers", resize_buffers_target,
+        reinterpret_cast<void*>(&Hooked_ResizeBuffers),
+        reinterpret_cast<void**>(&g_original_resize_buffers)
+    ));
 
     // Also attempt to hook ID3D12CommandQueue::ExecuteCommandLists to capture active D3D12 queue
     HMODULE hD3D12 = GetModuleHandleA("d3d12.dll");
@@ -452,11 +451,11 @@ bool InstallDXGIHooks() {
                 if (SUCCEEDED(pDummyDevice->CreateCommandQueue(&qdesc, __uuidof(ID3D12CommandQueue), (void**)&pDummyQueue))) {
                     void** qvtable = *reinterpret_cast<void***>(pDummyQueue);
                     void* exec_target = qvtable[10]; // ExecuteCommandLists is index 10
-                    if (MH_CreateHook(exec_target, reinterpret_cast<void*>(&Hooked_ExecuteCommandLists),
-                                      reinterpret_cast<void**>(&g_original_ExecuteCommandLists)) == MH_OK) {
-                        MH_EnableHook(exec_target);
-                        LogInfo("ID3D12CommandQueue::ExecuteCommandLists (VTable index 10) hooked successfully.");
-                    }
+                    s_dxgi_guards.push_back(std::make_unique<HookGuard>(
+                        "d3d12.dll", "ID3D12CommandQueue::ExecuteCommandLists", exec_target,
+                        reinterpret_cast<void*>(&Hooked_ExecuteCommandLists),
+                        reinterpret_cast<void**>(&g_original_ExecuteCommandLists)
+                    ));
                     pDummyQueue->Release();
                 }
                 pDummyDevice->Release();
@@ -469,18 +468,10 @@ bool InstallDXGIHooks() {
 }
 
 void RemoveDXGIHooks() {
-    if (g_original_present) {
-        MH_DisableHook(reinterpret_cast<void*>(g_original_present));
-        g_original_present = nullptr;
-    }
-    if (g_original_resize_buffers) {
-        MH_DisableHook(reinterpret_cast<void*>(g_original_resize_buffers));
-        g_original_resize_buffers = nullptr;
-    }
-    if (g_original_ExecuteCommandLists) {
-        MH_DisableHook(reinterpret_cast<void*>(g_original_ExecuteCommandLists));
-        g_original_ExecuteCommandLists = nullptr;
-    }
+    s_dxgi_guards.clear();
+    g_original_present = nullptr;
+    g_original_resize_buffers = nullptr;
+    g_original_ExecuteCommandLists = nullptr;
     CleanupD3D11RTV();
     CleanupD3D12RTV();
     for (auto* alloc : g_d3d12_cmd_allocators) {

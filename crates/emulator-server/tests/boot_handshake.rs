@@ -111,15 +111,22 @@ async fn test_full_boot_handshake_flow() {
         let bytes = req.encode().unwrap();
         stream.write_all(&bytes).await.unwrap();
 
-        let mut h_buf = [0u8; 12];
-        stream.read_exact(&mut h_buf).await.unwrap();
-        let resp_hdr = BlazeHeader::from_bytes(&h_buf).unwrap();
+        loop {
+            let mut h_buf = [0u8; 12];
+            stream.read_exact(&mut h_buf).await.unwrap();
+            let resp_hdr = BlazeHeader::from_bytes(&h_buf).unwrap();
 
-        let mut p_buf = vec![0u8; resp_hdr.length as usize];
-        stream.read_exact(&mut p_buf).await.unwrap();
-        let resp_tdf = deserialize_tdf(&p_buf).unwrap();
+            let mut p_buf = vec![0u8; resp_hdr.length as usize];
+            stream.read_exact(&mut p_buf).await.unwrap();
+            let resp_tdf = deserialize_tdf(&p_buf).unwrap();
 
-        (resp_hdr, resp_tdf)
+            if resp_hdr.msg_type == MessageType::Notification {
+                // Async notification (such as NotifyUserAdded) received on socket, loop for response
+                continue;
+            }
+
+            return (resp_hdr, resp_tdf);
+        }
     }
 
     // 2a. preAuth (Util 0x0009 :: 0x000B)
@@ -150,7 +157,7 @@ async fn test_full_boot_handshake_flow() {
     assert!(post_tdf.get("TELE").is_some());
 
     // 2d. ping (Util 0x0009 :: 0x0002)
-    let (ping_hdr, ping_tdf) = send_recv(&mut blaze_stream, 0x0009, 0x0002, 13, TdfStruct::new()).await;
+    let (ping_hdr, _ping_tdf) = send_recv(&mut blaze_stream, 0x0009, 0x0002, 13, TdfStruct::new()).await;
     assert_eq!(ping_hdr.component, 0x0009);
     assert_eq!(ping_hdr.command, 0x0002);
     assert_eq!(ping_hdr.msg_type, MessageType::RecordResponse);

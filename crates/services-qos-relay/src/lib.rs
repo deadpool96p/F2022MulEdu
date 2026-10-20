@@ -5,7 +5,10 @@
 pub mod qos;
 pub mod relay;
 
-pub use qos::{handle_qos_probe, run_qos_server, QosProbeResponse};
+pub use qos::{
+    handle_qos_probe, is_relay_only_mode, reset_probe_history, run_qos_server, set_relay_only_mode,
+    NatType, QosProbeResponse, NAT_OPEN, NAT_PORT_RESTRICTED, NAT_SYMMETRIC,
+};
 pub use relay::{
     handle_relay_packet, run_relay_server, PeerTable, ProtoTunnelHeader, FLAG_ACK, FLAG_DATA,
     FLAG_HEARTBEAT, FLAG_REGISTER, PROTOTUNNEL_HEADER_LEN,
@@ -19,6 +22,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_async_qos_udp_loopback() {
+        reset_probe_history();
         // Bind server on random ephemeral port
         let server_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let server_addr = server_socket.local_addr().unwrap();
@@ -33,7 +37,7 @@ mod tests {
 
         // Client socket
         let client_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let probe_req = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
+        let probe_req = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00];
         client_socket.send_to(&probe_req, server_addr).await.unwrap();
 
         let mut recv_buf = vec![0u8; 1024];

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use services_blaze::{build_notify_game_setup, build_notify_player_joining, GameRegistry, SessionStore};
+use services_blaze::{build_notify_game_setup, build_notify_game_state_change, build_notify_player_joining, GameRegistry, SessionStore};
 use services_http_content::{parse_http_request, HttpResponse};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -215,12 +215,17 @@ pub async fn run_control_server(
 
                     let total_online = std::cmp::max(online_count, room_members.len());
                     let members_json = serde_json::to_string(&room_members).unwrap_or_else(|_| "[]".to_string());
+                    let cipher_reuses = services_http_content::NetcodeHttpMetrics::global().cipher_reuse_count.load(std::sync::atomic::Ordering::Relaxed);
 
                     let json = format!(
-                        r#"{{"status":"online","online":true,"players_online":{},"active_players":{},"active_games":{},"current_room":"{}","room_code":"{}","transport_mode":"P2P","ping_ms":18,"peer_ping_ms":18,"members":{}}}"#,
-                        total_online, total_online, games_count, active_room_code, active_room_code, members_json
+                        r#"{{"status":"online","online":true,"players_online":{},"active_players":{},"active_games":{},"current_room":"{}","room_code":"{}","transport_mode":"P2P","ping_ms":18,"peer_ping_ms":18,"cipher_reuse_count":{},"members":{}}}"#,
+                        total_online, total_online, games_count, active_room_code, active_room_code, cipher_reuses, members_json
                     );
                     HttpResponse::ok_json(&json)
+                }
+
+                ("GET", "/metrics") | ("GET", "/api/v1/metrics") => {
+                    HttpResponse::ok_json(&services_http_content::NetcodeHttpMetrics::global().to_json())
                 }
 
                 ("POST", "/api/v1/rooms/host") => {
@@ -416,6 +421,46 @@ pub async fn run_control_server(
                         r#"{{"status":"ok","joined":{},"room_code":"{}"}}"#,
                         joined, room_code
                     );
+                    HttpResponse::ok_json(&json)
+                }
+
+                ("POST", "/api/v1/game/kickoff") => {
+                    let mut notified = 0;
+                    let all_games = game_registry.list_all_games();
+                    if all_games.is_empty() {
+                        let players = session_store.list_active_sessions();
+                        if let Some(player) = players.first() {
+                            let game = game_registry.create_game(player, None);
+                            let _ = game_registry.update_state(game.game_id, 131);
+                            if let Ok(setup_notif) = build_notify_game_setup(&game, player, players.get(1)) {
+                                session_store.send_notification(player.user_id, setup_notif.clone());
+                                if let Some(p2) = players.get(1) {
+                                    session_store.send_notification(p2.user_id, setup_notif);
+                                }
+                            }
+                            if let Ok(state_notif) = build_notify_game_state_change(game.game_id, 131) {
+                                for p in &players {
+                                    session_store.send_notification(p.user_id, state_notif.clone());
+                                    notified += 1;
+                                }
+                            }
+                        }
+                    } else {
+                        for game in all_games {
+                            let _ = game_registry.update_state(game.game_id, 131); // 131 = GAME_STATE_IN_GAME
+                            if let Ok(notif) = build_notify_game_state_change(game.game_id, 131) {
+                                session_store.send_notification(game.host_user_id, notif.clone());
+                                notified += 1;
+                                if let Some(guest_id) = game.guest_user_id {
+                                    session_store.send_notification(guest_id, notif.clone());
+                                    notified += 1;
+                                }
+                            }
+                        }
+                    }
+
+                    tracing::info!("[Control Server] Kickoff triggered: sent state change to {} players", notified);
+                    let json = format!(r#"{{"status":"ok","kickoff":true,"notified_players":{}}}"#, notified);
                     HttpResponse::ok_json(&json)
                 }
 

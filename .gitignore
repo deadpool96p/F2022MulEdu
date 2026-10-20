@@ -40,3 +40,13 @@ FIFA22/
 initfs_*
 anadius.cfg
 *.zip
+
+# Traces & cache
+*.jsonl
+tools/__pycache__/
+__pycache__/
+.claude/
+crates/emulator-server/*.crt
+crates/emulator-server/*.key
+crates/emulator-server/*.pem
+crates/emulator-server/*.bin

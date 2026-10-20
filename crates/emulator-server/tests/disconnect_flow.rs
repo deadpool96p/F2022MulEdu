@@ -95,6 +95,7 @@ async fn test_abrupt_disconnect_recovery_and_peer_notification() {
         Some(TdfValue::Integer(uid)) => *uid,
         _ => panic!("Expected UID in login response"),
     };
+    let _p1_notif_user = read_blaze_packet(&mut p1_stream).await; // NotifyUserAdded (0x7802)
 
     // Create Game
     let mut create_req = TdfStruct::new();
@@ -123,6 +124,7 @@ async fn test_abrupt_disconnect_recovery_and_peer_notification() {
         Some(TdfValue::Integer(uid)) => *uid,
         _ => panic!("Expected UID in login response"),
     };
+    let _p2_notif_user = read_blaze_packet(&mut p2_stream).await; // NotifyUserAdded (0x7802)
 
     // Join Game
     let mut join_req = TdfStruct::new();

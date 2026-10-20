@@ -38,12 +38,214 @@ pub const NOTIFY_GAME_STATE_CHANGE: u16 = 0x0064;
 pub const NOTIFY_PLAYER_STATE_CHANGE: u16 = 0x0074;
 pub const NOTIFY_MATCHMAKING_ASYNC_STATUS: u16 = 0x000C;
 
-/// Game Session State Lifecycle
+pub const NOTIFY_JOINING_PLAYER_INITIATE_CONNECTIONS: u16 = 0x0017;
+pub const NOTIFY_PLATFORM_HOST_INITIALIZED: u16 = 0x0018;
+pub const NOTIFY_GAME_REPORTING_ID_CHANGE: u16 = 0x0070;
+
 pub const GAME_STATE_INITIALIZING: u16 = 1;
 pub const GAME_STATE_IN_LOBBY: u16 = 2;
 pub const GAME_STATE_PRE_GAME: u16 = 3;
 pub const GAME_STATE_IN_GAME: u16 = 4;
 pub const GAME_STATE_POST_GAME: u16 = 5;
+pub const GAME_STATE_PRE_GAME_130: u16 = 130;
+pub const GAME_STATE_IN_GAME_131: u16 = 131;
+
+/// Strict 6-step GameManager notification sequence
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SequenceStep {
+    NotifyPlayerJoining = 0,
+    NotifyJoiningPlayerInitiateConnections = 1,
+    NotifyPlatformHostInitialized = 2,
+    NotifyGameReportingIdChange = 3,
+    GameState130 = 4,
+    GameState131 = 5,
+}
+
+/// Tracks and validates strict ordering for a game session's notifications.
+#[derive(Debug, Clone)]
+pub struct NotificationSequence {
+    pub game_id: u64,
+    pub current_step: Option<SequenceStep>,
+}
+
+impl NotificationSequence {
+    pub fn new(game_id: u64) -> Self {
+        Self {
+            game_id,
+            current_step: None,
+        }
+    }
+
+    pub fn advance_to(&mut self, next: SequenceStep) {
+        let expected = match self.current_step {
+            None => SequenceStep::NotifyPlayerJoining,
+            Some(SequenceStep::NotifyPlayerJoining) => SequenceStep::NotifyJoiningPlayerInitiateConnections,
+            Some(SequenceStep::NotifyJoiningPlayerInitiateConnections) => SequenceStep::NotifyPlatformHostInitialized,
+            Some(SequenceStep::NotifyPlatformHostInitialized) => SequenceStep::NotifyGameReportingIdChange,
+            Some(SequenceStep::NotifyGameReportingIdChange) => SequenceStep::GameState130,
+            Some(SequenceStep::GameState130) => SequenceStep::GameState131,
+            Some(SequenceStep::GameState131) => SequenceStep::GameState131,
+        };
+
+        if cfg!(debug_assertions) && next != expected {
+            panic!(
+                "Strict NotificationSequence violation for Game {}: expected step {:?}, attempted send {:?}",
+                self.game_id, expected, next
+            );
+        }
+
+        self.current_step = Some(next);
+    }
+}
+
+/// Builder enforcing strict ordering of match initialization notifications.
+/// Panics in debug builds on out-of-order sends.
+#[derive(Debug)]
+pub struct NotificationSequenceBuilder {
+    pub sequence: NotificationSequence,
+    packets: Vec<(SequenceStep, BlazePacket)>,
+}
+
+impl NotificationSequenceBuilder {
+    pub fn new(game_id: u64) -> Self {
+        Self {
+            sequence: NotificationSequence::new(game_id),
+            packets: Vec::new(),
+        }
+    }
+
+    pub fn notify_player_joining(mut self, pkt: BlazePacket) -> Self {
+        self.sequence.advance_to(SequenceStep::NotifyPlayerJoining);
+        self.packets.push((SequenceStep::NotifyPlayerJoining, pkt));
+        self
+    }
+
+    pub fn notify_joining_player_initiate_connections(mut self, pkt: BlazePacket) -> Self {
+        self.sequence.advance_to(SequenceStep::NotifyJoiningPlayerInitiateConnections);
+        self.packets.push((SequenceStep::NotifyJoiningPlayerInitiateConnections, pkt));
+        self
+    }
+
+    pub fn notify_platform_host_initialized(mut self, pkt: BlazePacket) -> Self {
+        self.sequence.advance_to(SequenceStep::NotifyPlatformHostInitialized);
+        self.packets.push((SequenceStep::NotifyPlatformHostInitialized, pkt));
+        self
+    }
+
+    pub fn notify_game_reporting_id_change(mut self, pkt: BlazePacket) -> Self {
+        self.sequence.advance_to(SequenceStep::NotifyGameReportingIdChange);
+        self.packets.push((SequenceStep::NotifyGameReportingIdChange, pkt));
+        self
+    }
+
+    pub fn game_state_130(mut self, pkt: BlazePacket) -> Self {
+        self.sequence.advance_to(SequenceStep::GameState130);
+        self.packets.push((SequenceStep::GameState130, pkt));
+        self
+    }
+
+    pub fn game_state_131(mut self, pkt: BlazePacket) -> Self {
+        self.sequence.advance_to(SequenceStep::GameState131);
+        self.packets.push((SequenceStep::GameState131, pkt));
+        self
+    }
+
+    pub fn build(self) -> Vec<BlazePacket> {
+        self.packets.into_iter().map(|(_, p)| p).collect()
+    }
+}
+
+/// Traced Blaze message recorded for deadlock diagnosis.
+#[derive(Debug, Clone)]
+pub struct TracedMessage {
+    pub direction: &'static str,
+    pub component: u16,
+    pub command: u16,
+    pub timestamp_us: u64,
+    pub tdf_hex: String,
+}
+
+/// Guard detecting server hangs waiting >5s for MatchReady, dumping the last 20 TDF hex messages.
+pub struct DeadlockGuard {
+    recent_messages: RwLock<std::collections::VecDeque<TracedMessage>>,
+    wait_start: RwLock<Option<(u64, std::time::Instant)>>,
+    warned: std::sync::atomic::AtomicBool,
+}
+
+impl Default for DeadlockGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeadlockGuard {
+    pub fn new() -> Self {
+        Self {
+            recent_messages: RwLock::new(std::collections::VecDeque::with_capacity(20)),
+            wait_start: RwLock::new(None),
+            warned: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub fn record_message(&self, direction: &'static str, comp: u16, cmd: u16, tdf_bytes: &[u8]) {
+        let now_us = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros() as u64;
+
+        let hex = blaze_core::hex_dump(tdf_bytes);
+        let mut msgs = self.recent_messages.write();
+        if msgs.len() >= 20 {
+            msgs.pop_front();
+        }
+        msgs.push_back(TracedMessage {
+            direction,
+            component: comp,
+            command: cmd,
+            timestamp_us: now_us,
+            tdf_hex: hex,
+        });
+    }
+
+    pub fn start_waiting_for_match_ready(&self, game_id: u64) {
+        *self.wait_start.write() = Some((game_id, std::time::Instant::now()));
+        self.warned.store(false, Ordering::SeqCst);
+    }
+
+    pub fn match_ready_achieved(&self, _game_id: u64) {
+        *self.wait_start.write() = None;
+    }
+
+    pub fn check_deadlock(&self, game_id: u64) -> bool {
+        let lock = self.wait_start.read();
+        if let Some((waiting_gid, start)) = *lock {
+            if waiting_gid == game_id && start.elapsed() > std::time::Duration::from_secs(5) {
+                if !self.warned.swap(true, Ordering::SeqCst) {
+                    let msgs = self.recent_messages.read();
+                    let mut dump = String::new();
+                    dump.push_str(&format!(
+                        "\n==================== [DeadlockGuard WARN: Game {} waited >5s for MatchReady] ====================\n",
+                        game_id
+                    ));
+                    for (i, msg) in msgs.iter().enumerate() {
+                        dump.push_str(&format!(
+                            "[{:02}] {} Comp=0x{:04X} Cmd=0x{:04X} t={}us:\n{}\n",
+                            i + 1, msg.direction, msg.component, msg.command, msg.timestamp_us, msg.tdf_hex
+                        ));
+                    }
+                    dump.push_str("============================================================================================\n");
+                    tracing::warn!("{}", dump);
+                }
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn dump_recent(&self) -> Vec<TracedMessage> {
+        self.recent_messages.read().iter().cloned().collect()
+    }
+}
 
 /// Represents an active 1v1 multiplayer game session.
 #[derive(Debug, Clone)]
@@ -61,6 +263,8 @@ pub struct GameSession {
     pub host_state: u16,
     pub guest_state: u16,
     pub squad_hash_synced: bool,
+    pub host_match_ready: bool,
+    pub guest_match_ready: bool,
 }
 
 /// Global registry managing all active multiplayer game sessions.
@@ -69,6 +273,7 @@ pub struct GameRegistry {
     games: RwLock<HashMap<u64, GameSession>>,
     room_map: RwLock<HashMap<String, u64>>,
     player_game_map: RwLock<HashMap<u64, u64>>,
+    pub deadlock_guard: std::sync::Arc<DeadlockGuard>,
 }
 
 impl Default for GameRegistry {
@@ -84,6 +289,7 @@ impl GameRegistry {
             games: RwLock::new(HashMap::new()),
             room_map: RwLock::new(HashMap::new()),
             player_game_map: RwLock::new(HashMap::new()),
+            deadlock_guard: std::sync::Arc::new(DeadlockGuard::new()),
         }
     }
 
@@ -134,10 +340,15 @@ impl GameRegistry {
         let mut attributes = HashMap::new();
         attributes.insert("ATTR_SEED".to_string(), seed.to_string());
         attributes.insert("ATTR_SQDH".to_string(), canonical_hash);
-        attributes.insert("ATTR_TEAM_HOME".to_string(), "0".to_string());
-        attributes.insert("ATTR_TEAM_AWAY".to_string(), "0".to_string());
-        attributes.insert("ATTR_KITS".to_string(), "0".to_string());
+        attributes.insert("ATTR_MATCH_TYPE".to_string(), "0".to_string()); // Standard Head-to-Head Friendly
+        attributes.insert("ATTR_GAME_MODE".to_string(), "1".to_string());  // Online Friendly (not UCL tournament)
+        attributes.insert("ATTR_CUSTOM_GAME_MODE".to_string(), "0".to_string());
+        attributes.insert("ATTR_TEAM_HOME".to_string(), "243".to_string()); // Real Madrid default
+        attributes.insert("ATTR_TEAM_AWAY".to_string(), "9".to_string());   // Liverpool default
+        attributes.insert("ATTR_KITS".to_string(), "1".to_string());
         attributes.insert("ATTR_HALF_LEN".to_string(), "6".to_string());
+        attributes.insert("ATTR_DIFF".to_string(), "3".to_string());
+        attributes.insert("ATTR_CONTROL".to_string(), "0".to_string());
 
         let session = GameSession {
             game_id,
@@ -153,6 +364,8 @@ impl GameRegistry {
             host_state: GAME_STATE_INITIALIZING,
             guest_state: GAME_STATE_INITIALIZING,
             squad_hash_synced: true,
+            host_match_ready: false,
+            guest_match_ready: false,
         };
 
         self.games.write().insert(game_id, session.clone());
@@ -282,35 +495,207 @@ impl GameRegistry {
 
         if user_id == game.host_user_id {
             game.host_state = new_state;
+            if new_state == GAME_STATE_IN_GAME_131 || new_state == GAME_STATE_IN_GAME {
+                game.host_match_ready = true;
+            }
         } else if Some(user_id) == game.guest_user_id {
             game.guest_state = new_state;
+            if new_state == GAME_STATE_IN_GAME_131 || new_state == GAME_STATE_IN_GAME {
+                game.guest_match_ready = true;
+            }
         }
 
         let mut state_transition = None;
 
+        let host_in_game = game.host_match_ready || game.host_state == GAME_STATE_IN_GAME || game.host_state == GAME_STATE_IN_GAME_131;
+        let guest_in_game = game.guest_match_ready || game.guest_state == GAME_STATE_IN_GAME || game.guest_state == GAME_STATE_IN_GAME_131;
+        let host_pre_game = game.host_state == GAME_STATE_PRE_GAME_130 || game.host_state >= GAME_STATE_PRE_GAME;
+        let guest_pre_game = game.guest_state == GAME_STATE_PRE_GAME_130 || game.guest_state >= GAME_STATE_PRE_GAME;
+
         if game.guest_user_id.is_some() {
-            if game.host_state >= GAME_STATE_IN_GAME && game.guest_state >= GAME_STATE_IN_GAME {
-                if game.game_state != GAME_STATE_IN_GAME {
-                    game.game_state = GAME_STATE_IN_GAME;
-                    state_transition = Some(GAME_STATE_IN_GAME);
+            // Both clients must send MatchReady (131 or IN_GAME) before advancing to 131 / InGame
+            if host_in_game && guest_in_game {
+                if game.game_state != GAME_STATE_IN_GAME_131 && game.game_state != GAME_STATE_IN_GAME {
+                    game.game_state = new_state;
+                    state_transition = Some(new_state);
                 }
-            } else if game.host_state >= GAME_STATE_PRE_GAME && game.guest_state >= GAME_STATE_PRE_GAME {
-                if game.game_state != GAME_STATE_PRE_GAME && game.game_state < GAME_STATE_IN_GAME {
-                    game.game_state = GAME_STATE_PRE_GAME;
-                    state_transition = Some(GAME_STATE_PRE_GAME);
+            } else if host_pre_game && guest_pre_game {
+                if game.game_state != GAME_STATE_PRE_GAME_130 && game.game_state != GAME_STATE_PRE_GAME && game.game_state < GAME_STATE_IN_GAME {
+                    game.game_state = new_state;
+                    state_transition = Some(new_state);
                 }
             }
         } else {
-            if game.host_state >= GAME_STATE_IN_GAME && game.game_state != GAME_STATE_IN_GAME {
-                game.game_state = GAME_STATE_IN_GAME;
-                state_transition = Some(GAME_STATE_IN_GAME);
-            } else if game.host_state >= GAME_STATE_PRE_GAME && game.game_state < GAME_STATE_PRE_GAME {
-                game.game_state = GAME_STATE_PRE_GAME;
-                state_transition = Some(GAME_STATE_PRE_GAME);
+            if host_in_game && game.game_state != GAME_STATE_IN_GAME_131 && game.game_state != GAME_STATE_IN_GAME {
+                game.game_state = new_state;
+                state_transition = Some(new_state);
+            } else if host_pre_game && game.game_state < GAME_STATE_PRE_GAME {
+                game.game_state = new_state;
+                state_transition = Some(new_state);
             }
         }
 
         Some((game.clone(), state_transition))
+    }
+
+    /// Sets player MatchReady and advances to state 131 if both players are ready.
+    pub fn set_player_match_ready(
+        &self,
+        game_id: u64,
+        user_id: u64,
+        store: &SessionStore,
+    ) -> Option<(GameSession, bool)> {
+        let mut games = self.games.write();
+        let game = games.get_mut(&game_id)?;
+
+        if user_id == game.host_user_id {
+            game.host_match_ready = true;
+            game.host_state = GAME_STATE_IN_GAME_131;
+        } else if Some(user_id) == game.guest_user_id {
+            game.guest_match_ready = true;
+            game.guest_state = GAME_STATE_IN_GAME_131;
+        }
+
+        let both_ready = if game.guest_user_id.is_some() {
+            game.host_match_ready && game.guest_match_ready
+        } else {
+            game.host_match_ready
+        };
+
+        let game_clone = game.clone();
+        drop(games);
+
+        if both_ready && game_clone.game_state != GAME_STATE_IN_GAME_131 {
+            self.advance_state(game_id, GAME_STATE_IN_GAME_131, store);
+        }
+
+        Some((game_clone, both_ready))
+    }
+
+    /// Centralized state machine transition for GameManager.
+    /// Enforces the strict notification sequence:
+    /// NotifyPlayerJoining (0x0015) ->
+    /// NotifyJoiningPlayerInitiateConnections (0x0017) ->
+    /// NotifyPlatformHostInitialized (0x0018) ->
+    /// NotifyGameReportingIdChange (0x0070) ->
+    /// GameState(130) ->
+    /// GameState(131)
+    /// Also arms and triggers DeadlockGuard if waiting >5s for MatchReady.
+    pub fn advance_state(
+        &self,
+        game_id: u64,
+        target_state: u16,
+        store: &SessionStore,
+    ) -> Option<GameSession> {
+        let mut games = self.games.write();
+        let game = games.get_mut(&game_id)?;
+
+        let prev_state = game.game_state;
+        game.game_state = target_state;
+        let game_clone = game.clone();
+        drop(games);
+
+        tracing::info!(
+            "[GameManager] advance_state: Game {} transitioning from {} to {}",
+            game_id,
+            prev_state,
+            target_state
+        );
+
+        let mut participants = vec![game_clone.host_user_id];
+        if let Some(gid) = game_clone.guest_user_id {
+            participants.push(gid);
+        }
+
+        match target_state {
+            GAME_STATE_IN_LOBBY => {
+                if let Ok(notif) = build_notify_game_state_change(game_id, GAME_STATE_IN_LOBBY) {
+                    store.broadcast_notification(&participants, notif);
+                }
+            }
+            GAME_STATE_PRE_GAME | GAME_STATE_PRE_GAME_130 => {
+                let host_sess = store.get_session(game_clone.host_user_id);
+                let guest_sess = game_clone.guest_user_id.and_then(|uid| store.get_session(uid));
+
+                let mut builder = NotificationSequenceBuilder::new(game_id);
+
+                // Step 1: NotifyPlayerJoining (0x0015)
+                if let Some(ref guest) = guest_sess {
+                    if let Ok(pkt) = build_notify_player_joining(&game_clone, guest) {
+                        builder = builder.notify_player_joining(pkt.clone());
+                        store.send_notification(game_clone.host_user_id, pkt);
+                    }
+                } else if let Some(ref host) = host_sess {
+                    if let Ok(pkt) = build_notify_player_joining(&game_clone, host) {
+                        builder = builder.notify_player_joining(pkt);
+                    }
+                }
+
+                // Step 2: NotifyJoiningPlayerInitiateConnections (0x0017)
+                let guest_pid = guest_sess.as_ref().map(|g| g.persona_id).unwrap_or(0);
+                if let Ok(pkt) = build_notify_joining_player_initiate_connections(game_id, guest_pid) {
+                    builder = builder.notify_joining_player_initiate_connections(pkt.clone());
+                    store.broadcast_notification(&participants, pkt);
+                }
+
+                // Step 3: NotifyPlatformHostInitialized (0x0018)
+                let host_pid = host_sess.as_ref().map(|h| h.persona_id).unwrap_or(game_clone.host_persona_id);
+                if let Ok(pkt) = build_notify_platform_host_initialized(game_id, host_pid) {
+                    builder = builder.notify_platform_host_initialized(pkt.clone());
+                    store.broadcast_notification(&participants, pkt);
+                }
+
+                // Step 4: NotifyGameReportingIdChange (0x0070)
+                if let Ok(pkt) = build_notify_game_reporting_id_change(game_id, game_id) {
+                    builder = builder.notify_game_reporting_id_change(pkt.clone());
+                    store.broadcast_notification(&participants, pkt);
+                }
+
+                // Step 5: GameState(130) (0x0064)
+                if let Ok(pkt) = build_notify_game_state_change(game_id, GAME_STATE_PRE_GAME_130) {
+                    builder = builder.game_state_130(pkt.clone());
+                    store.broadcast_notification(&participants, pkt);
+                }
+                let _ = builder.build();
+
+                if target_state == GAME_STATE_PRE_GAME {
+                    if let Ok(pkt3) = build_notify_game_state_change(game_id, GAME_STATE_PRE_GAME) {
+                        store.broadcast_notification(&participants, pkt3);
+                    }
+                }
+
+                // Arm deadlock guard (>5s)
+                self.deadlock_guard.start_waiting_for_match_ready(game_id);
+
+                let dg = self.deadlock_guard.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(5050)).await;
+                    dg.check_deadlock(game_id);
+                });
+            }
+            GAME_STATE_IN_GAME | GAME_STATE_IN_GAME_131 => {
+                // MatchReady achieved - disarm deadlock guard!
+                self.deadlock_guard.match_ready_achieved(game_id);
+
+                // Step 6: GameState(131)
+                if let Ok(pkt) = build_notify_game_state_change(game_id, GAME_STATE_IN_GAME_131) {
+                    store.broadcast_notification(&participants, pkt);
+                }
+
+                if target_state == GAME_STATE_IN_GAME {
+                    if let Ok(pkt4) = build_notify_game_state_change(game_id, GAME_STATE_IN_GAME) {
+                        store.broadcast_notification(&participants, pkt4);
+                    }
+                }
+            }
+            _ => {
+                if let Ok(pkt) = build_notify_game_state_change(game_id, target_state) {
+                    store.broadcast_notification(&participants, pkt);
+                }
+            }
+        }
+
+        Some(game_clone)
     }
 
     /// Updates game state (Lobby -> PreGame -> InGame).
@@ -349,6 +734,11 @@ impl GameRegistry {
         let removed = self.destroy_game(game.game_id)?;
         Some((removed, remaining))
     }
+
+    /// Returns all active game sessions in the registry.
+    pub fn list_all_games(&self) -> Vec<GameSession> {
+        self.games.read().values().cloned().collect()
+    }
 }
 
 // =============================================================================
@@ -373,7 +763,7 @@ pub fn build_notify_game_setup(
     // GAME struct
     let mut game_struct = TdfStruct::new();
     game_struct.set("GID", TdfValue::Integer(game.game_id));
-    game_struct.set("GNAM", TdfValue::String("FIFA22 Match".to_string()));
+    game_struct.set("GNAM", TdfValue::String("OSDK_match".to_string()));
     game_struct.set("GSTA", TdfValue::Integer(game.game_state as u64));
     game_struct.set("GSET", TdfValue::Integer(game.settings as u64));
     game_struct.set("SEED", TdfValue::Integer(game.seed as u64));
@@ -544,6 +934,39 @@ pub fn build_notify_player_removed(
     BlazePacket::notification(COMPONENT_GAME_MANAGER, NOTIFY_PLAYER_REMOVED, payload)
 }
 
+/// Builds a NotifyJoiningPlayerInitiateConnections (0x0017) notification.
+pub fn build_notify_joining_player_initiate_connections(
+    game_id: u64,
+    joining_persona_id: u64,
+) -> io::Result<BlazePacket> {
+    let mut payload = TdfStruct::new();
+    payload.set("GID", TdfValue::Integer(game_id));
+    payload.set("PID", TdfValue::Integer(joining_persona_id));
+    BlazePacket::notification(COMPONENT_GAME_MANAGER, NOTIFY_JOINING_PLAYER_INITIATE_CONNECTIONS, payload)
+}
+
+/// Builds a NotifyPlatformHostInitialized (0x0018) notification.
+pub fn build_notify_platform_host_initialized(
+    game_id: u64,
+    host_persona_id: u64,
+) -> io::Result<BlazePacket> {
+    let mut payload = TdfStruct::new();
+    payload.set("GID", TdfValue::Integer(game_id));
+    payload.set("PHID", TdfValue::Integer(host_persona_id));
+    BlazePacket::notification(COMPONENT_GAME_MANAGER, NOTIFY_PLATFORM_HOST_INITIALIZED, payload)
+}
+
+/// Builds a NotifyGameReportingIdChange (0x0070) notification.
+pub fn build_notify_game_reporting_id_change(
+    game_id: u64,
+    reporting_id: u64,
+) -> io::Result<BlazePacket> {
+    let mut payload = TdfStruct::new();
+    payload.set("GID", TdfValue::Integer(game_id));
+    payload.set("GRID", TdfValue::Integer(reporting_id));
+    BlazePacket::notification(COMPONENT_GAME_MANAGER, NOTIFY_GAME_REPORTING_ID_CHANGE, payload)
+}
+
 // =============================================================================
 // GameManager RPC Handlers
 // =============================================================================
@@ -685,15 +1108,7 @@ pub fn handle_finalize_game_creation(
     registry: &GameRegistry,
 ) -> io::Result<BlazePacket> {
     if let Some(game) = registry.find_by_player(session.user_id) {
-        let updated = registry.update_state(game.game_id, GAME_STATE_IN_LOBBY);
-        if let Some(g) = updated {
-            let notif = build_notify_game_state_change(g.game_id, GAME_STATE_IN_LOBBY)?;
-            let mut participants = vec![g.host_user_id];
-            if let Some(gid) = g.guest_user_id {
-                participants.push(gid);
-            }
-            store.broadcast_notification(&participants, notif);
-        }
+        registry.advance_state(game.game_id, GAME_STATE_IN_LOBBY, store);
     }
     BlazePacket::response(&req.header, TdfStruct::new())
 }
@@ -751,7 +1166,7 @@ pub fn handle_update_player_state(
         let notif_player = build_notify_player_state_change(game.game_id, session.persona_id, state)?;
         store.broadcast_notification(&participants, notif_player);
 
-        // 2. Symmetric Kickoff state machine check
+        // 2. Symmetric Kickoff state machine check - centralized in advance_state
         if let Some((g, state_transition)) = registry.update_player_state(game.game_id, session.user_id, state) {
             if let Some(new_state) = state_transition {
                 tracing::info!(
@@ -761,8 +1176,7 @@ pub fn handle_update_player_state(
                     g.host_state,
                     g.guest_state
                 );
-                let notif_game = build_notify_game_state_change(g.game_id, new_state)?;
-                store.broadcast_notification(&participants, notif_game);
+                registry.advance_state(g.game_id, new_state, store);
             }
         }
     }
@@ -1005,5 +1419,43 @@ mod tests {
         // Verify registry is cleanly freed
         assert!(registry.find_by_player(p1.user_id).is_none());
         assert!(registry.find_by_player(p2.user_id).is_none());
+    }
+
+    #[test]
+    fn test_notification_sequence_strict_ordering() {
+        let mut seq = NotificationSequence::new(42);
+        seq.advance_to(SequenceStep::NotifyPlayerJoining);
+        seq.advance_to(SequenceStep::NotifyJoiningPlayerInitiateConnections);
+        seq.advance_to(SequenceStep::NotifyPlatformHostInitialized);
+        seq.advance_to(SequenceStep::NotifyGameReportingIdChange);
+        seq.advance_to(SequenceStep::GameState130);
+        seq.advance_to(SequenceStep::GameState131);
+        assert_eq!(seq.current_step, Some(SequenceStep::GameState131));
+    }
+
+    #[test]
+    #[should_panic(expected = "Strict NotificationSequence violation")]
+    fn test_notification_sequence_out_of_order_panics() {
+        let mut seq = NotificationSequence::new(99);
+        seq.advance_to(SequenceStep::NotifyPlayerJoining);
+        // Skip steps directly to GameState130 - must panic in debug!
+        seq.advance_to(SequenceStep::GameState130);
+    }
+
+    #[test]
+    fn test_deadlock_guard_records_and_dumps_hex() {
+        let guard = DeadlockGuard::new();
+        for i in 0..25 {
+            let dummy = vec![0x00, 0x01, i as u8];
+            guard.record_message("IN", COMPONENT_GAME_MANAGER, 0x0014, &dummy);
+        }
+        let recent = guard.dump_recent();
+        assert_eq!(recent.len(), 20, "DeadlockGuard ring buffer must cap at 20 messages");
+        assert_eq!(recent[0].command, 0x0014);
+
+        guard.start_waiting_for_match_ready(101);
+        // Not yet 5s elapsed
+        assert!(!guard.check_deadlock(101));
+        guard.match_ready_achieved(101);
     }
 }

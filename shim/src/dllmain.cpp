@@ -30,22 +30,149 @@ static PFN_DXGIReportActiveObjects g_pfn_DXGIReportActiveObjects = nullptr;
 static PFN_DXGID3D10CreateDevice g_pfn_DXGID3D10CreateDevice = nullptr;
 static PFN_DXGID3D10RegisterLayers g_pfn_DXGID3D10RegisterLayers = nullptr;
 
+#include <wincrypt.h>
+#include <vector>
+
+constexpr const char* TARGET_FIFA_HASH_HEX = "FDDC0B5B4A093C460A5D0E07E117634366E2DA0050F19EED3776C4340A56471A";
+
+static bool ComputeSha256File(const char* filepath, std::string& out_hex) {
+    HANDLE hFile = CreateFileA(filepath, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    HCRYPTPROV hProv = 0;
+    HCRYPTHASH hHash = 0;
+    if (!CryptAcquireContext(&hProv, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
+        CloseHandle(hFile);
+        return false;
+    }
+
+    if (!CryptCreateHash(hProv, CALG_SHA_256, 0, 0, &hHash)) {
+        CryptReleaseContext(hProv, 0);
+        CloseHandle(hFile);
+        return false;
+    }
+
+    constexpr DWORD BUF_SIZE = 65536;
+    std::vector<BYTE> buffer(BUF_SIZE);
+    DWORD bytesRead = 0;
+    while (ReadFile(hFile, buffer.data(), BUF_SIZE, &bytesRead, nullptr) && bytesRead > 0) {
+        CryptHashData(hHash, buffer.data(), bytesRead, 0);
+    }
+
+    CloseHandle(hFile);
+
+    BYTE hash_bytes[32] = {0};
+    DWORD hash_len = sizeof(hash_bytes);
+    bool ok = CryptGetHashParam(hHash, HP_HASHVAL, hash_bytes, &hash_len, 0);
+    CryptDestroyHash(hHash);
+    CryptReleaseContext(hProv, 0);
+
+    if (!ok || hash_len != 32) {
+        return false;
+    }
+
+    char hex[65] = {0};
+    for (int i = 0; i < 32; ++i) {
+        snprintf(hex + i * 2, 3, "%02X", hash_bytes[i]);
+    }
+    out_hex = hex;
+    return true;
+}
+
+bool RunStartupSelfCheck() {
+    char local_appdata[MAX_PATH] = {0};
+    if (GetEnvironmentVariableA("LOCALAPPDATA", local_appdata, MAX_PATH) == 0) {
+        strncpy(local_appdata, "C:\\Temp", MAX_PATH - 1);
+    }
+    std::string err_dir = std::string(local_appdata) + "\\F2022MulEdu";
+    CreateDirectoryA(err_dir.c_str(), nullptr);
+    std::string err_log_path = err_dir + "\\shim.log";
+
+    auto write_to_shim_log = [&](const std::string& line) {
+        FILE* f = fopen(err_log_path.c_str(), "a");
+        if (f) {
+            fprintf(f, "%s\n", line.c_str());
+            fclose(f);
+        }
+    };
+
+    bool all_ok = true;
+
+    // 1. Verify dxgi_org.dll exists in the executable/module directory
+    char dll_dir[MAX_PATH] = {0};
+    GetModuleFileNameA(nullptr, dll_dir, MAX_PATH);
+    char* last_slash = strrchr(dll_dir, '\\');
+    std::string dxgi_org_path = "dxgi_org.dll";
+    if (last_slash) {
+        *last_slash = '\0';
+        dxgi_org_path = std::string(dll_dir) + "\\dxgi_org.dll";
+    }
+
+    DWORD attr = GetFileAttributesA(dxgi_org_path.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        std::string err = "[ERROR] Startup self-check: dxgi_org.dll not found at: " + dxgi_org_path;
+        write_to_shim_log(err);
+        LogError(err);
+        all_ok = false;
+    } else {
+        std::string ok_msg = "[INFO] Startup self-check: dxgi_org.dll verified at: " + dxgi_org_path;
+        write_to_shim_log(ok_msg);
+        LogInfo(ok_msg);
+    }
+
+    // 2. Verify loaded FIFA executable hash matches target build (1.0.77.45722)
+    char exe_path[MAX_PATH] = {0};
+    GetModuleFileNameA(nullptr, exe_path, MAX_PATH);
+
+    std::string actual_hash;
+    if (ComputeSha256File(exe_path, actual_hash)) {
+        if (_stricmp(actual_hash.c_str(), TARGET_FIFA_HASH_HEX) != 0) {
+            std::string err = "[ERROR] Startup self-check: Executable hash mismatch for " + std::string(exe_path) +
+                              "! Expected (1.0.77.45722): " + TARGET_FIFA_HASH_HEX +
+                              ", Got: " + actual_hash;
+            write_to_shim_log(err);
+            LogError(err);
+            all_ok = false;
+        } else {
+            std::string ok_msg = "[INFO] Startup self-check: FIFA 22 (build 1.0.77.45722) hash verified: " + actual_hash;
+            write_to_shim_log(ok_msg);
+            LogInfo(ok_msg);
+        }
+    } else {
+        std::string err = "[ERROR] Startup self-check: Failed to compute SHA-256 hash for loaded executable: " + std::string(exe_path);
+        write_to_shim_log(err);
+        LogError(err);
+        all_ok = false;
+    }
+
+    return all_ok;
+}
+
 bool InitDXGIProxy() {
     if (g_real_dxgi) {
         return true;
     }
 
-    wchar_t sys_path[MAX_PATH];
-    if (GetSystemDirectoryW(sys_path, MAX_PATH) == 0) {
-        LogError("Failed to get system directory for dxgi.dll");
-        return false;
-    }
+    // Try dxgi_org.dll in game root first
+    g_real_dxgi = LoadLibraryW(L"dxgi_org.dll");
+    if (g_real_dxgi) {
+        LogInfo("Loaded real dxgi_org.dll from game directory successfully.");
+    } else {
+        wchar_t sys_path[MAX_PATH];
+        if (GetSystemDirectoryW(sys_path, MAX_PATH) == 0) {
+            LogError("Failed to get system directory for dxgi.dll");
+            return false;
+        }
 
-    std::wstring real_dxgi_path = std::wstring(sys_path) + L"\\dxgi.dll";
-    g_real_dxgi = LoadLibraryW(real_dxgi_path.c_str());
-    if (!g_real_dxgi) {
-        LogError("Failed to load real System32 dxgi.dll");
-        return false;
+        std::wstring real_dxgi_path = std::wstring(sys_path) + L"\\dxgi.dll";
+        g_real_dxgi = LoadLibraryW(real_dxgi_path.c_str());
+        if (!g_real_dxgi) {
+            LogError("Failed to load real System32 dxgi.dll");
+            return false;
+        }
+        LogInfo("Loaded real System32 dxgi.dll successfully.");
     }
 
     g_pfn_CreateDXGIFactory = reinterpret_cast<PFN_CreateDXGIFactory>(
@@ -65,7 +192,6 @@ bool InitDXGIProxy() {
     g_pfn_DXGID3D10RegisterLayers = reinterpret_cast<PFN_DXGID3D10RegisterLayers>(
         GetProcAddress(g_real_dxgi, "DXGID3D10RegisterLayers"));
 
-    LogInfo("Loaded real System32 dxgi.dll successfully.");
     return true;
 }
 
@@ -78,6 +204,7 @@ static DWORD WINAPI ShimWorkerThread(LPVOID) {
     LogInfo("=============================================================");
 
     LoadConfig();
+    RunStartupSelfCheck();
 
     if (MH_Initialize() != MH_OK) {
         LogError("MinHook initialization failed!");

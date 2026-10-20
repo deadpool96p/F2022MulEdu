@@ -29,6 +29,7 @@ struct Config {
     bool enable_overlay = true;
     bool enable_steam = true;
     uint32_t steam_appid = 480;
+    bool dry_run = false;
 };
 
 // Real-time UDP Netcode Metrics & Transport Mode
@@ -53,6 +54,9 @@ NetcodeMetrics GetCurrentNetcodeMetrics();
 // Global config access
 Config& GetConfig();
 void LoadConfig();
+
+// Startup Self-Check verifying dxgi_org.dll and executable hash
+bool RunStartupSelfCheck();
 
 // Logging
 void SetLogDirectory(const std::string& dir);

@@ -23,7 +23,7 @@ impl Default for RedirectorConfig {
         Self {
             host: "127.0.0.1".to_string(),
             port: 42128,
-            secure: false, // 0 = plain TCP downgrade (allows DirtySDK to skip TLS cert validation)
+            secure: true, // 1 = TLS (satisfies standardSecure_v4 profile)
         }
     }
 }

@@ -1,4 +1,5 @@
 #include "f22_shim.h"
+#include "hook_guard.h"
 #include "steam_bridge.hpp"
 #include "control_client.h"
 #include "overlay/input_hook.h"
@@ -54,6 +55,13 @@ NetcodeMetrics GetCurrentNetcodeMetrics() {
 
 static bool ShouldRerouteHost(std::string_view host) {
     if (host.empty()) return false;
+
+    if (GetConfig().dry_run) {
+        std::ostringstream ss;
+        ss << "[WinSock][DRY-RUN] Forwarding host query \"" << host << "\" directly to real EA endpoints (inspection only)";
+        LogInfo(ss.str());
+        return false;
+    }
 
     if (host.find("gosredirector.ea.com") != std::string_view::npos ||
         host.find("blaze") != std::string_view::npos) {
@@ -191,6 +199,19 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
 
     const auto& cfg = GetConfig();
 
+    if (cfg.dry_run) {
+        if (name->sa_family == AF_INET) {
+            const auto *sin = reinterpret_cast<const struct sockaddr_in*>(name);
+            uint16_t port = ntohs(sin->sin_port);
+            char ip_str[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &(sin->sin_addr), ip_str, INET_ADDRSTRLEN);
+            std::ostringstream ss;
+            ss << "[WinSock][DRY-RUN] Outgoing connect to " << ip_str << ":" << port << " -> forwarded directly to real EA endpoint (dry-run)";
+            LogInfo(ss.str());
+        }
+        return false;
+    }
+
     if (name->sa_family == AF_INET) {
         const auto *sin = reinterpret_cast<const struct sockaddr_in*>(name);
         uint16_t port = ntohs(sin->sin_port);
@@ -198,9 +219,9 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
         inet_ntop(AF_INET, &(sin->sin_addr), ip_str, INET_ADDRSTRLEN);
 
         bool should_reroute = (port == cfg.redirector_port || port == cfg.blaze_port ||
-                               port == 42127 || port == 42128 || port == 42230);
+                               port == 42127 || port == 42128 || port == 42230 || port == 44325);
         if (cfg.reroute_all_ea) {
-            if (port == cfg.telemetry_port || port == 443 || port == 8080) {
+            if (port == cfg.telemetry_port || port == 443 || port == 80 || port == 8080 || port == 44325) {
                 should_reroute = true;
             }
         }
@@ -218,7 +239,9 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
             std::memcpy(out_sin, sin, sizeof(struct sockaddr_in));
             out_sin->sin_family = AF_INET;
             inet_pton(AF_INET, cfg.emulator_host.c_str(), &(out_sin->sin_addr));
-            if (port == 443 && cfg.telemetry_port != 443) {
+            if (port == 44325) {
+                out_sin->sin_port = htons(cfg.blaze_port);
+            } else if (port == 443 && cfg.telemetry_port != 443) {
                 out_sin->sin_port = htons(cfg.telemetry_port);
             }
             *out_len = sizeof(struct sockaddr_in);
@@ -234,9 +257,9 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
         inet_ntop(AF_INET6, &(sin6->sin6_addr), ip6_str, INET6_ADDRSTRLEN);
 
         bool should_reroute = (port == cfg.redirector_port || port == cfg.blaze_port ||
-                               port == 42127 || port == 42128 || port == 42230);
+                               port == 42127 || port == 42128 || port == 42230 || port == 44325);
         if (cfg.reroute_all_ea) {
-            if (port == cfg.telemetry_port || port == 443 || port == 8080) {
+            if (port == cfg.telemetry_port || port == 443 || port == 80 || port == 8080 || port == 44325) {
                 should_reroute = true;
             }
         }
@@ -252,9 +275,9 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
             auto *out_sin6 = reinterpret_cast<struct sockaddr_in6*>(out_addr);
             std::memset(out_addr, 0, sizeof(struct sockaddr_storage));
             out_sin6->sin6_family = AF_INET6;
-            out_sin6->sin6_port = sin6->sin6_port;
-            // Map to IPv4-mapped loopback ::ffff:127.0.0.1
-            inet_pton(AF_INET6, "::ffff:127.0.0.1", &(out_sin6->sin6_addr));
+            out_sin6->sin6_port = (port == 44325) ? htons(cfg.blaze_port) : sin6->sin6_port;
+            // Map to standard IPv6 loopback ::1
+            inet_pton(AF_INET6, "::1", &(out_sin6->sin6_addr));
             *out_len = sizeof(struct sockaddr_in6);
             return true;
         }
@@ -754,15 +777,15 @@ bool InstallWinsockHooks() {
     void *p_recvfrom = reinterpret_cast<void*>(GetProcAddress(ws2, "recvfrom"));
     void *p_WSARecvFrom = reinterpret_cast<void*>(GetProcAddress(ws2, "WSARecvFrom"));
 
+    static std::vector<std::unique_ptr<HookGuard>> s_winsock_guards;
+    s_winsock_guards.clear();
+
     auto create_hook_checked = [](void* target, void* detour, void** original, const char* name) {
         if (!target) {
             LogWarn(std::string("WinSock export not found: ") + name);
             return;
         }
-        MH_STATUS s = MH_CreateHook(target, detour, original);
-        if (s != MH_OK) {
-            LogError(std::string("Failed to hook WinSock ") + name + ": " + MH_StatusToString(s));
-        }
+        s_winsock_guards.push_back(std::make_unique<HookGuard>("ws2_32.dll", name, target, detour, original));
     };
 
     create_hook_checked(p_getaddrinfo, reinterpret_cast<void*>(&Hooked_getaddrinfo),
