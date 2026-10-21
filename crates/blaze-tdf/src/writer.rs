@@ -20,13 +20,30 @@ impl<W: Write> TdfWriter<W> {
         self.writer
     }
 
-    /// Serializes an entire TdfStruct, terminating with the 0x00 TAG_END byte.
+    /// Serializes a *nested* TdfStruct, terminating with the 0x00 TAG_END byte.
+    ///
+    /// Nested structs are length-delimited only by their terminator, so the
+    /// terminator is mandatory.
     pub fn write_struct(&mut self, s: &TdfStruct) -> io::Result<()> {
         for (tag, value) in &s.fields {
             self.write_tagged_field(tag, value)?;
         }
         // Write struct terminator (0x00 byte)
         self.writer.write_all(&[0x00])?;
+        Ok(())
+    }
+
+    /// Serializes a *root* TdfStruct, without the trailing TAG_END byte.
+    ///
+    /// The root struct of a Blaze frame is delimited by the frame's own length
+    /// field, not by a terminator, so EA does not emit one. This is confirmed
+    /// by both authentic EA `Util::fetchClientConfig` captures, whose payload
+    /// ends exactly on the payload boundary, and by 25 of the 26 authentic
+    /// legacy-FIRE frames in the reference test corpus.
+    pub fn write_root_struct(&mut self, s: &TdfStruct) -> io::Result<()> {
+        for (tag, value) in &s.fields {
+            self.write_tagged_field(tag, value)?;
+        }
         Ok(())
     }
 

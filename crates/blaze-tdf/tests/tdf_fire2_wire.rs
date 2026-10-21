@@ -174,7 +174,10 @@ fn signed_roundtrip_preserves_sign() {
 ///
 /// `STIM` (server time) is tagged `CF 4A 6D`, typed as INTEGER (`0x00`), and the
 /// timestamp 1792499378 (2026-10-20 12:29:38Z) encodes as `B2 FA BA AD 0D`.
-/// The trailing `00` is the TDF struct terminator.
+///
+/// There is **no** trailing `00`: the root TDF struct of a Blaze frame is
+/// delimited by the frame's length field, not by a terminator. See
+/// `root_struct_has_no_trailing_terminator` below.
 #[test]
 fn ping_response_stim_uses_the_heat2_integer_encoding() {
     let mut payload = TdfStruct::new();
@@ -188,27 +191,77 @@ fn ping_response_stim_uses_the_heat2_integer_encoding() {
             0xCF, 0x4A, 0x6D, // tag "STIM"
             0x00, // type INTEGER
             0xB2, 0xFA, 0xBA, 0xAD, 0x0D, // 1792499378
-            0x00, // struct terminator
         ],
         "STIM must be encoded with the Heat2 varsize integer scheme"
     );
 }
 
-/// The buggy LEB128 encoding of the same value decodes to 1998-05-27 under
-/// Heat2, i.e. 28 years in the past. This test pins the regression.
+/// The root TDF struct of a Blaze frame carries **no** trailing terminator.
+///
+/// This is not a stylistic choice. EA's own frames end exactly on the last
+/// byte of their last field:
+///
+/// * both authentic EA `Util::fetchClientConfig` Fire2 replies (1324 and
+///   1390 byte payloads) end on the payload boundary,
+/// * the byte-exact authentic EA `Redirector::getServerInstance` reply payload
+///   (74 bytes) ends on the payload boundary,
+/// * 21 of the 22 authentic legacy-FIRE frames in the reference corpus end on
+///   the payload boundary, and none of them carries a terminator.
+///
+/// The root struct is delimited by the frame's `payloadSize` field instead.
+/// A spurious trailing `00` shifts every subsequent byte of the frame and
+/// makes the client's Heat2 decoder reject the packet.
 #[test]
-fn ping_response_stim_does_not_decode_to_a_1998_timestamp() {
+fn root_struct_has_no_trailing_terminator() {
     let mut payload = TdfStruct::new();
+    payload.set("ASRC", TdfValue::String("318307".to_string()));
     payload.set("STIM", TdfValue::Integer(1_792_499_378));
 
     let encoded = serialize_tdf(&payload).expect("serialization failed");
-    let mut cursor = std::io::Cursor::new(&encoded[4..encoded.len() - 1]);
-    let decoded = read_varint_u64(&mut cursor).expect("read failed");
 
+    // ASRC: tag(3) + type(1) + varsize len(1) + 6 body + NUL(1) = 12 bytes
+    // STIM: tag(3) + type(1) + varsize(5)                  =  9 bytes
+    // Total 21 bytes -- the struct ends exactly on the last field.
     assert_eq!(
-        decoded, 1_792_499_378,
-        "STIM must survive a Heat2 decode unchanged"
+        encoded.len(),
+        12 + 9,
+        "the root struct must end on its last field, with no terminator"
     );
+    // The last field is an INTEGER, so the final byte is its value, not a
+    // terminator. A root terminator would make this 0x00 and the length 22.
+    assert_eq!(
+        *encoded.last().unwrap(),
+        0x0D,
+        "the root struct must not end with a terminator byte"
+    );
+}
+
+/// Nested structs *do* carry a terminator: they have no length prefix, so the
+/// `00` is the only thing that says where the nested struct ends.
+#[test]
+fn nested_structs_do_carry_a_terminator() {
+    let mut inner = TdfStruct::new();
+    inner.set("GNAM", TdfValue::String("Room_XY79K2".to_string()));
+
+    let mut root = TdfStruct::new();
+    root.set("NEST", TdfValue::Struct(inner));
+
+    let encoded = serialize_tdf(&root).expect("serialization failed");
+
+    // The nested struct is the last thing in the root struct, so the trailing
+    // byte is the nested terminator, not a root terminator.
+    assert_eq!(
+        *encoded.last().unwrap(),
+        0x00,
+        "a nested struct must end with a terminator"
+    );
+
+    // GNAM is 11 characters: tag(3) + type(1) + varsize len(1) + 11 body
+    // + NUL(1) = 17, plus the nested struct's own terminator = 18. The root
+    // struct adds tag(3) + type(1). Total 22.
+    //
+    // If the root struct also carried a terminator, this would be 23.
+    assert_eq!(encoded.len(), 4 + 18, "only the nested struct is terminated");
 }
 
 /// String lengths on the wire include the NUL terminator and are themselves
@@ -227,10 +280,10 @@ fn string_length_includes_nul_and_is_varsize_encoded() {
 
     // tag(3) + type(1) = 4 bytes, then the varsize length.
     assert_eq!(&encoded[4..6], &[0x89, 0x03], "string length must be Heat2 varsize");
-    // tag(3) + type(1) + varsize length(2) + 200 body bytes + NUL(1) + root terminator(1)
+    // tag(3) + type(1) + varsize length(2) + 200 body bytes + NUL(1)
     assert_eq!(
         encoded.len(),
-        4 + 2 + 200 + 1 + 1,
+        4 + 2 + 200 + 1,
         "string body plus NUL terminator must follow the length"
     );
 }

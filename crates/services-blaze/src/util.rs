@@ -209,7 +209,12 @@ mod tests {
         );
 
         let encoded_16 = resp.encode_16().expect("encode_16 must succeed");
-        assert_eq!(encoded_16[10], 0x01, "Byte 10 must be RecordResponse (0x01)");
+        // Fire2 packs the message type into byte 13 as `type << 5 | userIndex`.
+        assert_eq!(
+            encoded_16[13],
+            (MessageType::RecordResponse as u8) << 5,
+            "byte 13 must carry RecordResponse (0x01) shifted left 5"
+        );
         assert!(encoded_16.len() > 16, "Must contain STIM payload");
         println!("ping 16-byte frame ({} bytes):\n{}", encoded_16.len(), blaze_core::hex_dump(&encoded_16));
     }
@@ -240,7 +245,12 @@ mod tests {
         assert!(resp.payload.get("TIME").is_some());
 
         let encoded_16 = resp.encode_16().expect("encode_16 must succeed");
-        assert_eq!(encoded_16[10], 0x01, "Byte 10 must be RecordResponse (0x01)");
+        // Fire2 packs the message type into byte 13 as `type << 5 | userIndex`.
+        assert_eq!(
+            encoded_16[13],
+            (MessageType::RecordResponse as u8) << 5,
+            "byte 13 must carry RecordResponse (0x01) shifted left 5"
+        );
         println!("preAuth 16-byte frame ({} bytes):\n{}", encoded_16.len(), blaze_core::hex_dump(&encoded_16));
     }
 }

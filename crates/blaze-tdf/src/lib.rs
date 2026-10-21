@@ -18,9 +18,13 @@ pub use writer::TdfWriter;
 use std::io::{self, Cursor};
 
 /// Serializes a TdfStruct into a byte buffer.
+///
+/// This writes a **root** struct: no trailing TAG_END byte. The root struct of
+/// a Blaze frame is delimited by the frame's own length field, so EA does not
+/// emit a terminator for it. Nested structs still carry their own terminator.
 pub fn serialize_tdf(s: &TdfStruct) -> io::Result<Vec<u8>> {
     let mut writer = TdfWriter::new(Vec::new());
-    writer.write_struct(s)?;
+    writer.write_root_struct(s)?;
     Ok(writer.into_inner())
 }
 
