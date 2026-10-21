@@ -486,8 +486,7 @@ impl BlazePacket {
                     hex_dump(&payload_bytes)
                 );
                 return Err(e);
-            }
-        };
+            }        };
 
         Ok(Self { header, payload })
     }

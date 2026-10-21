@@ -4,9 +4,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
-use blaze_core::frame::BlazeHeader;
+use blaze_core::framing::{detect_framing, try_parse_packet as try_parse_packet_for, Framing};
 use blaze_core::BlazePacket;
-use blaze_tdf::deserialize_tdf;
 use services_blaze::{BlazeRouter, GameRegistry, SessionStore};
 use crate::listener::{accept_dual_stream, DualStream};
 
@@ -44,83 +43,38 @@ pub async fn run_blaze_server(
     }
 }
 
-fn try_parse_packet(buffer: &mut Vec<u8>, is_16_byte: &mut bool) -> Option<BlazePacket> {
-    if buffer.len() < 12 {
-        return None;
-    }
-
-    // Modern 16-byte header format (FIFA 22 Frostbite 3 / BlazeSDK 15):
-    // 1) Length high 16b: buffer[0] == 0 && buffer[1] == 0
-    // 2) Error code high byte: buffer[4] == 0
-    // 3) MessageType in Byte 10: buffer[10] <= 0x03
-    let is_modern = *is_16_byte || (buffer.len() >= 16 && buffer[0] == 0 && buffer[1] == 0 && buffer[4] == 0 && buffer[10] <= 0x03);
-
-    if is_modern {
-        *is_16_byte = true;
-        if buffer.len() < 16 {
-            return None;
+/// Parses the next frame out of `buffer`.
+///
+/// The framing generation is latched from the first frame of the
+/// connection: a client's first frame is always a request, and for a
+/// request the two generations are mutually exclusive. See
+/// `blaze_core::framing` for the derivation.
+fn try_parse_packet(
+    buffer: &mut Vec<u8>,
+    framing: &mut Option<Framing>,
+) -> Option<BlazePacket> {
+    let framing = match *framing {
+        Some(f) => f,
+        None => {
+            let detected = detect_framing(buffer)?;
+            *framing = Some(detected);
+            tracing::info!("[Blaze Server] Detected {:?} framing", detected);
+            detected
         }
-        let length = u32::from_be_bytes([buffer[0], buffer[1], buffer[2], buffer[3]]) as usize;
-        let total_packet_len = 16 + length;
-        if buffer.len() < total_packet_len {
-            return None;
-        }
-
-        let header_slice: [u8; 16] = buffer[0..16].try_into().unwrap();
-        let header = match BlazeHeader::from_bytes_16(&header_slice) {
-            Ok(h) => h,
-            Err(_) => return None,
-        };
-
-        let payload_slice = &buffer[16..total_packet_len];
-        let payload = if payload_slice.is_empty() {
-            blaze_tdf::TdfStruct::new()
-        } else {
-            deserialize_tdf(payload_slice).unwrap_or_else(|_| blaze_tdf::TdfStruct::new())
-        };
-
-        buffer.drain(0..total_packet_len);
-        tracing::info!(
-            "[Blaze Server] Parsed 16-byte frame: Comp=0x{:04X}, Cmd=0x{:04X}, Seq={}, Len={}, MsgType={:?}",
-            header.component,
-            header.command,
-            header.seq_no,
-            header.length,
-            header.msg_type
-        );
-        return Some(BlazePacket { header, payload });
-    }
-
-    // Legacy 12-byte header format
-    let length = (((buffer[0] as u32) << 16) | ((buffer[1] as u32) << 8) | (buffer[2] as u32)) as usize;
-    let total_packet_len = 12 + length;
-    if buffer.len() < total_packet_len {
-        return None;
-    }
-
-    let header_slice: [u8; 12] = buffer[0..12].try_into().unwrap();
-    let header = match BlazeHeader::from_bytes(&header_slice) {
-        Ok(h) => h,
-        Err(_) => return None,
     };
 
-    let payload_slice = &buffer[12..total_packet_len];
-    let payload = if payload_slice.is_empty() {
-        blaze_tdf::TdfStruct::new()
-    } else {
-        deserialize_tdf(payload_slice).unwrap_or_else(|_| blaze_tdf::TdfStruct::new())
-    };
+    let packet = try_parse_packet_for(buffer, framing)?;
 
-    buffer.drain(0..total_packet_len);
     tracing::info!(
-        "[Blaze Server] Parsed 12-byte frame: Comp=0x{:04X}, Cmd=0x{:04X}, Seq={}, Len={}, MsgType={:?}",
-        header.component,
-        header.command,
-        header.seq_no,
-        header.length,
-        header.msg_type
+        "[Blaze Server] Parsed {:?} frame: Comp=0x{:04X}, Cmd=0x{:04X}, Seq={}, Len={}, MsgType={:?}",
+        framing,
+        packet.header.component,
+        packet.header.command,
+        packet.header.seq_no,
+        packet.header.length,
+        packet.header.msg_type
     );
-    Some(BlazePacket { header, payload })
+    Some(packet)
 }
 
 async fn process_packet(
@@ -129,17 +83,13 @@ async fn process_packet(
     req_packet: &BlazePacket,
     tx: &tokio::sync::mpsc::UnboundedSender<BlazePacket>,
     registered_uid: &mut u64,
-    is_16_byte: bool,
+    framing: Framing,
 ) -> std::io::Result<()> {
     if router.session.user_id != 0 {
         router.store.touch_session(router.session.user_id);
     }
 
-    let req_bytes = if is_16_byte {
-        req_packet.encode_16().unwrap_or_default()
-    } else {
-        req_packet.encode().unwrap_or_default()
-    };
+    let req_bytes = encode_for(req_packet, framing).unwrap_or_default();
     router.games.deadlock_guard.record_message("IN", req_packet.header.component, req_packet.header.command, &req_bytes);
     crate::blaze_tracer::record_trace("IN", req_packet.header.component, req_packet.header.command, &req_bytes);
 
@@ -153,11 +103,7 @@ async fn process_packet(
         router.store.register_notification_channel(*registered_uid, tx.clone());
     }
 
-    let resp_bytes = if is_16_byte {
-        resp_packet.encode_16()?
-    } else {
-        resp_packet.encode()?
-    };
+    let resp_bytes = encode_for(&resp_packet, framing)?;
     router.games.deadlock_guard.record_message("OUT", resp_packet.header.component, resp_packet.header.command, &resp_bytes);
     crate::blaze_tracer::record_trace("OUT", resp_packet.header.component, resp_packet.header.command, &resp_bytes);
 
@@ -172,11 +118,7 @@ async fn process_packet(
     stream.write_all(&resp_bytes).await?;
 
     if let Some(notif) = notif_opt {
-        let notif_bytes = if is_16_byte {
-            notif.encode_16()?
-        } else {
-            notif.encode()?
-        };
+        let notif_bytes = encode_for(&notif, framing)?;
         router.games.deadlock_guard.record_message("OUT", notif.header.component, notif.header.command, &notif_bytes);
         crate::blaze_tracer::record_trace("OUT", notif.header.component, notif.header.command, &notif_bytes);
 
@@ -195,6 +137,14 @@ async fn process_packet(
     Ok(())
 }
 
+/// Encodes a packet in the framing generation the client is using.
+fn encode_for(packet: &BlazePacket, framing: Framing) -> std::io::Result<Vec<u8>> {
+    match framing {
+        Framing::Fire2 => packet.encode_16(),
+        Framing::Legacy => packet.encode(),
+    }
+}
+
 async fn handle_blaze_session(
     stream: &mut DualStream,
     router: &mut BlazeRouter,
@@ -206,23 +156,21 @@ async fn handle_blaze_session(
     let timeout_duration = std::time::Duration::from_secs(45);
     let mut rx_buf = Vec::with_capacity(8192);
     let mut read_chunk = [0u8; 4096];
-    let mut is_16_byte = false;
+    // Latched from the client's first frame; see `try_parse_packet`.
+    let mut framing: Option<Framing> = None;
 
     loop {
         // Drain any complete packet already present in buffer
-        if let Some(req_packet) = try_parse_packet(&mut rx_buf, &mut is_16_byte) {
-            process_packet(stream, router, &req_packet, &tx, &mut registered_uid, is_16_byte).await?;
+        if let Some(req_packet) = try_parse_packet(&mut rx_buf, &mut framing) {
+            let f = framing.expect("framing is latched once a frame parses");
+            process_packet(stream, router, &req_packet, &tx, &mut registered_uid, f).await?;
             continue;
         }
 
         tokio::select! {
             // Full-duplex unsolicited async notification from server to client
             Some(notif_pkt) = rx.recv() => {
-                let notif_bytes = if is_16_byte {
-                    notif_pkt.encode_16()?
-                } else {
-                    notif_pkt.encode()?
-                };
+                let notif_bytes = encode_for(&notif_pkt, framing.unwrap_or(Framing::Legacy))?;
                 router.games.deadlock_guard.record_message("OUT", notif_pkt.header.component, notif_pkt.header.command, &notif_bytes);
                 crate::blaze_tracer::record_trace("OUT", notif_pkt.header.component, notif_pkt.header.command, &notif_bytes);
                 stream.write_all(&notif_bytes).await?;
@@ -253,8 +201,9 @@ async fn handle_blaze_session(
                         rx_buf.extend_from_slice(&read_chunk[..n]);
 
                         // Drain and process all packets available in rx_buf
-                        while let Some(req_packet) = try_parse_packet(&mut rx_buf, &mut is_16_byte) {
-                            process_packet(stream, router, &req_packet, &tx, &mut registered_uid, is_16_byte).await?;
+                        while let Some(req_packet) = try_parse_packet(&mut rx_buf, &mut framing) {
+                            let f = framing.expect("framing is latched once a frame parses");
+                            process_packet(stream, router, &req_packet, &tx, &mut registered_uid, f).await?;
                         }
                     }
                     Ok(Err(e)) => {

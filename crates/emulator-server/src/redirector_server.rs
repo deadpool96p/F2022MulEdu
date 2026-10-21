@@ -5,6 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use blaze_core::frame::BlazeHeader;
+use blaze_core::framing::{detect_framing, Framing};
 use blaze_core::BlazePacket;
 use blaze_tdf::deserialize_tdf;
 use services_redirector::{handle_redirector_packet, RedirectorConfig};
@@ -79,25 +80,38 @@ async fn handle_redirector_connection(
         stream.read_exact(&mut rest_hdr).await?;
         buffer.extend_from_slice(&rest_hdr);
 
-        // Check if 16-byte modern header:
-        // 1) Length high 16b: buffer[0] == 0 && buffer[1] == 0
-        // 2) Error code high byte: buffer[4] == 0
-        // 3) MessageType in Byte 10: buffer[10] <= 0x03
-        let is_16_byte = buffer[0] == 0 && buffer[1] == 0 && buffer[4] == 0 && buffer[10] <= 0x03;
+        // Decide which header generation the client is speaking. A client's
+        // first frame is always a request, and for a request the two
+        // generations are mutually exclusive. See `blaze_core::framing`.
+        let framing = detect_framing(&buffer).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "could not determine the Blaze framing generation",
+            )
+        })?;
 
-        let (header, payload_len, header_size) = if is_16_byte {
-            let header_slice: [u8; 16] = buffer[0..16].try_into().unwrap();
-            let header = BlazeHeader::from_bytes_16(&header_slice)?;
-            (header, header.length as usize, 16)
-        } else {
-            let header_slice: [u8; 12] = buffer[0..12].try_into().unwrap();
-            let header = BlazeHeader::from_bytes(&header_slice)?;
-            (header, header.length as usize, 12)
+        let (header, payload_len, header_size, metadata_len) = match framing {
+            Framing::Fire2 => {
+                // The Fire2 header is 16 bytes; read the rest of it.
+                let mut extra = [0u8; 4];
+                stream.read_exact(&mut extra).await?;
+                buffer.extend_from_slice(&extra);
+
+                let header_slice: [u8; 16] = buffer[0..16].try_into().unwrap();
+                let header = BlazeHeader::from_bytes_16(&header_slice)?;
+                let metadata_len = header.metadata_size as usize;
+                (header, header.length as usize, 16usize, metadata_len)
+            }
+            Framing::Legacy => {
+                let header_slice: [u8; 12] = buffer[0..12].try_into().unwrap();
+                let header = BlazeHeader::from_bytes(&header_slice)?;
+                (header, header.length as usize, 12usize, 0usize)
+            }
         };
 
         tracing::info!(
-            "[Redirector] Parsed header (is_16_byte={}): Comp=0x{:04X}, Cmd=0x{:04X}, Seq={}, Len={}, MsgType={:?}",
-            is_16_byte,
+            "[Redirector] Parsed header ({:?}): Comp=0x{:04X}, Cmd=0x{:04X}, Seq={}, Len={}, MsgType={:?}",
+            framing,
             header.component,
             header.command,
             header.seq_no,
@@ -105,9 +119,14 @@ async fn handle_redirector_connection(
             header.msg_type
         );
 
-        // Read remaining payload bytes if needed
-        let already_read = buffer.len() - header_size;
+        // Read the metadata section (Fire2 only) and then the payload.
         let mut payload_buf = Vec::with_capacity(payload_len);
+        if metadata_len > 0 {
+            let mut meta = vec![0u8; metadata_len];
+            stream.read_exact(&mut meta).await?;
+        }
+
+        let already_read = buffer.len() - header_size;
         if already_read > 0 {
             let take = already_read.min(payload_len);
             payload_buf.extend_from_slice(&buffer[header_size..header_size + take]);
@@ -127,15 +146,14 @@ async fn handle_redirector_connection(
         let req_packet = BlazePacket { header, payload };
         let resp_packet = handle_redirector_packet(&req_packet, config)?;
 
-        let encoded_resp = if is_16_byte {
-            resp_packet.encode_16()?
-        } else {
-            resp_packet.encode()?
+        let encoded_resp = match framing {
+            Framing::Fire2 => resp_packet.encode_16()?,
+            Framing::Legacy => resp_packet.encode()?,
         };
 
         tracing::info!(
-            "[Redirector] Sending ServerInstance response to client (is_16_byte={}, {} bytes):\n{}",
-            is_16_byte,
+            "[Redirector] Sending ServerInstance response to client ({:?}, {} bytes):\n{}",
+            framing,
             encoded_resp.len(),
             blaze_core::hex_dump(&encoded_resp)
         );
