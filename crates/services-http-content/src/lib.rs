@@ -218,6 +218,138 @@ pub fn parse_http_request(raw: &[u8]) -> Option<HttpRequest> {
     })
 }
 
+/// The QoS UDP responder's port. The client learns it from the `/qos/qos`
+/// response and then sends `ProtoPing` probes here.
+pub const QOS_UDP_PORT: u16 = 17498;
+
+/// The QoS responder's address, encoded the way FIFA 22 expects it.
+///
+/// `qosip` is read by the client with a *decimal* integer parser
+/// (`0x140CA2280` with `edx = 0`), not with `inet_pton`. The resulting
+/// u32 is then split into its four bytes most-significant-first
+/// (`0x141FE8B6A`: `al` -> byte 0, `shr eax, 8` -> byte 1, ...), so the
+/// value is a **big-endian** IPv4 address.
+///
+/// 127.0.0.1 == 0x7F000001 == 2130706433.
+const QOS_IP_DECIMAL: u32 = 2_130_706_433;
+
+/// The number of latency probes the client should send. The client rejects
+/// a type-2 QoS response whose `numprobes` is below 2
+/// (`0x141FE8753`: `cmp dword ptr [rbx + 0x44], 2` / `jb` -> fail).
+const QOS_NUM_PROBES: u32 = 2;
+
+/// The size of each latency probe. The client rejects a type-2 QoS
+/// response whose `probesize` is zero (`0x141FE8759`: `cmp dword ptr
+/// [rbx + 0x40], 0` / `jne` -> success, fall through to the -4 failure).
+const QOS_PROBE_SIZE: u32 = 1200;
+
+/// The `firetype` classification. `0` means "no firewall detected", which
+/// is correct for a private server where the client reaches the QoS
+/// responder directly.
+const QOS_FIRETYPE: u32 = 0;
+
+/// Builds the `/qos/qos` response body.
+///
+/// The client resolves the root element `qos` and then reads `.qosport`,
+/// `.qosip`, `.numprobes`, `.probesize`, `.requestid` and `.reqsecret`
+/// as *siblings* of each other, so they must all be direct children of
+/// `<qos>`.
+///
+/// `qosip` and `qosport` are mandatory: a zero value in either makes the
+/// client fail the QoS step with -3 (`0x141FE85EC` / `0x141FE85F6`).
+fn qos_response_body() -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <qos>\n\
+         \x20   <qosip>{QOS_IP_DECIMAL}</qosip>\n\
+         \x20   <qosport>{QOS_UDP_PORT}</qosport>\n\
+         \x20   <numprobes>{QOS_NUM_PROBES}</numprobes>\n\
+         \x20   <probesize>{QOS_PROBE_SIZE}</probesize>\n\
+         \x20   <requestid>1</requestid>\n\
+         \x20   <reqsecret>0</reqsecret>\n\
+         </qos>"
+    )
+}
+
+/// Builds the `/qos/firewall` response body.
+///
+/// The client reads `.numinterfaces`, `.ips.ips` and `.ports.ports` from
+/// the root element `firewall`. Both `.ips.ips` and `.ports.ports` must
+/// resolve, otherwise the whole request fails with -4 (`0x141FE87D9` /
+/// `0x141FE87F0`).
+///
+/// The two list elements hold one child element per interface: the
+/// client walks the children of `.ips.ips` and `.ports.ports` in lockstep
+/// (`0x141FE8822`) and reads each pair as an address/port tuple.
+fn firewall_response_body() -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <firewall>\n\
+         \x20   <numinterfaces>1</numinterfaces>\n\
+         \x20   <ips>\n\
+         \x20       <ips>{QOS_IP_DECIMAL}</ips>\n\
+         \x20   </ips>\n\
+         \x20   <ports>\n\
+         \x20       <ports>{QOS_UDP_PORT}</ports>\n\
+         \x20   </ports>\n\
+         \x20   <requestid>1</requestid>\n\
+         \x20   <reqsecret>0</reqsecret>\n\
+         </firewall>"
+    )
+}
+
+/// Builds the `/qos/firetype` response body.
+///
+/// The client reads the root element `firetype` and then its `.firetype`
+/// child (`0x141FE88DE` / `0x141FE88FA`).
+fn firetype_response_body() -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <firetype>\n\
+         \x20   <firetype>{QOS_FIRETYPE}</firetype>\n\
+         </firetype>"
+    )
+}
+
+/// Builds the `/getPeerAddress` response body.
+///
+/// The client sends
+/// `getPeerAddress?myIP=<ip>&myPort=<port>&version=1.0` and then reads
+/// `peerIP` and `peerPort` out of the response body (`0x144AA151D` /
+/// `0x144AA159C`). Both are looked up as `name=value` pairs separated by
+/// newlines, and the IP is parsed with a dotted-quad parser
+/// (`0x140C96010`).
+///
+/// `sourceIP` / `sourcePort` / `tag` / `sendCount` are the fields the
+/// client writes into its own request, so they are echoed back in the
+/// same `name=value` shape.
+fn get_peer_address_response_body(req: &HttpRequest) -> String {
+    let query = req.path.split_once('?').map(|(_, q)| q).unwrap_or("");
+    let mut my_ip = "127.0.0.1".to_string();
+    let mut my_port: u32 = 0;
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            match k {
+                "myIP" => my_ip = v.to_string(),
+                "myPort" => my_port = v.parse().unwrap_or(0),
+                _ => {}
+            }
+        }
+    }
+    if my_ip.is_empty() {
+        my_ip = "127.0.0.1".to_string();
+    }
+
+    format!(
+        "sourceIP={my_ip}\r\n\
+         sourcePort={my_port}\r\n\
+         tag=emulator\r\n\
+         sendCount=1\r\n\
+         peerIP={my_ip}\r\n\
+         peerPort={QOS_UDP_PORT}\r\n"
+    )
+}
+
 /// Routes HTTP requests for telemetry sinks and squad content distribution.
 pub fn route_http_request(req: &HttpRequest) -> HttpResponse {
     let path = req.path.split('?').next().unwrap_or(&req.path);
@@ -230,17 +362,33 @@ pub fn route_http_request(req: &HttpRequest) -> HttpResponse {
             tracing::info!("[Telemetry Sink] Absorbed {} telemetry ping", req.method);
             HttpResponse::ok_json(r#"{"status":"ok"}"#)
         }
+        // DirtySDK HTTP QoS metadata discovery probes.
+        //
+        // These must be matched *before* the Nucleus arm below: the
+        // catch-all Nucleus pattern matches any path containing "auth",
+        // and `/qos/firewall` does not, but `/qos/qos` must not be
+        // swallowed by the telemetry fall-through either.
+        "/qos/qos" => {
+            tracing::info!("[QoS HTTP] Serving QoS configuration metadata");
+            HttpResponse::ok_xml(&qos_response_body())
+        }
+        "/qos/firewall" => {
+            tracing::info!("[QoS HTTP] Serving firewall metadata");
+            HttpResponse::ok_xml(&firewall_response_body())
+        }
+        "/qos/firetype" => {
+            tracing::info!("[QoS HTTP] Serving firewall-type classification");
+            HttpResponse::ok_xml(&firetype_response_body())
+        }
+        "/getPeerAddress" => {
+            tracing::info!("[QoS HTTP] Serving peer address discovery");
+            HttpResponse::ok_xml(&get_peer_address_response_body(req))
+        }
         // Synthetic EA Nucleus / Gateway / Identity Auth Token endpoint
         p if p.contains("token") || p.contains("auth") || p.contains("login") || p.contains("pid") => {
             tracing::info!("[Nucleus Sink] Serving synthetic Nucleus Auth token for {}", path);
             let json = r#"{"access_token":"f22_mock_nucleus_token_deadpool","token_type":"Bearer","expires_in":31536000,"id_token":"mock_id_token","pid_id":76561198956360709,"persona_id":76561198956360709,"status":"SUCCESS"}"#;
             HttpResponse::ok_json(json)
-        }
-        // DirtySDK HTTP QoS metadata discovery probes
-        "/qos/qos" | "/qos/fire" => {
-            tracing::info!("[QoS HTTP] Serving QoS XML configuration metadata");
-            let xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<qos>\n    <numprobes>10</numprobes>\n    <qoshost>127.0.0.1</qoshost>\n    <qosport>17498</qosport>\n    <probesize>1200</probesize>\n    <serviceid>1</serviceid>\n</qos>";
-            HttpResponse::ok_xml(xml)
         }
         // Canonical Squad Hash query
         "/content/squads/hash" => {
@@ -372,8 +520,252 @@ mod tests {
         assert_eq!(resp_qos.status_code, 200);
         assert_eq!(resp_qos.content_type, "application/xml");
         let body = String::from_utf8(resp_qos.body).unwrap();
-        assert!(body.contains("<qoshost>127.0.0.1</qoshost>"));
         assert!(body.contains("<qosport>17498</qosport>"));
+    }
+
+    /// The QoS response is read by the client with a path-based DOM lookup:
+    /// `qos` -> `qosport` / `qosip` / `numprobes` / ...
+    ///
+    /// Verified against FIFA22.exe: the parser at `0x141FE8580` looks up the
+    /// root element `qos` and then reads `.qosport` and `.qosip` as direct
+    /// children of it. It then *requires* both to be non-zero
+    /// (`0x141FE85EC` / `0x141FE85F6`), otherwise the QoS step fails.
+    #[test]
+    fn test_qos_response_has_the_fields_the_client_reads() {
+        let raw_qos = b"GET /qos/qos HTTP/1.1\r\nHost: qosapi\r\n\r\n";
+        let req = parse_http_request(raw_qos).unwrap();
+        let resp = route_http_request(&req);
+        let body = String::from_utf8(resp.body).unwrap();
+
+        // The client reads these names; they must exist in the document.
+        for field in ["qosport", "qosip", "numprobes", "probesize"] {
+            assert!(
+                body.contains(&format!("<{}>", field)),
+                "the QoS response must contain a <{}> element; the client reads it by name",
+                field
+            );
+        }
+
+        // `qosip` must be a non-zero IPv4 integer, `qosport` a non-zero port.
+        let qosip = extract_element(&body, "qosip").expect("<qosip> must be present");
+        let qosip: u32 = qosip.parse().expect("<qosip> must be an integer");
+        assert!(
+            qosip != 0,
+            "the client aborts the QoS step when qosip is 0 (FIFA22.exe 0x141FE85EC)"
+        );
+
+        let qosport = extract_element(&body, "qosport").expect("<qosport> must be present");
+        let qosport: u32 = qosport.parse().expect("<qosport> must be an integer");
+        assert!(
+            qosport != 0,
+            "the client aborts the QoS step when qosport is 0 (FIFA22.exe 0x141FE85F6)"
+        );
+
+        // `probesize` must be non-zero and `numprobes` must be >= 2,
+        // otherwise the type-2 (latency-probe) QoS request fails with -4.
+        //
+        //   0x141FE8753  cmp dword ptr [rbx + 0x44], 2   ; .numprobes
+        //   0x141FE8757  jb  0x141FE875F                 ; < 2  -> fail
+        //   0x141FE8759  cmp dword ptr [rbx + 0x40], 0   ; .probesize
+        //   0x141FE875D  jne 0x141FE8769                 ; != 0 -> success
+        //   0x141FE875F  mov eax, 0xfffffffc             ; fail: return -4
+        let probesize: u32 = extract_element(&body, "probesize")
+            .expect("<probesize> must be present")
+            .parse()
+            .expect("<probesize> must be an integer");
+        assert_ne!(
+            probesize, 0,
+            "the client requires probesize != 0 (FIFA22.exe 0x141FE8759)"
+        );
+
+        let numprobes: u32 = extract_element(&body, "numprobes")
+            .expect("<numprobes> must be present")
+            .parse()
+            .expect("<numprobes> must be an integer");
+        assert!(
+            numprobes >= 2,
+            "the client requires numprobes >= 2 (FIFA22.exe 0x141FE8753)"
+        );
+    }
+
+    /// The `firewall` response must carry `ips.ips` and `ports.ports`
+    /// sub-documents; the client fails the request when either is missing
+    /// (FIFA22.exe `0x141FE87D9` / `0x141FE87F0`).
+    #[test]
+    fn test_firewall_response_has_ips_and_ports_documents() {
+        let raw = b"GET /qos/firewall HTTP/1.1\r\nHost: qosapi\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        assert_eq!(resp.status_code, 200);
+        let body = String::from_utf8(resp.body).unwrap();
+
+        assert!(
+            body.contains("<ips>") && body.contains("<ports>"),
+            "the firewall response must carry nested <ips> and <ports> documents"
+        );
+        assert!(
+            body.contains("<numinterfaces>"),
+            "the client reads .numinterfaces from the firewall response"
+        );
+    }
+
+    /// The client's firewall parser walks the children of `.ips.ips` and
+    /// `.ports.ports` in lockstep and reads each pair as an address/port
+    /// tuple, so the two lists must contain the *same* number of entries.
+    #[test]
+    fn test_firewall_ip_and_port_lists_have_matching_lengths() {
+        let raw = b"GET /qos/firewall HTTP/1.1\r\nHost: qosapi\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        let body = String::from_utf8(resp.body).unwrap();
+
+        let numinterfaces: u32 = extract_element(&body, "numinterfaces")
+            .expect("<numinterfaces> must be present")
+            .parse()
+            .expect("<numinterfaces> must be an integer");
+
+        let ips = extract_list(&body, "ips");
+        let ports = extract_list(&body, "ports");
+        assert_eq!(
+            ips.len(),
+            ports.len(),
+            "the client pairs each <ips> entry with a <ports> entry"
+        );
+        assert_eq!(
+            ips.len() as u32,
+            numinterfaces,
+            "the number of listed interfaces must match <numinterfaces>"
+        );
+    }
+
+    /// The `firetype` response is read as `firetype` -> `.firetype`.
+    #[test]
+    fn test_firetype_response_carries_the_firetype_value() {
+        let raw = b"GET /qos/firetype HTTP/1.1\r\nHost: qosapi\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        assert_eq!(resp.status_code, 200);
+        let body = String::from_utf8(resp.body).unwrap();
+        assert!(
+            body.contains("<firetype>"),
+            "the firetype response must carry a <firetype> element"
+        );
+    }
+
+    /// `getPeerAddress` answers the NAT-traversal peer probe. The client
+    /// reads `sourceIP`, `sourcePort`, `peerIP` and `peerPort` from the
+    /// response body.
+    #[test]
+    fn test_get_peer_address_endpoint() {
+        let raw = b"GET /getPeerAddress?myIP=127.0.0.1&myPort=5000&version=1.0 HTTP/1.1\r\nHost: qosapi\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        assert_eq!(resp.status_code, 200);
+        let body = String::from_utf8(resp.body).unwrap();
+        for field in ["sourceIP", "sourcePort", "peerIP", "peerPort"] {
+            assert!(
+                body.contains(field),
+                "the getPeerAddress response must carry `{}`",
+                field
+            );
+        }
+    }
+
+    /// Extracts the text content of the first `<name>...</name>` element.
+    fn extract_element(xml: &str, name: &str) -> Option<String> {
+        let open = format!("<{}>", name);
+        let close = format!("</{}>", name);
+        let start = xml.find(&open)? + open.len();
+        let end = xml[start..].find(&close)? + start;
+        Some(xml[start..end].trim().to_string())
+    }
+
+    /// Extracts the text content of every child element of the first
+    /// `<name>...</name>` element.
+    fn extract_list(xml: &str, name: &str) -> Vec<String> {
+        let open = format!("<{}>", name);
+        let close = format!("</{}>", name);
+        let start = match xml.find(&open) {
+            Some(i) => i + open.len(),
+            None => return Vec::new(),
+        };
+        let end = match xml[start..].find(&close) {
+            Some(i) => i + start,
+            None => return Vec::new(),
+        };
+        let inner = &xml[start..end];
+        let mut out = Vec::new();
+        let mut cursor = 0usize;
+        while let Some(rel) = inner[cursor..].find('<') {
+            let abs = cursor + rel;
+            let name_end = match inner[abs + 1..].find('>') {
+                Some(i) => abs + 1 + i,
+                None => break,
+            };
+            let tag = &inner[abs + 1..name_end];
+            if !tag.starts_with('/') {
+                let text_start = name_end + 1;
+                let text_end = match inner[text_start..].find('<') {
+                    Some(i) => text_start + i,
+                    None => inner.len(),
+                };
+                out.push(inner[text_start..text_end].trim().to_string());
+                cursor = text_end;
+            } else {
+                cursor = name_end + 1;
+            }
+        }
+        out
+    }
+
+    /// `qosip` is read by the client with a *decimal* integer parser, and
+    /// the resulting u32 is split into four bytes most-significant-first
+    /// (`0x141FE8B6A`: `al` -> byte 0, then `shr eax, 8` per byte). The
+    /// value is therefore a big-endian IPv4 address, not a dotted quad.
+    #[test]
+    fn test_qosip_is_a_big_endian_decimal_ipv4_address() {
+        let raw = b"GET /qos/qos HTTP/1.1\r\nHost: qosapi\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        let body = String::from_utf8(resp.body).unwrap();
+
+        let qosip: u32 = extract_element(&body, "qosip")
+            .expect("<qosip> must be present")
+            .parse()
+            .expect("<qosip> must be a decimal integer, not a dotted quad");
+
+        // The client reassembles the address as
+        //   byte0 = (v >> 24), byte1 = (v >> 16), byte2 = (v >> 8), byte3 = v
+        let octets = [
+            (qosip >> 24) as u8,
+            (qosip >> 16) as u8,
+            (qosip >> 8) as u8,
+            qosip as u8,
+        ];
+        assert_eq!(
+            octets,
+            [127, 0, 0, 1],
+            "qosip must decode to 127.0.0.1 in the client's byte order"
+        );
+    }
+
+    /// The client never reads `qoshost` or `serviceid`; those names do not
+    /// appear anywhere in FIFA22.exe. Shipping them is harmless, but
+    /// shipping them *instead of* `qosip` is fatal.
+    #[test]
+    fn test_qos_response_does_not_leave_out_qosip() {
+        let raw = b"GET /qos/qos HTTP/1.1\r\nHost: qosapi\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        let body = String::from_utf8(resp.body).unwrap();
+        assert!(
+            !body.contains("qoshost"),
+            "the client never reads <qoshost>; it is noise"
+        );
+        assert!(
+            !body.contains("serviceid"),
+            "the client never reads <serviceid>; it is noise"
+        );
     }
 
     #[test]
