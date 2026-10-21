@@ -4,7 +4,7 @@
 
 use std::io;
 use blaze_core::BlazePacket;
-use blaze_tdf::{TdfList, TdfStruct, TdfType, TdfUnion, TdfValue};
+use blaze_tdf::{TdfList, TdfStruct, TdfType, TdfValue};
 use crate::session::SessionState;
 use crate::session_store::SessionStore;
 
@@ -29,13 +29,14 @@ pub fn build_notify_user_added(session: &SessionState) -> io::Result<BlazePacket
     // 1. DATA: UserSessionExtendedData
     let mut data = TdfStruct::new();
 
-    let mut addr_struct = TdfStruct::new();
-    addr_struct.set("HOST", TdfValue::String(session.external_ip.clone()));
-    addr_struct.set("IP", TdfValue::Integer(0x7F000001)); // 127.0.0.1
-    addr_struct.set("PORT", TdfValue::Integer(session.port as u64));
+    // `ADDR` is the `NetworkAddress` union; case 2 is `IpPairAddress`, the
+    // shape actual players use. The member tag is always "VALU".
     data.set(
         "ADDR",
-        TdfValue::Union(TdfUnion::with_value(0x00, TdfValue::Struct(addr_struct))),
+        crate::netaddr::network_address_ip_pair(crate::netaddr::ip_pair_address(
+            crate::netaddr::ip_address(&session.external_ip, 0, 0),
+            crate::netaddr::ip_address(&session.external_ip, 0x7F00_0001, session.port),
+        )),
     );
 
     data.set("BPS", TdfValue::String("bio-iad".to_string()));
@@ -127,12 +128,12 @@ pub fn handle_update_network_info(
     notif_tdf.set("UID", TdfValue::Integer(session.user_id));
 
     // Address info inside notification
-    let mut ip_struct = TdfStruct::new();
-    ip_struct.set("HOST", TdfValue::String(session.external_ip.clone()));
-    ip_struct.set("PORT", TdfValue::Integer(session.port as u64));
     notif_tdf.set(
         "ADDR",
-        TdfValue::Union(TdfUnion::with_value(0x00, TdfValue::Struct(ip_struct))),
+        crate::netaddr::network_address_ip_pair(crate::netaddr::ip_pair_address(
+            crate::netaddr::ip_address(&session.external_ip, 0, 0),
+            crate::netaddr::ip_address(&session.external_ip, 0x7F00_0001, session.port),
+        )),
     );
 
     let notification = BlazePacket::notification(
@@ -166,12 +167,12 @@ pub fn handle_lookup_users(
         edat.set("NATT", TdfValue::Integer(player.nat_type as u64));
         edat.set("PORT", TdfValue::Integer(player.port as u64));
 
-        let mut addr_struct = TdfStruct::new();
-        addr_struct.set("HOST", TdfValue::String(player.external_ip.clone()));
-        addr_struct.set("PORT", TdfValue::Integer(player.port as u64));
         edat.set(
             "ADDR",
-            TdfValue::Union(TdfUnion::with_value(0x00, TdfValue::Struct(addr_struct))),
+            crate::netaddr::network_address_ip_pair(crate::netaddr::ip_pair_address(
+                crate::netaddr::ip_address(&player.external_ip, 0, 0),
+                crate::netaddr::ip_address(&player.external_ip, 0x7F00_0001, player.port),
+            )),
         );
 
         user_entry.set("EDAT", TdfValue::Struct(edat));

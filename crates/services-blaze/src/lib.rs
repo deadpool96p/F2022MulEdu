@@ -7,6 +7,7 @@
 pub mod associations;
 pub mod auth;
 pub mod gamemanager;
+pub mod netaddr;
 pub mod router;
 pub mod session;
 pub mod session_store;
@@ -17,6 +18,7 @@ pub mod util;
 pub use associations::*;
 pub use auth::*;
 pub use gamemanager::*;
+pub use netaddr::*;
 pub use router::BlazeRouter;
 pub use session::SessionState;
 pub use session_store::{SessionData, SessionStore, SteamFriend, SteamProfile};
@@ -109,7 +111,11 @@ mod tests {
         addr_struct.set("PORT", TdfValue::Integer(3659));
         net_req_payload.set(
             "ADDR",
-            TdfValue::Union(TdfUnion::with_value(0x00, TdfValue::Struct(addr_struct))),
+            TdfValue::Union(TdfUnion::with_member(
+                2,
+                TdfUnion::DEFAULT_MEMBER_TAG,
+                TdfValue::Struct(addr_struct),
+            )),
         );
         net_req_payload.set("NATT", TdfValue::Integer(0)); // Open NAT
 

@@ -115,21 +115,28 @@ pub fn handle_get_server_instance(
     // Build ServerInstanceInfo TDF response
     let mut resp_tdf = TdfStruct::new();
 
-    // ADDR: Union tag 0x00 (IPAddress) containing { HOST: String, PORT: Integer }
+    // ADDR: the `ServerAddress` union -- case 0, member tag "VALU", holding
+    // an `IpAddress` struct. The byte-exact authentic EA
+    // `Redirector::getServerInstance` reply has exactly this shape:
+    // case 0, tag "VALU", struct { HOST, IP, PORT }.
     let host_str = if config.host == "::1" || config.host == "::" || config.host == "0.0.0.0" {
         "127.0.0.1".to_string()
     } else {
         config.host.clone()
     };
+    let ip_numeric = blaze_tdf::ipv4_to_u32(&host_str).unwrap_or(0);
     let mut ip_addr_struct = TdfStruct::new();
     ip_addr_struct.set("HOST", TdfValue::String(host_str));
+    ip_addr_struct.set("IP", TdfValue::Integer(ip_numeric as u64));
     ip_addr_struct.set("PORT", TdfValue::Integer(config.port as u64));
-
-
 
     resp_tdf.set(
         "ADDR",
-        TdfValue::Union(TdfUnion::with_value(0x00, TdfValue::Struct(ip_addr_struct))),
+        TdfValue::Union(TdfUnion::with_member(
+            0,
+            TdfUnion::DEFAULT_MEMBER_TAG,
+            TdfValue::Struct(ip_addr_struct),
+        )),
     );
 
     // SECU: 0 = Plain TCP (downgrade), 1 = TLS/SSL

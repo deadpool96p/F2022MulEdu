@@ -180,7 +180,11 @@ async fn test_full_online_hub_two_player_flow() {
     c1_addr.set("PORT", TdfValue::Integer(3659));
     c1_net.set(
         "ADDR",
-        TdfValue::Union(TdfUnion::with_value(0, TdfValue::Struct(c1_addr))),
+        TdfValue::Union(TdfUnion::with_member(
+            2,
+            TdfUnion::DEFAULT_MEMBER_TAG,
+            TdfValue::Struct(c1_addr),
+        )),
     );
     c1_net.set("NATT", TdfValue::Integer(0));
     let (c1_net_resp, c1_notif) =
@@ -214,7 +218,11 @@ async fn test_full_online_hub_two_player_flow() {
     c2_addr.set("PORT", TdfValue::Integer(3660));
     c2_net.set(
         "ADDR",
-        TdfValue::Union(TdfUnion::with_value(0, TdfValue::Struct(c2_addr))),
+        TdfValue::Union(TdfUnion::with_member(
+            2,
+            TdfUnion::DEFAULT_MEMBER_TAG,
+            TdfValue::Struct(c2_addr),
+        )),
     );
     c2_net.set("NATT", TdfValue::Integer(0));
     send_and_recv_blaze(&mut c2_stream, 0x7802, 0x0008, 3, c2_net).await;

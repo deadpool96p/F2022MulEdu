@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use parking_lot::RwLock;
 
 use blaze_core::BlazePacket;
-use blaze_tdf::{TdfList, TdfMap, TdfStruct, TdfType, TdfUnion, TdfValue};
+use blaze_tdf::{TdfList, TdfMap, TdfStruct, TdfType, TdfValue};
 use crate::session::SessionState;
 use crate::session_store::{SessionData, SessionStore};
 
@@ -779,13 +779,14 @@ pub fn build_notify_game_setup(
         TdfValue::Map(TdfMap::new(TdfType::String, TdfType::String, attr_entries)),
     );
 
-    // Host network address inside PRES
-    let mut host_addr = TdfStruct::new();
-    host_addr.set("HOST", TdfValue::String(host.external_ip.clone()));
-    host_addr.set("PORT", TdfValue::Integer(host.port as u64));
+    // Host network address inside PRES. `PRES` is the `NetworkAddress`
+    // union; case 2 is `IpPairAddress`, the shape actual players use.
     game_struct.set(
         "PRES",
-        TdfValue::Union(TdfUnion::with_value(0, TdfValue::Struct(host_addr))),
+        crate::netaddr::network_address_ip_pair(crate::netaddr::ip_pair_address(
+            crate::netaddr::ip_address(&host.external_ip, 0, 0),
+            crate::netaddr::ip_address(&host.external_ip, 0x7F00_0001, host.port),
+        )),
     );
 
     payload.set("GAME", TdfValue::Struct(game_struct));
@@ -833,12 +834,13 @@ pub fn build_notify_player_joining(
     player.set("STAT", TdfValue::Integer(2));
     player.set("UID", TdfValue::Integer(joining.user_id));
 
-    let mut addr = TdfStruct::new();
-    addr.set("HOST", TdfValue::String(joining.external_ip.clone()));
-    addr.set("PORT", TdfValue::Integer(joining.port as u64));
+    // `ADDR` is the `NetworkAddress` union; case 2 is `IpPairAddress`.
     player.set(
         "ADDR",
-        TdfValue::Union(TdfUnion::with_value(0, TdfValue::Struct(addr))),
+        crate::netaddr::network_address_ip_pair(crate::netaddr::ip_pair_address(
+            crate::netaddr::ip_address(&joining.external_ip, 0, 0),
+            crate::netaddr::ip_address(&joining.external_ip, 0x7F00_0001, joining.port),
+        )),
     );
 
     payload.set("PDAT", TdfValue::Struct(player));

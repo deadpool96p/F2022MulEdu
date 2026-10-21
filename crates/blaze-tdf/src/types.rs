@@ -74,13 +74,36 @@ impl TdfType {
     }
 }
 
+/// Converts a dotted-quad IPv4 string into the 32-bit value EA stores.
+///
+/// EA's `IpAddress` struct carries the address as a single unsigned integer
+/// in network byte order, not as four separate octets. The authentic EA
+/// `UserSessions` frame stores `192.168.1.7` as `3232236743`, which is
+/// `0xC0A80107`.
+///
+/// Returns `None` for anything that is not a valid dotted quad.
+pub fn ipv4_to_u32(addr: &str) -> Option<u32> {
+    let mut octets = [0u8; 4];
+    let mut count = 0;
+    for part in addr.split('.') {
+        if count == 4 {
+            return None;
+        }
+        octets[count] = part.parse::<u8>().ok()?;
+        count += 1;
+    }
+    if count != 4 {
+        return None;
+    }
+    Some(u32::from_be_bytes(octets))
+}
+
 /// Identifies an object category within the Blaze component hierarchy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct BlazeObjectType {
     pub component: u16,
     pub object_type: u16,
 }
-
 impl BlazeObjectType {
     pub fn new(component: u16, object_type: u16) -> Self {
         Self {
