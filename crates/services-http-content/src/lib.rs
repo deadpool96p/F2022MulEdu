@@ -315,14 +315,24 @@ fn firetype_response_body() -> String {
 ///
 /// The client sends
 /// `getPeerAddress?myIP=<ip>&myPort=<port>&version=1.0` and then reads
-/// `peerIP` and `peerPort` out of the response body (`0x144AA151D` /
-/// `0x144AA159C`). Both are looked up as `name=value` pairs separated by
-/// newlines, and the IP is parsed with a dotted-quad parser
-/// (`0x140C96010`).
+/// the response as a list of `name=value` pairs separated by newlines
+/// (`0x144AA06F0`). The fields it looks up are:
 ///
-/// `sourceIP` / `sourcePort` / `tag` / `sendCount` are the fields the
-/// client writes into its own request, so they are echoed back in the
-/// same `name=value` shape.
+/// | Field | Read at |
+/// | :--- | :--- |
+/// | `targetIP` | `0x144AA0731` |
+/// | `targetPort` | `0x144AA0845` |
+/// | `tag` | `0x144AA092D` |
+/// | `sendCount` | `0x144AA0A49` |
+/// | `sourcePort` | `0x144AA0B39` |
+/// | `peerIP` | `0x144AA151D` |
+/// | `peerPort` | `0x144AA159C` |
+///
+/// The IP fields are parsed with a dotted-quad parser (`0x140C96010`),
+/// unlike the `/qos/qos` response's `qosip`, which is a decimal u32.
+///
+/// `sourceIP` is the address the client believes it is using; we echo it
+/// back so the peer address agrees with it.
 fn get_peer_address_response_body(req: &HttpRequest) -> String {
     let query = req.path.split_once('?').map(|(_, q)| q).unwrap_or("");
     let mut my_ip = "127.0.0.1".to_string();
@@ -343,6 +353,8 @@ fn get_peer_address_response_body(req: &HttpRequest) -> String {
     format!(
         "sourceIP={my_ip}\r\n\
          sourcePort={my_port}\r\n\
+         targetIP={my_ip}\r\n\
+         targetPort={QOS_UDP_PORT}\r\n\
          tag=emulator\r\n\
          sendCount=1\r\n\
          peerIP={my_ip}\r\n\
@@ -653,8 +665,9 @@ mod tests {
     }
 
     /// `getPeerAddress` answers the NAT-traversal peer probe. The client
-    /// reads `sourceIP`, `sourcePort`, `peerIP` and `peerPort` from the
-    /// response body.
+    /// reads a fixed set of `name=value` pairs out of the response body:
+    /// `targetIP`, `targetPort`, `tag`, `sendCount`, `sourcePort`,
+    /// `peerIP` and `peerPort`.
     #[test]
     fn test_get_peer_address_endpoint() {
         let raw = b"GET /getPeerAddress?myIP=127.0.0.1&myPort=5000&version=1.0 HTTP/1.1\r\nHost: qosapi\r\n\r\n";
@@ -662,11 +675,39 @@ mod tests {
         let resp = route_http_request(&req);
         assert_eq!(resp.status_code, 200);
         let body = String::from_utf8(resp.body).unwrap();
-        for field in ["sourceIP", "sourcePort", "peerIP", "peerPort"] {
+        for field in [
+            "sourceIP",
+            "sourcePort",
+            "targetIP",
+            "targetPort",
+            "tag",
+            "sendCount",
+            "peerIP",
+            "peerPort",
+        ] {
             assert!(
-                body.contains(field),
-                "the getPeerAddress response must carry `{}`",
+                body.contains(&format!("{}=", field)),
+                "the getPeerAddress response must carry a `{}` pair",
                 field
+            );
+        }
+    }
+
+    /// The client's `getPeerAddress` parser splits the body on `=` and
+    /// reads the value up to the next CR or LF, so the pairs must be
+    /// separated by newlines rather than spaces.
+    #[test]
+    fn test_get_peer_address_pairs_are_newline_separated() {
+        let raw = b"GET /getPeerAddress?myIP=127.0.0.1&myPort=5000&version=1.0 HTTP/1.1\r\nHost: qosapi\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        let body = String::from_utf8(resp.body).unwrap();
+
+        for line in body.lines().filter(|l| !l.is_empty()) {
+            assert!(
+                line.contains('='),
+                "each line of the getPeerAddress body must be a `name=value` pair, got {:?}",
+                line
             );
         }
     }
