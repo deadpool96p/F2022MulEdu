@@ -19,6 +19,24 @@ pub const CMD_POST_AUTH: u16 = 0x000C;
 pub const COMPONENT_STATS: u16 = 0x0007;
 pub const COMPONENT_CENSUS_DATA: u16 = 0x000A;
 
+/// Builds a `QosPingSiteInfo` struct.
+///
+/// EA's schema (`QosPingSiteInfo` in
+/// `references/Skate3BlazeServer/.../Util/Models/QosPingSiteInfo.cs`):
+///
+/// ```text
+/// PSA : string   (address)
+/// PSP : ushort   (port)
+/// SNA : string   (site name)
+/// ```
+fn qos_ping_site(address: &str, port: u16, site_name: &str) -> TdfStruct {
+    let mut site = TdfStruct::new();
+    site.set("PSA", TdfValue::String(address.to_string()));
+    site.set("PSP", TdfValue::Integer(port as u64));
+    site.set("SNA", TdfValue::String(site_name.to_string()));
+    site
+}
+
 /// Handles preAuth (0x000B).
 pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::Result<BlazePacket> {
     let mut resp = TdfStruct::new();
@@ -43,17 +61,33 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
     ];
     resp.set("CIDS", TdfValue::List(blaze_tdf::TdfList::new(TdfType::Integer, components)));
 
-    // QOSS: QoS server configuration pointing to emulator QoS/STUN responder
+    // QOSS: QoS server configuration pointing at the emulator's QoS
+    // responder.
+    //
+    // The member names are EA's own, from the code-generated
+    // `QosConfigInfo` (see
+    // `references/Skate3BlazeServer/.../Util/Models/QosConfigInfo.cs`):
+    //
+    //   BWPS : QosPingSiteInfo          (the default ping site)
+    //   LNP  : ushort                   (number of latency probes)
+    //   LTPS : map<string, QosPingSiteInfo>
+    //   SVID : uint                     (service id)
+    //
+    // and `QosPingSiteInfo` carries `PSA` (address), `PSP` (port) and
+    // `SNA` (site name).
+    let site = qos_ping_site(qos_host, qos_port, "emulator-qos");
     let mut qos_struct = TdfStruct::new();
-    qos_struct.set("BWHR", TdfValue::Integer(1000));
-    qos_struct.set("LATT", TdfValue::Integer(20));
-
-    let mut psa_struct = TdfStruct::new();
-    psa_struct.set("HOST", TdfValue::String(qos_host.to_string()));
-    psa_struct.set("PORT", TdfValue::Integer(qos_port as u64));
-    qos_struct.set("PSA", TdfValue::Struct(psa_struct));
-    qos_struct.set("SKEY", TdfValue::String("QOS_SESSION_KEY".to_string()));
-    qos_struct.set("VERS", TdfValue::Integer(1));
+    qos_struct.set("BWPS", TdfValue::Struct(site.clone()));
+    qos_struct.set("LNP", TdfValue::Integer(2));
+    qos_struct.set(
+        "LTPS",
+        TdfValue::Map(TdfMap::new(
+            TdfType::String,
+            TdfType::Struct,
+            vec![(TdfValue::String("emulator-qos".to_string()), TdfValue::Struct(site))],
+        )),
+    );
+    qos_struct.set("SVID", TdfValue::Integer(1));
     resp.set("QOSS", TdfValue::Struct(qos_struct));
 
     resp.set("SVER", TdfValue::String("Blaze 15.1.1.2.0 (F22-Emulator)".to_string()));
@@ -252,6 +286,119 @@ mod tests {
             "byte 13 must carry RecordResponse (0x01) shifted left 5"
         );
         println!("preAuth 16-byte frame ({} bytes):\n{}", encoded_16.len(), blaze_core::hex_dump(&encoded_16));
+    }
+
+    /// The `QOSS` struct must use EA's own member names.
+    ///
+    /// The schema is the one EA's code generator emitted, preserved in
+    /// `references/Skate3BlazeServer/.../Util/Models/QosConfigInfo.cs`:
+    ///
+    /// ```text
+    /// QosConfigInfo
+    ///   BWPS : QosPingSiteInfo
+    ///   LNP  : ushort
+    ///   LTPS : map<string, QosPingSiteInfo>
+    ///   SVID : uint
+    ///
+    /// QosPingSiteInfo
+    ///   PSA  : string   (address)
+    ///   PSP  : ushort   (port)
+    ///   SNA  : string   (site name)
+    /// ```
+    ///
+    /// The names we used to ship -- `BWHR`, `LATT`, `PSA` as a nested
+    /// struct, `SKEY` -- do not exist in the schema, so a client that
+    /// decodes `QOSS` by type would read none of them.
+    #[test]
+    fn test_qoss_uses_ea_member_names() {
+        let req = BlazePacket::new(
+            COMPONENT_UTIL,
+            CMD_PRE_AUTH,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            1,
+            TdfStruct::new(),
+        )
+        .unwrap();
+        let resp = handle_pre_auth(&req, "127.0.0.1", 17498).expect("preAuth handler must not error");
+
+        let qoss = match resp.payload.get("QOSS") {
+            Some(TdfValue::Struct(s)) => s,
+            other => panic!("QOSS must be a struct, got {:?}", other),
+        };
+
+        for member in ["BWPS", "LNP", "LTPS", "SVID"] {
+            assert!(
+                qoss.get(member).is_some(),
+                "QOSS must carry the `{}` member from EA's QosConfigInfo schema",
+                member
+            );
+        }
+        for bogus in ["BWHR", "LATT", "SKEY"] {
+            assert!(
+                qoss.get(bogus).is_none(),
+                "QOSS must not carry `{}`; it is not part of EA's schema",
+                bogus
+            );
+        }
+    }
+
+    /// The `LTPS` map maps a site alias to a `QosPingSiteInfo`, and each
+    /// value carries `PSA` (address), `PSP` (port) and `SNA` (site name).
+    /// The emulator's QoS responder must be reachable under the alias the
+    /// client is told to use.
+    #[test]
+    fn test_qoss_ltps_map_points_at_the_emulator_qos_responder() {
+        let req = BlazePacket::new(
+            COMPONENT_UTIL,
+            CMD_PRE_AUTH,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            1,
+            TdfStruct::new(),
+        )
+        .unwrap();
+        let resp = handle_pre_auth(&req, "127.0.0.1", 17498).expect("preAuth handler must not error");
+
+        let qoss = match resp.payload.get("QOSS") {
+            Some(TdfValue::Struct(s)) => s,
+            other => panic!("QOSS must be a struct, got {:?}", other),
+        };
+
+        let ltps = match qoss.get("LTPS") {
+            Some(TdfValue::Map(m)) => m,
+            other => panic!("LTPS must be a map, got {:?}", other),
+        };
+        assert!(
+            !ltps.entries.is_empty(),
+            "LTPS must advertise at least one QoS ping site"
+        );
+
+        let (_alias, site) = ltps
+            .entries
+            .first()
+            .expect("LTPS must have at least one entry");
+        let site = match site {
+            TdfValue::Struct(s) => s,
+            other => panic!("an LTPS value must be a struct, got {:?}", other),
+        };
+
+        assert_eq!(
+            site.get("PSA"),
+            Some(&TdfValue::String("127.0.0.1".to_string())),
+            "the QoS site address must be the emulator host"
+        );
+        assert_eq!(
+            site.get("PSP"),
+            Some(&TdfValue::Integer(17498)),
+            "the QoS site port must be the UDP responder's port"
+        );
+        assert!(
+            site.get("SNA").is_some(),
+            "a QoS site must carry its `SNA` site name"
+        );
     }
 }
 
