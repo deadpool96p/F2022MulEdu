@@ -83,32 +83,36 @@ mod tests {
         // 0x06: Union
         root.set(
             "UNIO",
-            TdfValue::Union(TdfUnion::with_value(
-                1,
+            TdfValue::Union(TdfUnion::with_member(
+                2,
+                "MBR_",
                 TdfValue::String("ActiveUnionVal".to_string()),
             )),
         );
 
-        // 0x07: VariableInteger
-        root.set("VINT", TdfValue::VariableInteger(-987654321));
-
-        // 0x08: ObjectId
+        // 0x07: Variable
         root.set(
-            "OBID",
-            TdfValue::ObjectId(BlazeObjectId::new(0x0004, 0x0001, 9999)),
+            "VINT",
+            TdfValue::Variable(TdfVariable::new(1234, "VVAL", TdfValue::Integer(99))),
         );
 
-        // 0x09: ObjectType
+        // 0x08: ObjectType
         root.set(
             "OBTY",
             TdfValue::ObjectType(BlazeObjectType::new(0x0004, 0x0001)),
         );
 
-        // 0x0A: TimeValue
-        root.set("TIME", TdfValue::TimeValue(1700000000000000));
+        // 0x09: ObjectId
+        root.set(
+            "OBID",
+            TdfValue::ObjectId(BlazeObjectId::new(0x0004, 0x0001, 9999)),
+        );
 
-        // 0x0B: Float
+        // 0x0A: Float
         root.set("FLOT", TdfValue::Float(3.14159));
+
+        // 0x0B: TimeValue
+        root.set("TIME", TdfValue::TimeValue(1700000000000000));
 
         // Serialize
         let encoded = serialize_tdf(&root).expect("Serialization failed");
@@ -129,7 +133,19 @@ mod tests {
         );
         assert_eq!(
             decoded.get("VINT"),
-            Some(&TdfValue::VariableInteger(-987654321))
+            Some(&TdfValue::Variable(TdfVariable::new(
+                1234,
+                "VVAL",
+                TdfValue::Integer(99)
+            )))
+        );
+        assert_eq!(
+            decoded.get("UNIO"),
+            Some(&TdfValue::Union(TdfUnion::with_member(
+                2,
+                "MBR_",
+                TdfValue::String("ActiveUnionVal".to_string())
+            )))
         );
         assert_eq!(
             decoded.get("OBID"),

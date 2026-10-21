@@ -141,10 +141,15 @@ impl<R: Read> TdfReader<R> {
                 self.reader.read_exact(&mut active_tag_byte)?;
                 let active_tag = active_tag_byte[0];
 
-                if active_tag == TdfUnion::EMPTY_TAG {
+                if active_tag == TdfUnion::EMPTY_TAG || active_tag == TdfUnion::INVALID_TAG {
                     Ok(TdfValue::Union(TdfUnion::empty()))
                 } else {
-                    // In union, the active field's type byte and value follow
+                    // The 3-byte member tag follows the case index, then the
+                    // member's type byte and its value.
+                    let mut member_tag_bytes = [0u8; 3];
+                    self.reader.read_exact(&mut member_tag_bytes)?;
+                    let member_tag = decode_tdf_tag(tag_from_bytes(&member_tag_bytes));
+
                     let mut inner_type_byte = [0u8; 1];
                     self.reader.read_exact(&mut inner_type_byte)?;
                     let inner_type = TdfType::from_u8(inner_type_byte[0]).ok_or_else(|| {
@@ -154,20 +159,50 @@ impl<R: Read> TdfReader<R> {
                         )
                     })?;
                     let val = self.read_value(inner_type)?;
-                    Ok(TdfValue::Union(TdfUnion::with_value(active_tag, val)))
+                    Ok(TdfValue::Union(TdfUnion::with_member(
+                        active_tag,
+                        &member_tag,
+                        val,
+                    )))
                 }
             }
-            TdfType::VariableInteger => {
-                let val = read_varint_i64(&mut self.reader)?;
-                Ok(TdfValue::VariableInteger(val))
+            TdfType::Variable => {
+                let mut present_byte = [0u8; 1];
+                self.reader.read_exact(&mut present_byte)?;
+                if present_byte[0] == 0 {
+                    return Ok(TdfValue::Variable(TdfVariable::absent()));
+                }
+
+                let tdf_id = read_varint_u64(&mut self.reader)? as u32;
+
+                let mut member_tag_bytes = [0u8; 3];
+                self.reader.read_exact(&mut member_tag_bytes)?;
+                let member_tag = decode_tdf_tag(tag_from_bytes(&member_tag_bytes));
+
+                let mut member_type_byte = [0u8; 1];
+                self.reader.read_exact(&mut member_type_byte)?;
+                let member_type = TdfType::from_u8(member_type_byte[0]).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("Unknown Variable member type: 0x{:02X}", member_type_byte[0]),
+                    )
+                })?;
+                let val = self.read_value(member_type)?;
+
+                // The variable's own trailing terminator.
+                let mut terminator = [0u8; 1];
+                self.reader.read_exact(&mut terminator)?;
+
+                Ok(TdfValue::Variable(TdfVariable::new(
+                    tdf_id,
+                    &member_tag,
+                    val,
+                )))
             }
             TdfType::ObjectId => {
-                let mut comp_bytes = [0u8; 2];
-                let mut type_bytes = [0u8; 2];
-                self.reader.read_exact(&mut comp_bytes)?;
-                self.reader.read_exact(&mut type_bytes)?;
-                let component = u16::from_be_bytes(comp_bytes);
-                let object_type = u16::from_be_bytes(type_bytes);
+                // Heat2 varsize-encodes the component, the type and the id.
+                let component = read_varint_u64(&mut self.reader)? as u16;
+                let object_type = read_varint_u64(&mut self.reader)? as u16;
                 let id = read_varint_u64(&mut self.reader)?;
                 Ok(TdfValue::ObjectId(BlazeObjectId::new(
                     component,
@@ -176,12 +211,8 @@ impl<R: Read> TdfReader<R> {
                 )))
             }
             TdfType::ObjectType => {
-                let mut comp_bytes = [0u8; 2];
-                let mut type_bytes = [0u8; 2];
-                self.reader.read_exact(&mut comp_bytes)?;
-                self.reader.read_exact(&mut type_bytes)?;
-                let component = u16::from_be_bytes(comp_bytes);
-                let object_type = u16::from_be_bytes(type_bytes);
+                let component = read_varint_u64(&mut self.reader)? as u16;
+                let object_type = read_varint_u64(&mut self.reader)? as u16;
                 Ok(TdfValue::ObjectType(BlazeObjectType::new(
                     component,
                     object_type,

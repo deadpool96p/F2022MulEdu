@@ -98,28 +98,53 @@ impl<W: Write> TdfWriter<W> {
             }
             TdfValue::Union(u) => {
                 self.writer.write_all(&[u.active_tag])?;
-                if u.active_tag != TdfUnion::EMPTY_TAG {
+                if u.active_tag != TdfUnion::EMPTY_TAG && u.active_tag != TdfUnion::INVALID_TAG {
                     if let Some(inner) = &u.value {
+                        // The member tag is mandatory: the decoder needs it to
+                        // know which field of the union case is present.
+                        let member_tag = if u.member_tag.is_empty() {
+                            TdfUnion::DEFAULT_MEMBER_TAG
+                        } else {
+                            u.member_tag.as_str()
+                        };
+                        self.writer
+                            .write_all(&tag_to_bytes(encode_tdf_tag(member_tag)))?;
                         self.writer.write_all(&[inner.wire_type() as u8])?;
                         self.write_value(inner)?;
                     }
                 }
             }
-            TdfValue::VariableInteger(val) => {
-                write_varint_i64(&mut self.writer, *val)?;
+            TdfValue::Variable(v) => {
+                match &v.value {
+                    None => {
+                        // An absent variable is a single 0x00 byte.
+                        self.writer.write_all(&[0x00])?;
+                    }
+                    Some(inner) => {
+                        self.writer.write_all(&[0x01])?;
+                        write_varint_u64(&mut self.writer, v.tdf_id as u64)?;
+                        self.writer
+                            .write_all(&tag_to_bytes(encode_tdf_tag(&v.member_tag)))?;
+                        self.writer.write_all(&[inner.wire_type() as u8])?;
+                        self.write_value(inner)?;
+                        // The variable's own trailing terminator.
+                        self.writer.write_all(&[0x00])?;
+                    }
+                }
             }
             TdfValue::ObjectId(obj_id) => {
-                self.writer
-                    .write_all(&obj_id.object_type.component.to_be_bytes())?;
-                self.writer
-                    .write_all(&obj_id.object_type.object_type.to_be_bytes())?;
+                // Heat2 varsize-encodes the component and the type; the
+                // 2-byte big-endian form belongs to the older FIRE codec.
+                write_varint_u64(&mut self.writer, obj_id.object_type.component as u64)?;
+                write_varint_u64(
+                    &mut self.writer,
+                    obj_id.object_type.object_type as u64,
+                )?;
                 write_varint_u64(&mut self.writer, obj_id.id)?;
             }
             TdfValue::ObjectType(obj_type) => {
-                self.writer
-                    .write_all(&obj_type.component.to_be_bytes())?;
-                self.writer
-                    .write_all(&obj_type.object_type.to_be_bytes())?;
+                write_varint_u64(&mut self.writer, obj_type.component as u64)?;
+                write_varint_u64(&mut self.writer, obj_type.object_type as u64)?;
             }
             TdfValue::TimeValue(time_us) => {
                 write_varint_i64(&mut self.writer, *time_us)?;
