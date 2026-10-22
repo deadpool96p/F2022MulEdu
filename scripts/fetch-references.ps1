@@ -44,7 +44,7 @@ $References = @(
         Name    = 'BlazeSDK'
         Url     = 'https://github.com/Khysnik/BlazeSDK.git'
         Commit  = 'a79b3d4a46a394c7bb256bc702bff3c72fd99366'
-        Purpose = 'Independent second Fire2/Heat2 implementation, used to confirm the byte layout agrees with hp-server.'
+        Purpose = 'The UPSTREAM of hp-server, not an independent source: hp-server forked it and its history is contained verbatim in hp-server''s. Cite as corroboration only; the decisive evidence is the authentic EA capture fixtures in hp-server.'
     }
     @{
         Name    = 'openBlase'

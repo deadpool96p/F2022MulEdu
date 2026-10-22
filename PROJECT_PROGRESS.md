@@ -17,9 +17,16 @@ for exactly 10 seconds and reports *"There was an error accessing server data."*
 **The root cause has been identified.** FIFA 22 speaks the **Fire2** framing
 (16-byte header) with the **Heat2** TDF codec — *not* the 12-byte legacy FIRE
 generation that this codebase and two of the consulted reference repositories
-implement. Two independent clean-room implementations plus authentic EA capture
-bytes confirm the correct layout, and the shipped implementation diverges in
-ways that decode silently to wrong values.
+implement. Authentic EA capture bytes plus the retail binary's own code confirm
+the correct layout, and the shipped implementation diverges in ways that decode
+silently to wrong values.
+
+> **Note on evidence (October 21, 2026):** an earlier version of this report
+> cited `hp-server` and `BlazeSDK` as "two independent clean-room
+> implementations". They are not — `hp-server` is a **fork** of BlazeSDK and
+> their `Fire2Types.go` is byte-identical. The evidence standard is now
+> *authentic EA bytes, the client's own captured bytes, or the retail binary's
+> own code*. See `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
 
 | # | Defect | Severity | State |
 | :--- | :--- | :--- | :--- |
@@ -268,20 +275,25 @@ a pinned commit so the research is reproducible byte-for-byte.
 
 | Repository | Pinned commit | What it established |
 | :--- | :--- | :--- |
-| [`mxmstr/hp-server`](https://github.com/mxmstr/hp-server) | `59f6468a` | **Primary.** Fire2 header layout, Heat2 varsize codec, all 12 type IDs, and the union/variable/object wire forms. Also contains **authentic EA capture fixtures** used to validate the codec against real bytes |
-| [`Khysnik/BlazeSDK`](https://github.com/Khysnik/BlazeSDK) | `a79b3d4a` | **Independent confirmation** of every one of the above — a second clean-room implementation that agrees byte-for-byte |
-| [`openBlase/openBlase`](https://github.com/openBlase/openBlase) | `ca33729e` | Heat2 label compression; its commented-out `Tdf::CompressInteger` independently corroborates the 6-bit-first-byte varsize scheme |
+| [`mxmstr/hp-server`](https://github.com/mxmstr/hp-server) | `59f6468a` | **Primary.** Fire2 header layout, Heat2 varsize codec, all 12 type IDs, and the union/variable/object wire forms. Also contains **authentic EA capture fixtures** — the decisive evidence, used to validate the codec against real bytes |
+| [`Khysnik/BlazeSDK`](https://github.com/Khysnik/BlazeSDK) | `a79b3d4a` | **The upstream of `hp-server`, not an independent source.** Its history is contained verbatim in `hp-server`'s, and `Fire2Types.go` is byte-identical. Cite as corroboration only. |
+| [`openBlase/openBlase`](https://github.com/openBlase/openBlase) | `ca33729e` | Heat2 label compression; its commented-out `Tdf::CompressInteger` corroborates the 6-bit-first-byte varsize scheme. Its `Tdf.h` enum is an older, different type set — do not copy type IDs from it. |
 | [`lowlevelmetal/open-ds2-server`](https://github.com/lowlevelmetal/open-ds2-server) | `7702bbf3` | `docs/04-blaze-connection-analysis.md` — a **different** Blaze generation (12-byte header, LEB128 varint). Background only; *not* applicable to FIFA 22's wire format |
-| [`skate6743/Skate3BlazeServer`](https://github.com/skate6743/Skate3BlazeServer) | `f248282c` | TDF schema model classes → `NetworkAddress` union case numbers (2 = `IpPairAddress`, 3 = `IpAddress`) and the `INIP`/`EXIP` member tag names |
+| [`skate6743/Skate3BlazeServer`](https://github.com/skate6743/Skate3BlazeServer) | `f248282c` | TDF schema model classes → `NetworkAddress` union case numbers (2 = `IpPairAddress`, 3 = `IpAddress`) and the `INIP`/`EXIP` member tag names. Its `Util` command models are **EA's own** and are the source of truth for the `PreAuthResponse` / `PingResponse` / `QosConfigInfo` member lists. |
 
 ### Evidence standard
 
 Every protocol claim in this repository is backed by at least one of:
 
-1. **Two independent implementations agreeing** (hp-server + BlazeSDK).
-2. **Authentic EA bytes** — the 475-byte offline-game-report payload in hp-server's
+1. **Authentic EA bytes** — the 475-byte offline-game-report payload in hp-server's
    fixtures decodes with 475 of 475 bytes consumed.
-3. **The client's own captured bytes** — `emulator_server.log`.
+2. **The client's own captured bytes** — `emulator_server.log`.
+3. **The retail binary's own code** — e.g. EA's registration routine for
+   `PingResponse` sets a member count of 1, and its schema tables name every
+   response struct's members.
+
+`hp-server` / `BlazeSDK` (one forked codebase) and `openBlase` are cited as
+**corroboration**, not as independent confirmation.
 
 Claims resting on a single source, or on the 12-byte generation, are explicitly
 marked as such in `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
@@ -368,7 +380,7 @@ marked as such in `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
   * The full specification is pinned in `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md`, with the evidence class for every claim.
   * `crates/blaze-tdf/tests/tdf_fire2_wire.rs` pins the codec as executable assertions.
   * `.agents/rules/blaze_protocol_invariants.md` records the invariants and names the *wrong* generation explicitly, so the next contributor does not re-derive the protocol from a 12-byte reference.
-  * The evidence standard: two independent implementations must agree, **or** the claim must be backed by authentic EA bytes or the client's own captured bytes.
+  * The evidence standard: the claim must be backed by authentic EA bytes, the client's own captured bytes, or the retail binary's own code. `hp-server` / `BlazeSDK` (one forked codebase) are corroboration, not independent confirmation.
 
 ### F. Reference Repository Availability
 * **Fragility:** The protocol research depends on five third-party repositories that are deliberately *not* vendored (one ships ~97 MB of prebuilt OpenSSL binaries; each carries its own license). A network-less or offline contributor cannot reproduce the derivation.
@@ -393,10 +405,11 @@ marked as such in `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
 ## 9. Milestone Achievements (October 21, 2026 — Protocol Ground Truth Established)
 
 * **Fire2 / Heat2 Protocol Established:** FIFA 22's framing and payload codec were
-  determined to be **Fire2** (16-byte header) + **Heat2** (TDF), confirmed by two
-  independent clean-room implementations (`mxmstr/hp-server`, `Khysnik/BlazeSDK`),
-  corroborated by `openBlase`, and validated against **authentic EA capture bytes**
-  — a 475-byte offline-game-report payload decodes with 475 of 475 bytes consumed.
+  determined to be **Fire2** (16-byte header) + **Heat2** (TDF), validated against
+  **authentic EA capture bytes** — a 475-byte offline-game-report payload decodes
+  with 475 of 475 bytes consumed — and against the retail binary's own TDF
+  registration routines. `mxmstr/hp-server` / `Khysnik/BlazeSDK` (one forked
+  codebase) and `openBlase` corroborate.
 * **Root Cause of the 10-Second Stall Identified:** The client was receiving a
   `STIM` server timestamp of **1998-05-27** instead of 2026-10-20, because Heat2
   varsize integers were encoded as 7-bit LEB128. The 16-byte header was also
@@ -415,4 +428,71 @@ marked as such in `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
   schema field names, and a pitfalls list.
 * **Reference Repositories Made Reproducible:** `scripts/fetch-references.ps1`
   clones all five reference projects at pinned commits and verifies each HEAD.
+
+---
+
+## 10. Milestone Achievements (October 22, 2026 — Binary-Verified Fire2/Heat2 + QoS HTTP Reference)
+
+Everything in this section is backed by **authentic EA bytes, the client's own
+captured bytes, or the retail binary's own code** — the evidence standard
+adopted in §5.1. Where a claim rests on a reference repository, it is marked as
+corroboration.
+
+* **Fire2 Framing Corrected Against the Binary:**
+  * `payloadSize` counts the **payload only**; the metadata is excluded. Proven
+    by the back-patch sequence at `0x1449061E9`–`0x14490624C`.
+  * Header bytes **14–15 are always zero** — not an options byte. Proven by
+    `0x14490604E: xor esi, esi` and `0x144906186: mov word ptr [rbx+0xe], si`.
+  * Byte 13 is `messageType << 5 | userIndex` (`0x144906169: shl dl, 5` /
+    `0x14490616C: or dl, [rsp+0x70]`), and the normalising switch at
+    `0x1449060FF`–`0x14490613C` maps type 4 → PING and 5 → PING_REPLY.
+  * `Fire2Metadata` has **9 members** (`CNTX`/`ERRC`/`FLAG`/`LCTX`/`MADR`/
+    `MIID`/`NAME`/`SIDN`/`SKEY`), per `FUN_1402C49C0` at `0x1402C49C0`.
+* **Heat2 Tag Packing Corrected:** TDF tags are **four** ASCII characters packed
+  into three bytes at 6 bits each, with the shift schedule **`18 - 6*i`** (not
+  `26 - 6*i`). Verified by decoding all nine `Fire2Metadata` tag dwords out of
+  the binary (`CNTX`=`8E ED 38`, `ERRC`=`97 2C A3`, `FLAG`=`9A C8 67`,
+  `LCTX`=`B2 3D 38`, `MADR`=`B6 19 32`, `MIID`=`B6 9A 64`, `NAME`=`BA 1B 65`,
+  `SIDN`=`CE 99 2E`, `SKEY`=`CE B9 79`), and independently corroborated by EA's
+  own `DecodeTag` in `references/BlazeSDK/Fire2Decoder.go`
+  (`for i := 3; i >= 0; i--`).
+* **Heat2 Type Table Completed:** wire type **`0x0C` is `GENERIC`** and **`0x0D`
+  is the unknown/out-of-range default** — not the Go reference's `0xFF` sentinel
+  (`0x14496B361: mov r8d, 0xc`; the translation table in `FUN_14496BB30` at
+  `0x14496BB30`). `crates/blaze-tdf` now implements `TdfType::Generic` and
+  `TdfType::Unknown` in the reader, the writer and the type table, pinned by
+  `crates/blaze-tdf/tests/tdf_heat2_types.rs` (17 tests, all passing).
+* **Reference-Repo Independence Claim Retracted:** `mxmstr/hp-server` is a
+  **fork** of `Khysnik/BlazeSDK` — `Fire2Types.go` is byte-identical, the
+  other four files differ only by exported wrappers, and BlazeSDK's commits
+  appear verbatim in hp-server's history. The project no longer cites the pair
+  as two independent implementations.
+* **QoS / ProtoPing HTTP Reference Published:** `docs/FIFA22_QOS_PROTOPING_HTTP.md`
+  documents the `/qos/qos`, `/qos/firewall`, `/qos/firetype` and
+  `/getPeerAddress` endpoints **as the client actually reads them**:
+  * the response is parsed by a **flat forward text scanner**
+    (`0x140CA1DE0`), not an XML tree — so `.qosport` means "the next `qosport`
+    element in document order";
+  * **`qosip` is a big-endian decimal u32** (2130706433 = 127.0.0.1), split
+    MSB-first at `0x141FE8B6A` — serving `127.0.0.1` makes the client dial
+    `0.0.0.127`;
+  * the hard success conditions (`.qosip` non-zero, `.qosport` non-zero,
+    `.numprobes` ≥ 2, `.probesize` non-zero, `.requestid` non-zero) with the
+    `jne`-means-success polarity warning;
+  * `QOSS` is EA's `QosConfigInfo` (`BWPS`/`LNP`/`LTPS`/`SVID`) and
+    `PreAuthResponse` has **exactly four** members (`CIDS`/`CONF`/`QOSS`/`SVER`) —
+    no `ANAM`, no `TIME`;
+  * the `ProtoHttp 1.3/DS 15.1.7.0.3 (Windows)` user agent, read live.
+* **Analysis Tooling Committed:** `tools/disasm_region.py`,
+  `tools/find_str_xrefs.py` and `tools/qos_dom_model.py` — a region
+  disassembler, a byte-exact RIP-relative xref finder (4-byte window scan, no
+  linear sweep) and a Python model of the client's DOM scanner that validates a
+  candidate QoS response **without launching the game**. No retail binary or
+  game data is committed; the PE path is always an argument.
+* **Open Item — the QoS HTTP port:** the client builds the QoS base URL as
+  `"%s://%s:%u"` from the host `qosapi`, and the port argument has **not** been
+  located in the binary yet. The shim's `ShouldRerouteHost` matches none of
+  its patterns for the literal host `qosapi`, so the request depends on the
+  *port* being in the reroute list. This is a live candidate explanation for
+  the client stalling before the QoS step completes.
 

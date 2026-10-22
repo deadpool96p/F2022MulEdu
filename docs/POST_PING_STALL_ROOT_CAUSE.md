@@ -168,7 +168,7 @@ test files depend on it.
 ## 5. Defects C & D — Heat2 type IDs and composite wire forms
 
 Found while validating the Heat2 model against authentic EA bytes. Both are
-confirmed by two independent implementations and by the EA captures.
+confirmed by the EA captures and by the retail binary's own type tables.
 
 | Defect | Shipped | Correct | Impact |
 | :--- | :--- | :--- | :--- |

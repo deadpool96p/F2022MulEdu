@@ -20,16 +20,49 @@ Every claim below is backed by at least one of:
 
 | Evidence class | Source | What it proves |
 | :--- | :--- | :--- |
-| **Two independent implementations** | [`mxmstr/hp-server`](https://github.com/mxmstr/hp-server) and [`Khysnik/BlazeSDK`](https://github.com/Khysnik/BlazeSDK) | Byte-exact agreement on header layout, varint scheme, type IDs, and every composite wire form |
 | **Authentic EA captures** | Real client payloads embedded in `hp-server`'s test fixtures (e.g. the 475-byte offline game report) | Ground truth for how EA actually encodes on the wire |
 | **The client's own bytes** | `emulator_server.log` — 6 captured `Util::ping` requests from the real FIFA 22 client | Confirms the client emits Fire2 and what its message numbers look like |
-| **Corroboration** | [`openBlase`](https://github.com/openBlase/openBlase) `Tdf/Tdf.cpp` (commented-out `CompressInteger`) | Independently confirms the 6-bit-first-byte varsize scheme |
+| **The retail binary** | `FIFA22.exe` — its own TDF registration routines and schema tables | Member counts, type IDs, and the exact member names of each response struct |
+| **Corroboration** | [`openBlase`](https://github.com/openBlase/openBlase) `Tdf/Tdf.cpp` (commented-out `CompressInteger`) | Corroborates the 6-bit-first-byte varsize scheme |
 | **Schema cross-check** | [`skate6743/Skate3BlazeServer`](https://github.com/skate6743/Skate3BlazeServer) TDF model classes | Union case numbers and member tag names |
 
-Two implementations agreeing is strong evidence; two implementations agreeing **and**
-decoding authentic EA bytes to the exact byte count is decisive. The 475-byte
-offline-game-report payload referenced above decodes with **475 of 475 bytes
-consumed** — not one byte of slack.
+> ⚠️ **Correction (October 21, 2026).** An earlier version of this document
+> claimed that `hp-server` and `Khysnik/BlazeSDK` were "two independent
+> clean-room implementations" and cited their agreement as the primary
+> evidence. **That was wrong.** `hp-server` is a **fork of BlazeSDK**: its git
+> history contains BlazeSDK's commits verbatim (`a79b3d4`, `cd401d2`,
+> `ff31b33`, `111288b`, `3d815d4`, `4fbb2c7`, `2d88c44`, `fd17417`, …), and
+> their `Fire2.go` / `Fire2Encoder.go` differ only by one added exported
+> helper. `Fire2Types.go` is byte-identical. A fork and its parent are one
+> source, not two — treating them as independent is exactly how a shared
+> misreading survives unnoticed.
+>
+> The evidence standard below is therefore **authentic EA bytes or the
+> client's own bytes**, and the corroborating sources are explicitly labelled
+> as corroboration rather than as independent confirmation. The 475-byte
+> offline-game-report payload decodes with **475 of 475 bytes consumed** — not
+> one byte of slack — which is the decisive evidence, and it does not depend on
+> the fork relationship at all.
+
+### 1.0 Evidence standard
+
+Every protocol claim in this repository is backed by at least one of:
+
+1. **Authentic EA bytes** — the 475-byte offline-game-report payload in
+   `hp-server`'s fixtures decodes with 475 of 475 bytes consumed.
+2. **The client's own captured bytes** — `emulator_server.log`.
+3. **The retail binary's own code** — e.g. EA's registration routine for
+   `PingResponse` sets a member count of 1, which is why `STIM` alone is
+   correct.
+
+Corroboration (but *not* independent confirmation) comes from `hp-server` /
+`BlazeSDK` (one codebase, forked) and `openBlase`'s commented-out
+`Tdf::CompressInteger`.
+
+> **See also:** [`FIFA22_QOS_PROTOPING_HTTP.md`](FIFA22_QOS_PROTOPING_HTTP.md) —
+> the `/qos/*` HTTP endpoints, recovered from the binary alone, where the
+> open-source references are demonstrably wrong about the field the client
+> actually requires.
 
 ### 1.1 Reference repositories
 
@@ -37,11 +70,11 @@ Fetched by `scripts/fetch-references.ps1`, which pins every repo to a known comm
 
 | Repository | Pinned commit | Role |
 | :--- | :--- | :--- |
-| [`mxmstr/hp-server`](https://github.com/mxmstr/hp-server) | `59f6468a8b358743962e0acf5d90e42d904e9f1a` | **Primary.** Fire2 header + Heat2 codec + authentic EA capture fixtures |
-| [`Khysnik/BlazeSDK`](https://github.com/Khysnik/BlazeSDK) | `a79b3d4a46a394c7bb256bc702bff3c72fd99366` | **Independent confirmation.** A second clean-room Fire2/Heat2 implementation |
-| [`openBlase/openBlase`](https://github.com/openBlase/openBlase) | `ca33729e35be4be90a6e5df1e50322df9cf2e1b9` | Heat2 label compression + `CompressInteger` corroboration |
+| [`mxmstr/hp-server`](https://github.com/mxmstr/hp-server) | `59f6468a8b358743962e0acf5d90e42d904e9f1a` | **Primary.** Fire2 header + Heat2 codec + **authentic EA capture fixtures** (the decisive evidence) |
+| [`Khysnik/BlazeSDK`](https://github.com/Khysnik/BlazeSDK) | `a79b3d4a46a394c7bb256bc702bff3c72fd99366` | **The upstream of `hp-server`, not an independent source.** Same wire format; `Fire2Types.go` is byte-identical and the other files differ by one exported helper. Cite as corroboration only. |
+| [`openBlase/openBlase`](https://github.com/openBlase/openBlase) | `ca33729e35be4be90a6e5df1e50322df9cf2e1b9` | Heat2 label compression + `CompressInteger` corroboration. Its `Tdf.h` enum is an *older, different* TDF type set — do not copy type IDs from it. |
 | [`lowlevelmetal/open-ds2-server`](https://github.com/lowlevelmetal/open-ds2-server) | `7702bbf348813dfce8be62bcfacd565009a34a28` | **Different Blaze generation** — 12-byte header, LEB128 varint. *Not applicable to FIFA 22*; useful only for the connection-analysis doc |
-| [`skate6743/Skate3BlazeServer`](https://github.com/skate6743/Skate3BlazeServer) | `f248282ce91f856cbeb2f623adc966df0adfe0e3` | TDF schema model classes → union case numbers and member tag names |
+| [`skate6743/Skate3BlazeServer`](https://github.com/skate6743/Skate3BlazeServer) | `f248282ce91f856cbeb2f623adc966df0adfe0e3` | TDF schema model classes → union case numbers and member tag names. **Its `Util` command models are EA's own** and are the source of truth for `PreAuthResponse` / `PingResponse` / `QosConfigInfo` member lists. |
 
 ---
 
@@ -56,23 +89,48 @@ Fetched by `scripts/fetch-references.ps1`, which pins every repo to a known comm
  +--------+--------+--------+--------+--------+--------+--------+--------+
  |                            message number (u24 BE)              | |
  +--------+--------+--------+--------+--------+--------+--------+--------+
- |  msg type (<<5) | user index (&0x1f)   |  options  |  reserved  |
+ |  msg type (<<5) | user index (&0x1f)   |    zero   |    zero    |
  +------------------+-----------------------+-----------+------------+
 ```
 
 | Offset | Size | Field | Notes |
 | :--- | :--- | :--- | :--- |
-| `0..4` | 4 | `payloadSize` | Big-endian u32. Length of the **payload** section only |
+| `0..4` | 4 | `payloadSize` | Big-endian u32. Length of the **payload** section only — metadata is *excluded* |
 | `4..6` | 2 | `metadataSize` | Big-endian u16. Length of the **metadata** section. **This is not an error code** |
 | `6..8` | 2 | `componentID` | Big-endian u16 |
 | `8..10` | 2 | `commandID` | Big-endian u16 |
 | `10..13` | 3 | `messageNumber` | Big-endian **u24** |
 | `13` | 1 | `messageType` | High 3 bits: `(byte >> 5)` |
-| `13` | – | `userIndex` | Low 5 bits: `byte & 0x1F` |
-| `14` | 1 | `options` | `OPTION_IMMEDIATE = 0x01` |
-| `15` | 1 | `reserved` | Always 0 |
+| `14` | 1 | *(no field)* | **Always zero.** Not an options byte. |
+| `15` | 1 | *(no field)* | **Always zero.** |
+
+> ⚠️ **Correction (October 21, 2026).** An earlier version of this document
+> gave byte 14 as an `options` byte with `OPTION_IMMEDIATE = 0x01`. **There is
+> no options byte in FIFA 22's Fire2.** The serializer writes a zeroed 16-bit
+> word at bytes 14–15 as a single instruction:
+>
+> ```
+> 0x14490604E  xor  esi, esi              ; esi = 0
+> ...
+> 0x144906186  mov  word ptr [rbx + 0xe], si   ; bytes 14..15 = 0x0000
+> ```
+>
+> An exhaustive census of every store in the Fire2 codec region
+> (`0x144905000`–`0x144907600`) found `0x144906186` to be the **only**
+> instruction that writes header bytes 14 or 15 anywhere in the binary, and
+> the deserializer never reads them. The `Header.Options` field in the Go
+> reference is a Go-only invention.
+>
+> The asymmetry is a trap: if the server sets byte 14 to a non-zero value,
+> FIFA 22's parser ignores it, but the *server's* parser will read it as an
+> options field that FIFA never sent. `crates/blaze-core` still carries an
+> `options` field for API symmetry — it must always be written as 0.
 
 ### 2.1 Message types
+
+The type enum is `0..5`, normalised by a switch at `0x1449060FF`–`0x14490613C`
+with an identity mapping for 0–5. The deserializer branches on 4 and 5 for
+the keepalive pair (`0x14490652F`, `0x144906572`).
 
 | Value | Name |
 | :--- | :--- |
@@ -89,9 +147,57 @@ Fetched by `scripts/fetch-references.ps1`, which pins every repo to a known comm
 [ 16-byte header ] [ metadata section (TDF struct) ] [ payload (TDF struct) ]
 ```
 
-The metadata section is present only when `metadataSize > 0`. It is a TDF struct
-containing `CNTX` (context) and, for error replies, `ERRC` (error code). The
-error code lives in the **metadata**, not in the header.
+The metadata section is present only when `metadataSize > 0`. It is an ordinary
+Heat2 TDF struct — same codec as the payload — and it is written **first**, with
+its length back-patched into bytes 4–5.
+
+#### `payloadSize` counts the payload only
+
+The serializer computes it as `cursor − metadataSize − 16` and back-patches it
+big-endian into bytes 0–3:
+
+```
+0x1449061E9  call [rax + 0x20]            ; write the PAYLOAD object
+0x144906200  movzx eax, byte ptr [rbx + 4]
+0x144906204  shl  ax, 8
+0x14490620B  movzx eax, byte ptr [rbx + 5]
+0x14490620F  or   rcx, rax                 ; rcx = metadataSize
+0x144906212  mov  rax, qword ptr [rdi + 0x10]   ; write cursor
+0x144906216  sub  rax, rcx                ; - metadataSize
+0x14490621E  sub  rax, rbx
+0x144906221  sub  rax, 0x10               ; - 16-byte header  => PAYLOAD SIZE
+0x144906237  mov  byte ptr [rbx + 3], al
+0x14490623D  mov  byte ptr [rbx], cl      ; bytes 0..3 = payloadSize (BE u32)
+```
+
+So the total frame length on the wire is
+`payloadSize + metadataSize + 16`.
+
+#### The metadata struct has **nine** members in FIFA 22
+
+The member-registration function at `0x1402C49C0` registers nine members, each
+storing a codec-factory pointer, a member-name string pointer, a 32-bit dword
+(high 24 bits = packed tag, low byte = wire type), a member offset and a size:
+
+| Tag | Member | Wire type | C++ type |
+| :--- | :--- | :--- | :--- |
+| `CNTX` | `context` | `0x00` INTEGER | `uint64_t` |
+| `ERRC` | `errorCode` | `0x00` INTEGER | `int32_t` |
+| `FLAG` | `flags` | `0x00` INTEGER | `Blaze::Fire2Metadata::Flags` |
+| `LCTX` | `logContext` | `0x01` STRING | |
+| `MADR` | `movedToAddr` | `0x00` INTEGER | `uint16_t` |
+| `MIID` | `movedTo` | `0x00` INTEGER | `uint32_t` |
+| `NAME` | `movedToHostName` | `0x00` INTEGER | `uint32_t` |
+| `SIDN` | `sliverIdentity` | `0x00` INTEGER | `uint32_t` |
+| `SKEY` | `sessionKey` | `0x00` INTEGER | `uint32_t` |
+
+> The Go reference's `BuildMetadata` emits only `CNTX` and `ERRC`. That is
+> *sufficient* to interoperate (a tag-keyed lookup finds them) but it is
+> **incomplete**: a decoder that assumes exactly two members will break on the
+> seven the client may also send. Decode by tag, and tolerate unknown tags.
+
+The error code lives in the **metadata** (`ERRC`), not in the header — the
+16-byte header has no error field at all.
 
 ### 2.3 Proof that FIFA 22 uses Fire2
 
@@ -112,7 +218,7 @@ Decoded as Fire2:
 | `messageNumber` | 0 | First message in the session |
 | `messageType` | 0 (`MESSAGE`) | Client → server request |
 | `userIndex` | 0 | |
-| `options` / `reserved` | 0 / 0 | |
+| bytes 14–15 | 0 / 0 | Always zero — not an options field |
 
 Decoded as the legacy 12-byte header, the same bytes yield `component = 0x0000`,
 which is not a valid Blaze component. **Fire2 is correct; the 12-byte layout is not.**
@@ -127,15 +233,16 @@ always carry `messageType = 0` (`MESSAGE`) and `userIndex = 0`.
 
 ### 3.1 Tag compression
 
-Four ASCII characters pack into three bytes, 6 bits per character:
+**Four** ASCII characters pack into three bytes, 6 bits per character:
 
 ```
-packed |= uint32((char - 0x20) & 0x3F) << (26 - 6*i)   for i in 0..4
+packed |= uint32((char - 0x20) & 0x3F) << (18 - 6*i)   for i in 0..4
 ```
 
-Lowercase is uppercased first. The first byte carries bits 26–31, the second bits
-20–25, the third bits 14–19. A zero 6-bit group means "space" and terminates the
-name.
+Lowercase is uppercased first. The four 6-bit groups occupy bits 18–23, 12–17,
+6–11 and 0–5 of the 24-bit tag. A **zero** 6-bit group terminates the name, so
+tags are 1 to 4 characters; a 4-character tag uses all 24 bits and a 3-character
+tag leaves the low group at zero.
 
 Verified byte-exact against authentic EA captures:
 
@@ -144,6 +251,49 @@ Verified byte-exact against authentic EA captures:
 | `GID` | `9E 99 00` | EA capture (`hp-server` test fixture) |
 | `PCAP` | `C2 38 70` | EA capture (`hp-server` test fixture) |
 | `STIM` | `CF 4A 6D` | Our `Util::ping` reply, matching EA's |
+
+Verified byte-exact against the **retail binary's own member-registration
+table** — the nine `Fire2Metadata` members at `0x1402C49C0` each store a 32-bit
+dword whose high 24 bits are the packed tag and whose low byte is the wire type.
+All nine decode back to their member names:
+
+| Tag | Packed bytes | Member | Wire type |
+| :--- | :--- | :--- | :--- |
+| `CNTX` | `8E ED 38` | `context` | `0x00` INTEGER |
+| `ERRC` | `97 2C A3` | `errorCode` | `0x00` INTEGER |
+| `FLAG` | `9A C8 67` | `flags` | `0x00` INTEGER |
+| `LCTX` | `B2 3D 38` | `logContext` | `0x01` STRING |
+| `MADR` | `B6 19 32` | `movedToAddr` | `0x00` INTEGER |
+| `MIID` | `B6 9A 64` | `movedTo` | `0x00` INTEGER |
+| `NAME` | `BA 1B 65` | `movedToHostName` | `0x00` INTEGER |
+| `SIDN` | `CE 99 2E` | `sliverIdentity` | `0x00` INTEGER |
+| `SKEY` | `CE B9 79` | `sessionKey` | `0x00` INTEGER |
+
+> ⚠️ **Correction (October 21, 2026).** An earlier version of this document
+> gave the *shift schedule* as `26 - 6*i`. That is wrong — the correct
+> schedule is `18 - 6*i`, and the tag is **four** characters wide, not three.
+> The mistake was caught by decoding the binary's nine `Fire2Metadata` tag
+> dwords: they yield `CNTX`/`ERRC`/`FLAG`/… only under the 4-character,
+> 18/12/6/0 schedule. EA's own decoder
+> (`references/BlazeSDK/Fire2Decoder.go`) confirms it:
+>
+> ```go
+> func DecodeTag(buffer []byte) string {
+>     tag := uint32(buffer[0])<<16 | uint32(buffer[1])<<8 | uint32(buffer[2])
+>     var buf [4]byte
+>     size := 4
+>     for i := 3; i >= 0; i-- {   // <-- four characters, LSB group first
+>         sixbits := tag & 0x3f
+>         if sixbits != 0 { buf[i] = byte(sixbits + 32) } else { buf[i] = 0; size = i }
+>         tag >>= 6
+>     }
+>     return string(buf[:size])
+> }
+> ```
+>
+> `crates/blaze-tdf/src/tag.rs` was already correct on this point
+> (`p0 << 18 | p1 << 12 | p2 << 6 | p3`) — it was the *document* that was
+> wrong.
 
 ### 3.2 Integer encoding — "varsize"
 
@@ -157,7 +307,8 @@ continuation bytes: bit 7 = continuation, bits 0-6 = value
 continuation value bits sit at shifts 6, 13, 20, 27, ...
 ```
 
-Reference implementation (identical in both `hp-server` and `BlazeSDK`):
+Reference implementation (from `hp-server` / `BlazeSDK`; corroborated by
+`openBlase`'s commented-out `Tdf::CompressInteger`):
 
 ```go
 func EncodeVarsizeInteger(value int64) []byte {
@@ -188,7 +339,30 @@ func EncodeVarsizeInteger(value int64) []byte {
 ```
 
 `openBlase`'s commented-out `Tdf::CompressInteger` implements the identical scheme,
-independently confirming it.
+corroborating it.
+
+The retail binary's own encoder confirms it byte-for-byte
+(`FUN_14496BAA0` at `0x14496BAA0`):
+
+```
+0x14496BAD4  movzx eax, dl
+0x14496BAD7  and  al, 0x3f        ; positive: 6 value bits
+0x14496BAD9  or   al, 0x80        ; + continuation flag
+0x14496BAB0  sar  rdx, 6          ; first continuation shift = 6
+0x14496BAF6  or   cl, 0x80        ; continuation bytes carry 7 bits + 0x80
+0x14496BAF9  sar  rdx, 7          ; subsequent shifts = 7,7,7 -> 6,13,20,27
+0x14496BB0D  and  byte ptr [rax + r9], 0x7f  ; clear 0x80 on the LAST byte
+```
+
+and the negative path sets `0x40` (the sign flag) on the first byte:
+
+```
+0x14496BACE  movzx eax, dl
+0x14496BAD0  or   al, 0xc0        ; 0x40 = negative, 0x80 = continuation
+```
+
+The sign is applied to the *magnitude*; `0x40` is the only sign carrier. Value
+`0` encodes as a single `0x00` byte.
 
 #### Why this matters — the `STIM` bug
 
@@ -244,10 +418,40 @@ CF 4A 6D 00 B2 FA BA AD 0D 00
 | 3 | `TDF` (struct) | 10 | **`FLOAT`** |
 | 4 | `LIST` | 11 | **`TIMEVALUE`** |
 | 5 | `MAP` | 12 | `GENERIC` |
-| 6 | `UNION` | | |
+| 6 | `UNION` | 13 | *unknown/default* |
 
 > ⚠️ `OBJECT_TYPE` is **8** and `OBJECT_ID` is **9** — not the other way round.
 > `FLOAT` is **10** and `TIMEVALUE` is **11**.
+
+#### Two type namespaces, and the translation between them
+
+The **internal TDF type id** used by the C++ reflection layer (`0x00`–`0x17`)
+is **not** the wire type byte (`0x00`–`0x0D`). `FUN_14496BB30` at
+`0x14496BB30` translates internal → wire via a 24-entry jump table at
+`0x14496BBB4`:
+
+| Internal id | → wire byte | | Internal id | → wire byte |
+| :--- | :--- | :--- | :--- | :--- |
+| `0x00` | `0x0D` (default) | | `0x09` | `0x02` BLOB |
+| `0x01` | `0x0C` GENERIC | | `0x0A` | `0x06` UNION / `0x03` TDF |
+| `0x02` | `0x05` MAP / `0x03` TDF | | `0x0B` | `0x03` TDF |
+| `0x03` | `0x04` LIST / `0x03` TDF | | `0x0C` | `0x08` OBJECT_TYPE |
+| `0x04` | `0x0A` FLOAT | | `0x0D` | `0x09` OBJECT_ID |
+| `0x05` | `0x00` INTEGER | | `0x0E` | `0x0B` TIMEVALUE |
+| `0x06` | `0x01` STRING | | `0x0F`–`0x17` | `0x00` INTEGER |
+| `0x07` | `0x07` VARIABLE | | `> 0x17` | `0x0D` (default) |
+
+The `MAP`/`UNION`/`LIST` → `0x03` fallback is the **TDF-vs-container**
+distinction: a map, union or list whose value is really a nested TDF struct is
+written with the plain `0x03` struct wire type.
+
+The encoder's own 24-case dispatch in `FUN_14496AC20` at `0x14496AC20`
+(jump table at `0x14496B9A0`) agrees with the mapper exactly, which is why the
+table above is confirmed from two independent binary sources.
+
+> ⚠️ **The `0x0D` default code matters.** The Go reference uses `0xFF` as its
+> out-of-range sentinel; the binary uses **`0x0D`**. And `0x0C` `GENERIC` is
+> missing from `crates/blaze-tdf`'s `TdfType` — see §7.
 
 ### 3.4 Composite wire forms
 
@@ -385,9 +589,28 @@ repos' TDF model classes. Only the fields this project actually emits are listed
 > The earlier hypothesis that `PING`/`LATN`/`TIME` tags were missing was
 > **false** — `STIM` alone is correct, and the real defect was the varint encoding.
 
-**`Util::PreAuthResponse`**: `ANAM`, `CIDS`, `QOSS`, `SVER`, `TIME`,
-`serverVersion`, `telemetryServer`, `tickerServer`, `underageSupported`,
-`entitlementSource`, `registrationSource`, `legalDocGameIdentifier`, `suspendTime`
+**`Util::PreAuthResponse`** — exactly **four** members:
+
+| Tag | Type | Meaning |
+| :--- | :--- | :--- |
+| `CIDS` | LIST of ushort | Supported component ids |
+| `CONF` | `FetchConfigResponse` | Server configuration |
+| `QOSS` | `QosConfigInfo` | QoS ping-site configuration |
+| `SVER` | STRING | Server version |
+
+> ⚠️ **Correction (October 21, 2026).** An earlier version of this document
+> listed `ANAM`, `TIME`, `serverVersion`, `telemetryServer`, `tickerServer`,
+> `underageSupported`, `entitlementSource`, `registrationSource`,
+> `legalDocGameIdentifier` and `suspendTime` as `PreAuthResponse` members.
+> **None of them exist.** EA's own code-generated model
+> (`references/Skate3BlazeServer/.../Util/Commands/PreAuthResponse.cs`) has
+> exactly the four members above, and the retail binary's registration routine
+> agrees. `ANAM` and `TIME` were being emitted by
+> `crates/services-blaze/src/util.rs`; a type-driven decoder ignores them, so
+> they are dead weight on the wire.
+>
+> See [`FIFA22_QOS_PROTOPING_HTTP.md`](FIFA22_QOS_PROTOPING_HTTP.md) §7 for
+> the `QOSS` member list and the `QosConfigInfo` / `QosPingSiteInfo` schemas.
 
 **`Util::PreAuthRequest`**: `clientVersion`, `clientType`, `locale`,
 `platformId`, `productId`, `blazeVersion`, `clientBuild`, `macAddress`

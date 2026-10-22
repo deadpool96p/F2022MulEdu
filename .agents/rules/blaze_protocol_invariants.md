@@ -63,9 +63,15 @@
      a good source of schema names and union case numbers; their *wire format*
      is **not** applicable to FIFA 22. `openBlase` is the exception — its
      `Tdf::CompressInteger` corroborates the Heat2 varsize scheme.
-   - Any protocol claim must be backed by one of: two independent
-     implementations agreeing, authentic EA bytes, or the client's own captured
-     bytes. See `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
+   - Any protocol claim must be backed by one of: authentic EA bytes, the
+     client's own captured bytes, or the retail binary's own code (its TDF
+     registration routines and schema tables). See
+     `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
+   - **Do not cite `hp-server` and `BlazeSDK` as two independent sources.**
+     `hp-server` is a *fork* of BlazeSDK — its history contains BlazeSDK's
+     commits verbatim and `Fire2Types.go` is byte-identical between them.
+     A fork and its parent are one source. Cite them as corroboration, and
+     cite authentic EA bytes or the binary as the actual evidence.
 
 6. **Reference Repositories Are Not Vendored**:
    - The five reference repositories live outside version control and are
