@@ -495,4 +495,11 @@ corroboration.
   its patterns for the literal host `qosapi`, so the request depends on the
   *port* being in the reroute list. This is a live candidate explanation for
   the client stalling before the QoS step completes.
+* **The live capture never reached the QoS step at all:** `emulator_server.log`
+  contains **no** `/qos/*` request, and `f22_shim.log` shows `qosapi` was never
+  resolved. The client stalls *before* QoS, so the QoS HTTP endpoints are not
+  yet the blocker — the blocker is upstream of them, in the Blaze `Util::ping` /
+  `Util::preAuth` exchange. Fixing the QoS responses is necessary but not
+  sufficient; the next capture must be taken after the `preAuth` reply is
+  corrected.
 
