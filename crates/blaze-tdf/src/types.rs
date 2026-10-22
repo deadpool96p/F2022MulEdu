@@ -51,6 +51,20 @@ pub enum TdfType {
     Float = 0x0A,
     /// 0x0B: Time value in microseconds (varsize integer).
     TimeValue = 0x0B,
+    /// 0x0C: Generic value (two varsize u16s).
+    ///
+    /// FIFA 22's Heat2 codec produces this byte from internal type id
+    /// `0x01` (see `FUN_14496BB30` at `0x14496BB30`). The Go reference
+    /// lists it in its type table but never emits it, and this crate was
+    /// missing it entirely.
+    Generic = 0x0C,
+    /// 0x0D: Unknown / out-of-range type.
+    ///
+    /// The binary's default case for an internal type id it does not
+    /// recognise (id `0x00`, or anything above `0x17`) writes this byte.
+    /// The Go reference uses `0xFF` as its sentinel instead, which the
+    /// client never sends.
+    Unknown = 0x0D,
 }
 
 impl TdfType {
@@ -69,6 +83,8 @@ impl TdfType {
             0x09 => Some(Self::ObjectId),
             0x0A => Some(Self::Float),
             0x0B => Some(Self::TimeValue),
+            0x0C => Some(Self::Generic),
+            0x0D => Some(Self::Unknown),
             _ => None,
         }
     }
@@ -144,6 +160,20 @@ pub enum TdfValue {
     ObjectType(BlazeObjectType),
     TimeValue(i64),
     Float(f32),
+    /// A `GENERIC` (wire type `0x0C`) value.
+    ///
+    /// The wire form is a presence byte followed, when present, by a varsize
+    /// integer:
+    ///
+    /// ```text
+    /// [ presence (0x00 | 0x01) ] [ varsize integer, only when present ]
+    /// ```
+    ///
+    /// Confirmed from the retail binary's encoder case for internal type id
+    /// `0x01` (`FUN_14496AC20` at `0x14496B31A`): it writes the member header
+    /// with `r8d = 0x0C`, then the presence byte, then the varsize integer
+    /// when the value is present.
+    Generic { present: bool, value: u64 },
 }
 
 impl TdfValue {
@@ -162,6 +192,7 @@ impl TdfValue {
             Self::ObjectType(_) => TdfType::ObjectType,
             Self::TimeValue(_) => TdfType::TimeValue,
             Self::Float(_) => TdfType::Float,
+            Self::Generic { .. } => TdfType::Generic,
         }
     }
 }

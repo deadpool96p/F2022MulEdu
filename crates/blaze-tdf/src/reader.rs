@@ -228,6 +228,26 @@ impl<R: Read> TdfReader<R> {
                 let f = f32::from_be_bytes(float_bytes);
                 Ok(TdfValue::Float(f))
             }
+            TdfType::Generic => {
+                // [ presence byte ] [ varsize integer, only when present ]
+                let mut present = [0u8; 1];
+                self.reader.read_exact(&mut present)?;
+                if present[0] == 0 {
+                    return Ok(TdfValue::Generic {
+                        present: false,
+                        value: 0,
+                    });
+                }
+                let value = read_varint_u64(&mut self.reader)?;
+                Ok(TdfValue::Generic {
+                    present: true,
+                    value,
+                })
+            }
+            TdfType::Unknown => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Unknown TDF wire type 0x0D: the value's length cannot be determined",
+            )),
         }
     }
 }

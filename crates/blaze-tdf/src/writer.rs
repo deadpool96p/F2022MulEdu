@@ -152,6 +152,12 @@ impl<W: Write> TdfWriter<W> {
             TdfValue::Float(f) => {
                 self.writer.write_all(&f.to_be_bytes())?;
             }
+            TdfValue::Generic { present, value } => {
+                self.writer.write_all(&[*present as u8])?;
+                if *present {
+                    write_varint_u64(&mut self.writer, *value)?;
+                }
+            }
         }
         Ok(())
     }

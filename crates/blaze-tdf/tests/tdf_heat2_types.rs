@@ -315,6 +315,33 @@ fn the_heat2_wire_type_identifiers_are_what_we_think_they_are() {
     assert_eq!(TdfType::ObjectId as u8, 0x09);
     assert_eq!(TdfType::Float as u8, 0x0A);
     assert_eq!(TdfType::TimeValue as u8, 0x0B);
+    assert_eq!(TdfType::Generic as u8, 0x0C);
+}
+
+/// The binary's out-of-range / unknown type code is `0x0D`, not the Go
+/// reference's `0xFF` sentinel.
+///
+/// `FUN_14496BB30` at `0x14496BB30` maps the internal TDF type id to the
+/// wire type byte. An internal id of `0x00`, or anything above `0x17`,
+/// produces wire byte `0x0D`:
+///
+/// ```text
+/// cmp  ecx, 0x17
+/// ja   <default>
+/// ```
+///
+/// and the default case writes `0x0D`. A decoder that rejects `0x0D` outright
+/// turns a malformed field into a hard parse failure instead of a
+/// recoverable one.
+#[test]
+fn the_unknown_type_code_is_zero_d_zero_d() {
+    assert_eq!(TdfType::from_u8(0x0D), Some(TdfType::Unknown));
+    assert_eq!(TdfType::Unknown as u8, 0x0D);
+    assert_eq!(
+        TdfType::from_u8(0x0C),
+        Some(TdfType::Generic),
+        "0x0C is GENERIC in FIFA 22's Heat2 codec"
+    );
 }
 
 /// Every type must round-trip through the decoder as well as the encoder.
