@@ -1,25 +1,58 @@
 # FIFA 22 Frostbite 3 Clean-Room Multiplayer: Project Progress Report
 
-**Document Version:** 2.1.0  
-**Last Updated:** October 22, 2026  
-**Status:** In Active Development — Phase 1 (Authentication Unblock) in progress  
+**Document Version:** 2.2.0  
+**Last Updated:** October 22, 2026 (evening session)  
+**Status:** In Active Development — Phase 1 (Authentication Unblock) — **blocked on the redirector reply format and the HTTP/2 transport**  
 **Repository:** `deadpool96p/F2022MulEdu`  
 **Target:** EA Sports FIFA 22 (Frostbite 3 Engine, PC)
+
+> **Read first:** [`docs/SESSION_LOG_2026-10-22.md`](docs/SESSION_LOG_2026-10-22.md)
+> is the authoritative record of the current blocker, the live evidence behind
+> it, and the priority order for the next session. §11 below summarises it.
 
 ---
 
 ## 0. Current Status & Active Workstream
 
-The emulator currently completes the redirector handshake and exchanges a
-`Util::ping` request/response with the real client, but the client then stalls
-for exactly 10 seconds and reports *"There was an error accessing server data."*
+**The Blaze protocol work is done and verified.** `Util::ping` → `Util::preAuth`
+→ a `PreAuthResponse` whose `QOSS` block is byte-identical to the authentic EA
+fixture is exchanged successfully with the real client.
 
-**The root cause has been identified.** FIFA 22 speaks the **Fire2** framing
-(16-byte header) with the **Heat2** TDF codec — *not* the 12-byte legacy FIRE
-generation that this codebase and two of the consulted reference repositories
-implement. Authentic EA capture bytes plus the retail binary's own code confirm
-the correct layout, and the shipped implementation diverges in ways that decode
-silently to wrong values.
+**The client then stalls and logs out.** The remaining blocker is *not* a
+Blaze-protocol problem — it is a service-discovery and transport problem, and
+it has **three independent parts** (full evidence in the session log):
+
+| # | Blocker | State |
+| :--- | :--- | :--- |
+| **A** | The redirector reply is an **invention**: its XML element names do not match the lowercased TDF field names the client parses (`servicenames`, `servers`, `addresses`, `instancetype`, `hostname`, `srcport`, `dstport`, `netmask`, `serviceid`, `srcip`). The client therefore never finds the `qosapi` service, falls back to `getaddrinfo("")`, and dials the local Radmin address `26.178.140.32:443` with a **zero-length SNI**. | Root cause proven, **not yet fixed** |
+| **B** | The `:443` sink speaks **HTTP/1.1 only**, but the client's QoS stack negotiates **ALPN `h2`**. A perfect redirector reply would still dead-end. | Module written and compiled, **not yet wired in** |
+| **C** | The h2 TLS client lives in `FIFA22.exe` and validates against **its own embedded trust-anchor table (4 anchors)**, not the Windows store. The shim patches only the `DigiCert Global Root CA` entry. | **Open** — 3 of 4 anchors unpatched |
+
+**The decisive live evidence:** the *same* server certificate is accepted on all
+six ProtoHttp handshakes (real SNI, no ALPN) and rejected on all twenty-one
+h2 handshakes (`SNI=""`, `ALPN=["h2"]`, `AlertReceived(CertificateUnknown)`).
+So the chain is fine for the DirtySDK/Windows-store path; the h2 path is a
+different validator.
+
+**Blaze 15 has no `QCNF` in `preAuth`** (unlike Blaze 18, whose
+`QCNF.QCA = "qoscoordinator.gameservices.ea.com"`), so the QoS endpoint for
+FIFA 22 can come only from the HTTP redirector reply. That makes **A the
+single root cause** of the empty host.
+
+> **Historical note (October 21, 2026):** an earlier version of this report
+> cited `hp-server` and `BlazeSDK` as "two independent clean-room
+> implementations". They are not — `hp-server` is a **fork** of BlazeSDK and
+> their `Fire2Types.go` is byte-identical. The evidence standard is now
+> *authentic EA bytes, the client's own captured bytes, or the retail binary's
+> own code*. See `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
+
+> **Further note (October 22, 2026, evening):** a sweep of all five pinned
+> reference repositories established that **none of them implements the HTTP
+> `POST /redirector/getServerInstance` reply**. Everything they call a
+> "redirector" is the older **in-Blaze TDF** redirector (component `0x0005`,
+> command `0x0001`, TCP/ProtoSSL `:42127`) — a different service from FIFA 22's
+> HTTP redirector on `:42230`. `qosapi` has **zero** occurrences across all
+> five. The reply format must be recovered from `FIFA22.exe` itself.
 
 > **Note on evidence (October 21, 2026):** an earlier version of this report
 > cited `hp-server` and `BlazeSDK` as "two independent clean-room
@@ -28,20 +61,26 @@ silently to wrong values.
 > *authentic EA bytes, the client's own captured bytes, or the retail binary's
 > own code*. See `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
 
+### The Fire2/Heat2 codec defects are all closed
+
 | # | Defect | Severity | State |
 | :--- | :--- | :--- | :--- |
 | A | Heat2 integers encoded as 7-bit LEB128 instead of the 6-bit-first-byte varsize scheme | **Critical** — `STIM` decoded as a 1998 timestamp, tripping the client's clock-drift check | **Fixed** |
-| B | 16-byte header was not Fire2 (message number, message type, metadata size, user index, options all wrong) | **Critical** — replies can never be matched to requests | Pending |
-| C | `OBJECT_TYPE`/`OBJECT_ID` and `FLOAT`/`TIMEVALUE` type IDs swapped | High | Pending |
-| D | Union / Variable / ObjectId / ObjectType wire forms wrong | High | Pending |
-| E | 12-vs-16 byte header detection heuristic tested `buffer[10] <= 0x03` | Medium | Pending |
+| B | 16-byte header was not Fire2 (message number, message type, metadata size, user index, options all wrong) | **Critical** — replies can never be matched to requests | **Fixed** — verified against the binary (see §10) |
+| C | `OBJECT_TYPE`/`OBJECT_ID` and `FLOAT`/`TIMEVALUE` type IDs swapped | High | **Fixed** |
+| D | Union / Variable / ObjectId / ObjectType wire forms wrong | High | **Fixed** |
+| E | 12-vs-16 byte header detection heuristic tested `buffer[10] <= 0x03` | Medium | **Fixed** |
 
 **Read next:**
 
+* [`docs/SESSION_LOG_2026-10-22.md`](docs/SESSION_LOG_2026-10-22.md) — **the
+  current blocker**, the live evidence behind it, and the priority order for
+  the next session.
 * [`docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md`](docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md) — the
   authoritative Fire2/Heat2 wire specification, with the evidence behind each claim.
 * [`docs/POST_PING_STALL_ROOT_CAUSE.md`](docs/POST_PING_STALL_ROOT_CAUSE.md) — the
   full investigation record, including the hypotheses that were falsified.
+  *(§1 and §7 are now known to be stale — see the session log §8.)*
 
 ---
 
@@ -242,9 +281,13 @@ All components are protected by end-to-end integration and unit tests:
 | `online_hub_flow` | Multi-client hub, session store, network info exchange | **PASS** |
 | `room_code_flow` | Room code allocation and lobby join | **PASS** |
 | `state_machine_ordering` | GameManager notification ordering | **PASS** |
+| `crl_revocation` | CA-signed CRL generation, serving, and revocation-check semantics | **PASS** |
+| `auth_command_ids` | EA `Authentication` command IDs (incl. `logout` = `0x0046`) | **PASS** |
+| `preauth_matches_ea` | The `preAuth` reply, byte-compared against authentic EA frames | **PASS** |
+| `emulator_server::http2_server` | ALPN recognition; a QoS reply fits in one HTTP/2 DATA frame | **PASS** |
 
-**Total Test Results:** `74 passed; 0 failed; 0 ignored` (100% passing),
-`cargo test --workspace` exit code 0.
+**Total Test Results:** `191 passed; 0 failed; 0 ignored` (100% passing),
+`cargo test --workspace` exit code 0 (October 22, 2026, evening).
 
 ---
 
@@ -327,10 +370,14 @@ marked as such in `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
    * [x] **Answer a Fire2 transport `PING` with a `PING_REPLY`.** A `PING` (message type 4) is a keepalive, not an RPC request; answering it with an ordinary `REPLY` left the keepalive unsatisfied and the client tore the connection down and reconnected.
    * [x] Rewrite the Wireshark dissector against the real Fire2/Heat2 layout, with a 79-check self-test (`tools/dissector/blaze.lua`).
    * [x] Add a decoder example for Blaze frames and bare TDF payloads (`cargo run -p blaze-tdf --example decode -- ...`), which reports how many bytes were consumed — the test that tells a root struct from a nested one.
-   * [ ] Re-run the real client and confirm `Util::preAuth` (0x0009 / 0x0007) arrives.
-   * [ ] Serve the ProtoHttp User-Agent (`ProtoHttp 1.3/DS 15.1.7.0.3 (Windows)`) from `services-http-content`.
+   * [x] **Re-run the real client and confirm `Util::preAuth` arrives.** Verified live on 2026-10-22: `Util::ping` → `Util::preAuth` → a `PreAuthResponse` whose `QOSS` block is byte-identical to the authentic EA fixture. The `Authentication::logout` (`0x0046`) flood that follows is the client abandoning the **QoS** step, not a Blaze-protocol defect.
+   * [x] Serve the ProtoHttp User-Agent (`ProtoHttp 1.3/DS 15.1.7.0.3 (Windows)`) from `services-http-content`. The user agent is parsed (`crates/services-http-content/src/protohttp.rs`), and a ProtoHttp request is answered with an exact `Content-Length`, no chunked framing and `Connection: Close`. The QoS endpoints (`/qos/qos`, `/qos/firewall`, `/qos/firetype`, `/getPeerAddress`) now echo the client's `rqid`/`rqsc`, and `/getPeerAddress` is served as `text/plain` rather than `application/xml`. Request parameters are read from the query string **and** from an `application/x-www-form-urlencoded` body, which is where the client sends `sourceIP`/`sourcePort`/`tag`/`sendCount`; `/getPeerAddress` echoes them and answers with the emulator's own peer address (`127.0.0.1:3659`, the ProtoTunnel relay). Every request is logged with its full request line, `Host`, `User-Agent`, `Content-Type` and ALPN. See `docs/FIFA22_QOS_PROTOPING_HTTP.md` §3.4, §3.5 and §3.2.
+   * [ ] **Advertise `qosapi` correctly in the redirector reply** (blocker A — the highest-value single change). Rewrite `render_redirector_xml` / `render_service_instance_xml` to emit the *lowercased TDF field names* the client parses: `servicenames`, `servers`, `addresses`, `instancetype`, `inservice`, `hostname`, `srcport`, `dstport`, `netmask`, `serviceid`, `srcip`. Recover the exact DOM path and nesting from `FIFA22.exe` (`0x141FEA4E0` → bind query `0x140c90150` → `doc->[0x10]`). The existing tests that assert `<servicename>` / `<ip>` / `<port>` must be updated to the real names.
+   * [ ] **Make the advertised QoS host a name that survives to the SNI** (blocker A, part 2). The shim's `ShouldRerouteHost` rewrites `.ea.com` names to the emulator IP *before* the ClientHello, so the name must come from a hosts-file entry or an SNI-preserving rewrite.
+   * [ ] **Wire the HTTP/2 transport** (blocker B). Add `.with_alpn_protocols(vec![b"h2".to_vec(), b"http/1.1".to_vec()])` to the TLS config and dispatch on `TlsStream::get_ref().1.alpn_protocol()` in `telemetry_server.rs`. `crates/emulator-server/src/http2_server.rs` is written and compiles; it needs the ALPN dispatch and a decision on whether the `:443` sink gets its own `TlsAcceptor` (the shared one would put ALPN on the Blaze port too).
+   * [ ] **Patch all four embedded trust anchors** in `FIFA22.exe` (and `EAWebKit.dll`), not just `DigiCert Global Root CA` (blocker C). Requires explicit authorisation naming the additional anchors.
    * [ ] Stand up the QoS STUN responder so the `QOSS` site in `preAuth` resolves.
-   * [ ] Investigate the TLS handshake failure at 04:15:33 (`InvalidMessage(IllegalEmptyValue)`) on connection 61803.
+   * [x] ~~Investigate the TLS handshake failure at 04:15:33 (`InvalidMessage(IllegalEmptyValue)`) on connection 61803.~~ **Explained (2026-10-22 evening):** the client dials a bare IP, so the SNI is empty; the vendored rustls now treats an empty SNI as "no server name". The *remaining* TLS failure is `AlertReceived(CertificateUnknown)` from the h2 client, which validates against its own embedded anchor table — see blocker C.
 5. **Phase 2 — Matchmaking & GameManager (PENDING):**
    * [ ] Port `ReserveLobbyRelayServer` (relay port 17000 + gameId) into the Rust GameManager.
    * [ ] Correct the lobby create/join notifications.
@@ -497,12 +544,20 @@ corroboration.
   linear sweep) and a Python model of the client's DOM scanner that validates a
   candidate QoS response **without launching the game**. No retail binary or
   game data is committed; the PE path is always an argument.
-* **Open Item — the QoS HTTP port:** the client builds the QoS base URL as
-  `"%s://%s:%u"` from the host `qosapi`, and the port argument has **not** been
-  located in the binary yet. The shim's `ShouldRerouteHost` matches none of
-  its patterns for the literal host `qosapi`, so the request depends on the
-  *port* being in the reroute list. This is a live candidate explanation for
-  the client stalling before the QoS step completes.
+* **Open Item — the QoS host is never resolved (superseded 2026-10-22
+  evening):** this bullet previously read "the client builds the QoS base URL
+  as `"%s://%s:%u"` from the host `qosapi`, and the port argument has not been
+  located in the binary yet". The evening session established the real
+  answer: the client **never resolves `qosapi` at all**, because the
+  redirector reply we send does not carry the service in the form the client
+  parses. The reply's XML element names are an invention and do not match the
+  lowercased TDF field names (`servicenames`, `servers`, `addresses`,
+  `instancetype`, `inservice`, `hostname`, `srcport`, `dstport`, `netmask`,
+  `serviceid`, `srcip`). The client therefore falls back to
+  `getaddrinfo("")`, enumerates the local interfaces, and dials the Radmin VPN
+  address `26.178.140.32:443` with a zero-length SNI. **Locating the `qosapi`
+  *port* in the binary was the wrong question** — the port is irrelevant until
+  the service is advertised correctly. See `docs/SESSION_LOG_2026-10-22.md` §3.
 * **The live capture never reached the QoS step at all:** `emulator_server.log`
   contains **no** `/qos/*` request, and `f22_shim.log` shows `qosapi` was never
   resolved. The client stalls *before* QoS, so the QoS HTTP endpoints are not
@@ -510,4 +565,74 @@ corroboration.
   `Util::preAuth` exchange. Fixing the QoS responses is necessary but not
   sufficient; the next capture must be taken after the `preAuth` reply is
   corrected.
+
+---
+
+## 11. Milestone Achievements (October 22, 2026, evening — Blaze Verified Live; QoS/Redirector/HTTP2 Root Causes Isolated)
+
+Full record: [`docs/SESSION_LOG_2026-10-22.md`](docs/SESSION_LOG_2026-10-22.md).
+
+* **The Blaze exchange is live and correct.** `Util::ping` → `Util::preAuth` →
+  a `PreAuthResponse` whose `QOSS` block is byte-identical to the authentic EA
+  fixture. The `Authentication::logout` (`0x0046` = 70) flood that follows is
+  the client giving up on the QoS step, not a Blaze-protocol defect.
+* **The client uses two different HTTP stacks, and only one of them is
+  broken.** The live ClientHello capture is decisive:
+  * 6 × ProtoHttp handshakes — real SNI (`rl.data.ea.com`,
+    `pin-river.data.ea.com`, `freeform-river.data.ea.com`,
+    `spring18.gosredirector.ea.com`), **no ALPN**, **all accepted**.
+  * 21 × h2 handshakes — `SNI=""`, `ALPN=["h2"]`, **all rejected** with
+    `AlertReceived(CertificateUnknown)`.
+  The certificate is fine for the DirtySDK/Windows-store path; the h2 stack
+  in `FIFA22.exe` uses its own validator.
+* **Root cause of the empty host isolated.** The redirector reply is an
+  invention whose element names do not match the lowercased TDF field names
+  the client parses, so the `qosapi` service is never found and the client
+  falls back to `getaddrinfo("")` → `26.178.140.32:443` with a zero-length
+  SNI. Confirmed by the client-side path `0x141FEA4E0` → bind query
+  `0x140c90150` → `doc->[0x10]`.
+* **FIFA 22's `preAuth` cannot supply the QoS endpoint.** Blaze 15 has no
+  `QCNF` and `BWPS.PSA = ""` (proved against the authentic fixture), whereas
+  Blaze 18 carries `QCNF.QCA = "qoscoordinator.gameservices.ea.com"`. EA
+  always carries the QoS address as a **host name plus port**, never an IP.
+* **HTTP/2 support written against the real API.** `h2` 0.4 is a *frame*
+  library with no `http-body` dependency: `send_response` takes a
+  `Response<()>` (headers only) and the body follows via
+  `send_data(bytes, end_of_stream)`.
+  `crates/emulator-server/src/http2_server.rs` implements that, shares the
+  HTTP/1.1 `route_http_request` bodies, filters the RFC 9113 §8.2.2
+  connection-specific headers, and releases flow-control capacity as it
+  reads. It compiles; it is **not yet dispatched to**.
+* **ALPN mechanics established** from the vendored rustls source: ALPN is
+  enforced only when `alpn_protocols` is non-empty, and a non-overlapping
+  offer triggers `NoApplicationProtocol`. The DirtySDK ProtoHttp stack offers
+  no ALPN at all, so adding `h2` is safe for it — but the shared
+  `TlsAcceptor` means the Blaze port would be affected too, so the `:443`
+  sink should get its own acceptor unless the Blaze client is confirmed to
+  offer no ALPN.
+* **FIFA 22's embedded trust anchors mapped.** Four 0x60-byte RSA anchor
+  structures in `FIFA22.exe`'s `.xtls` (GOS 2015 CA, VeriSign G5, DigiCert
+  Global Root CA, and one more). The shim's `cert_bypass.cpp` patches every
+  module that contains the literal `"DigiCert Global Root CA"` — one anchor
+  name, not all four.
+* **The reference repositories are exhausted for this problem.** None of the
+  five implements the HTTP `POST /redirector/getServerInstance` reply;
+  `qosapi` appears in none of them; the retail redirector leaf
+  (`openBlase/BlazeProxy/gosredirector.ea.com.crt`) is issued by an EA
+  **"Root Agency"**, not DigiCert; and the HP generation's transport is
+  TLS 1.0 with RSA/RC4, not modern TLS with an `h2` offer. The reply format
+  must come from `FIFA22.exe`.
+* **The shim destroys the host name before TLS.** `ShouldRerouteHost` rewrites
+  `.ea.com` / `.ea.net` / `.dice.se` / `.xboxlive.com` to the emulator IP
+  *before* the ClientHello is built, so a correct redirector reply would
+  still yield a zero-length SNI. The fix is the hosts-file pattern (as
+  `hp-server` and `Skate3BlazeServer` use) or an SNI-preserving rewrite.
+* **New RE tooling committed:** `tools/align_find.py`,
+  `tools/anchor_xrefs.py`, `tools/dump_anchor.py`, `tools/dump_qwords.py`,
+  `tools/dump_strings.py`, `tools/dump_tdf.py`, `tools/dump_vtable.py`,
+  `tools/fast_xrefs.py`.
+* **Vendored rustls fork committed.** `third_party/rustls-0.23.46` is the
+  target of the workspace's `[patch.crates-io]`, so it must be in the tree or
+  the workspace will not build for anyone else. Its empty-SNI patch is
+  documented in `third_party/rustls-0.23.46/PATCHES.md`.
 

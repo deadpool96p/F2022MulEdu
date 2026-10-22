@@ -1,6 +1,6 @@
 //! Automated End-to-End Boot Handshake Integration Test.
 //! Simulates a FIFA 22 client connecting to the Redirector, resolving the Blaze server,
-//! and executing preAuth -> expressLogin -> postAuth -> ping.
+//! and executing preAuth -> createWalUserSession -> postAuth -> ping.
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -27,6 +27,7 @@ async fn test_full_boot_handshake_flow() {
         host: "127.0.0.1".to_string(),
         port: blaze_port,
         secure: false, // Plain TCP downgrade test
+        ..Default::default()
     };
 
     // Spawn server tasks
@@ -137,18 +138,28 @@ async fn test_full_boot_handshake_flow() {
     assert!(pre_tdf.get("QOSS").is_some());
     assert!(pre_tdf.get("CIDS").is_some());
 
-    // 2b. expressLogin (Auth 0x0001 :: 0x001C)
+    // 2b. createWalUserSession (Auth 0x0001 :: 0x00E6)
+    //
+    // `0x00E6` is EA's `AuthenticationMessage.createWalUserSession` (230).
+    // It is the one `Authentication` command whose EA response model
+    // carries the user's identity, so it is the one the emulator's own
+    // clients use to log in.
     let mut login_payload = TdfStruct::new();
     login_payload.set("AUTH", TdfValue::String("TOKEN_123".to_string()));
-    let (login_hdr, login_tdf) = send_recv(&mut blaze_stream, 0x0001, 0x001C, 11, login_payload).await;
+    let (login_hdr, login_tdf) = send_recv(&mut blaze_stream, 0x0001, 0x00E6, 11, login_payload).await;
     assert_eq!(login_hdr.component, 0x0001);
-    assert_eq!(login_hdr.command, 0x001C);
+    assert_eq!(login_hdr.command, 0x00E6);
     assert_eq!(login_hdr.seq_no, 11);
+    let persona = match login_tdf.get("PDTL") {
+        Some(TdfValue::Struct(s)) => s,
+        other => panic!("createWalUserSession must carry PDTL, got {:?}", other),
+    };
     assert_eq!(
-        login_tdf.get("DSNM"),
+        persona.get("DSNM"),
         Some(&TdfValue::String("F22_Player1".to_string()))
     );
-    assert!(login_tdf.get("SKEY").is_some());
+    assert!(login_tdf.get("KEY").is_some());
+    assert!(login_tdf.get("UID").is_some());
 
     // 2c. postAuth (Util 0x0009 :: 0x0008)
     let (post_hdr, post_tdf) = send_recv(&mut blaze_stream, 0x0009, 0x0008, 12, TdfStruct::new()).await;

@@ -1,7 +1,7 @@
 # FIFA 22 QoS / ProtoPing HTTP Reference
 
-**Document Version:** 1.0.0
-**Last Updated:** October 21, 2026
+**Document Version:** 1.2.0
+**Last Updated:** October 22, 2026
 **Status:** Authoritative reference for `crates/services-http-content` (the `/qos/*` and
 `/getPeerAddress` endpoints) and `crates/services-blaze` (the `QOSS` struct in the
 `Util::preAuth` reply)
@@ -113,7 +113,46 @@ Built by the client at `0x141FE94D0` from a base URL of the form
 %base%/qos/firetype
 ```
 
-with query parameters `?vers=`, `&qtyp=`, `&nint=`, `&rqsc=`, `&rqid=`.
+The three path formats and every query-parameter literal were read out of
+the string pool (file offsets in `FIFA22.exe`):
+
+| Endpoint | Path format | Offset |
+| :--- | :--- | :--- |
+| `/qos/qos` | `%s/qos/qos` | `0x7794760` |
+| `/qos/firewall` | `%s/qos/firewall` | `0x7794770` |
+| `/qos/firetype` | `%s/qos/firetype` | `0x7794788` |
+
+| Query parameter | Offset | Used by |
+| :--- | :--- | :--- |
+| `?vers=` | `0x7794754` | all three |
+| `&qtyp=` | `0x7794780` | `/qos/qos` — selects request type 1 or 2 |
+| `&nint=` | `0x7794798` | `/qos/firewall` — the interface count |
+| `&rqid=` | `0x77947A8` | `/qos/firetype` — the request id |
+| `&rqsc=` | `0x77947A0` | `/qos/firetype` — the request secret |
+| `&inip=` | `0x77946B8` | `/qos/firetype` — the client's own IP |
+| `&inpt=` | `0x77946B0` | `/qos/firetype` — the client's own port |
+
+So the requests look like:
+
+```
+%base%/qos/qos?vers=<v>&qtyp=<1|2>
+%base%/qos/firewall?vers=<v>&nint=<n>
+%base%/qos/firetype?vers=<v>&rqid=<id>&rqsc=<secret>&inip=<ip>&inpt=<port>
+```
+
+> ⚠️ **Correction (October 22, 2026).** An earlier draft of this document
+> listed only `?vers=`, `&qtyp=`, `&nint=`, `&rqsc=` and `&rqid=`, and
+> omitted `&inip=` and `&inpt=`. Both are present in the binary.
+>
+> The *order* of the parameters within a URL is not established — the
+> literals are appended to the path one at a time, and the order in which
+> the appends happen was not traced. The set is what is proven.
+
+`rqid`/`rqsc` are the request id and secret; the response carries the same
+two values back as `<requestid>` and `<reqsecret>`, and the client reads
+those two names from the response (offsets `0x77946E8` and `0x77946D8`).
+The client **rejects** a response whose `requestid` is zero
+(`0x141FE874D`), so a server must never answer with `0`.
 
 ### 3.2 The `getPeerAddress` response is not XML at all
 
@@ -131,12 +170,84 @@ names**:
 | `peerIP` | `0x144AA151D` |
 | `peerPort` | `0x144AA159C` |
 
-The client sends `getPeerAddress?myIP=<ip>&myPort=<port>&version=1.0` and
-expects the same `name=value` shape back. The IP fields here are parsed with a
-**dotted-quad** parser (`0x140C96010`) — unlike `qosip`, which is a decimal
-u32 (see §4).
+The client's request URL is built from the format string at file offset
+`0x79F6010`:
 
-The request also carries a `Cookie: sessionID=%s` header (`0x79F5FF0`).
+```
+http://%s:%d/getPeerAddress?myIP=%s&myPort=%d&version=1.0
+```
+
+Note the scheme: this URL is **plain `http`**, not `https`, and it is
+`host:port` — unlike the three `/qos/*` URLs, which go through the
+`"%s://%s:%u"` base and are therefore `https`.
+
+A second, longer variant of the query exists at file offset `0x79F5F28`:
+
+```
+myIP=%s&myPort=%d&version=1.0&status=%s&gameFeatureID=%s
+```
+
+and `&gameID=` at `0x79F6050` is appended to it. The client sends
+`Cookie: sessionID=%s` (`0x79F5FF0` and `0x79F6060`) and
+`Content-Type: application/x-www-form-urlencoded` (`0x79F6076`).
+
+The IP fields here are parsed with a **dotted-quad** parser (`0x140C96010`) —
+unlike `qosip`, which is a decimal u32 (see §4).
+
+> Note on the names: `sourceIP`, `sourcePort`, `tag` and `sendCount` appear
+> **twice** in the client's string pool — once as bare lookup names
+> (`0x79F5F68` `sourcePort`, `0x79F5FC0` `sendCount`, `0x79F5FB0`
+> `targetPort`, `0x79F5FD0` `peerPort`, `0x79F5FE0` `targetIP`, `0x79F6008`
+> `peerIP`) and once as `name=value` **request** format strings
+> (`0x79F5F78` `sourceIP=%s`, `0x79F5F85` `sourcePort=%d`, `0x79F5F94`
+> `tag=%s`, `0x79F5F9C` `sendCount=%d`). The bare `tag` and `sourceIP`
+> used as response lookup keys were confirmed by resolving the
+> RIP-relative references in the client's `getPeerAddress` parser
+> (`0x144AA092D` -> `tag`, and the six others in the table above).
+
+#### 3.2.1 Four of the request parameters arrive in the *body*
+
+The four `name=value` request format strings above are **not** part of
+either URL format the client builds (`0x79F6010` and `0x79F5F28`); those
+URLs carry only `myIP`, `myPort`, `version`, and optionally `status`,
+`gameFeatureID` and `gameID`. The client sends
+`Content-Type: application/x-www-form-urlencoded` (`0x79F6076`), so
+`sourceIP`, `sourcePort`, `tag` and `sendCount` arrive as an
+`application/x-www-form-urlencoded` **body**.
+
+**FACT.** The sink therefore reads request parameters from the query
+string *and* from the form body
+(`HttpRequest::form_pairs` / `HttpRequest::param` in
+`crates/services-http-content/src/lib.rs`). The body is only parsed as
+form data when the `Content-Type` says it is form data, so a
+`text/plain` body is never mis-parsed.
+
+This also means the method is **not** necessarily a GET for this
+endpoint: a request that carries a form body is a POST. The emulator
+answers both (§3.5).
+
+#### 3.2.2 What the response values mean
+
+| Field | Value the emulator sends | Why |
+| :--- | :--- | :--- |
+| `sourceIP` | echoed from `myIP` / `sourceIP` | The client's own address |
+| `sourcePort` | echoed from `myPort` / `sourcePort` | The client's own port |
+| `tag` | echoed from the request's `tag` | The client's correlation tag |
+| `sendCount` | echoed from the request's `sendCount` | The client's own counter |
+| `targetIP`, `peerIP` | `127.0.0.1` | The peer is the emulator itself |
+| `targetPort`, `peerPort` | `3659` | The ProtoTunnel relay port |
+
+**ASSUMPTION.** The *values* of `targetIP` / `targetPort` / `peerIP` /
+`peerPort` are not stated by the client. The emulator hosts *both*
+players, so the peer is the emulator; the address it must be reached at
+is the one the Blaze session already publishes for a player
+(`127.0.0.1:3659`, the ProtoTunnel relay that `crates/emulator-server`
+binds and that `services-blaze` reports as the session port).
+
+Note that this is **not** `QOS_UDP_PORT` (17498): that port carries the
+ProtoPing latency probes, not peer traffic. The two must not be
+conflated — the client learns 17498 from `/qos/qos` (§4) and 3659 from
+the Blaze session and from `/getPeerAddress`.
 
 ### 3.3 Which port the client connects to
 
@@ -174,7 +285,7 @@ recognised.
 > reached if that port happens to be one the shim already reroutes. This is a
 > candidate explanation for the client stalling before the QoS step completes.
 
-### 3.4 The ProtoHttp user agent
+### 3.4 The ProtoHttp user agent and request format
 
 The client stamps its HTTP requests with:
 
@@ -191,6 +302,129 @@ connection analysis shows the same format **without** the trailing
 The same cluster (`0x7575C2C`–`0x7575C9C`) holds the method names
 (`GET`, `POST`, `PUT`, `PATCH`, `HEAD`, `DELETE`, `OPTIONS`, `CONNECT`), the
 scheme strings `http` / `https`, and `HTTP/1.0`.
+
+#### 3.4.1 The request ProtoHttp actually puts on the wire
+
+The full request template lives in the same cluster (file offsets in
+`FIFA22.exe`):
+
+| Template | Offset |
+| :--- | :--- |
+| `%s %s%s HTTP/1.1` — the request line | `0x7575DC8` |
+| `Host: %s:%d` | `0x7575D98` |
+| `Accept: */*` | `0x7575D18` |
+| `User-Agent: %s` | `0x7575D50` |
+| `Content-Length: %qd` | `0x7575D68` |
+| `Connection: Close` | `0x7575D80` |
+
+Captured live from the client (`emulator_server.log`, the
+`/redirector/getServerInstance` request):
+
+```http
+POST /redirector/getServerInstance HTTP/1.1
+Host: spring18.gosredirector.ea.com:42230
+Content-Length: 707
+Connection: Close
+User-Agent: ProtoHttp 1.3/DS 15.1.7.0.3 (Windows)
+Content-Type: application/xml
+```
+
+So a QoS probe arrives as:
+
+```http
+GET /qos/qos?vers=..&qtyp=.. HTTP/1.1
+Host: qosapi:<port>
+Accept: */*
+Connection: Close
+User-Agent: ProtoHttp 1.3/DS 15.1.7.0.3 (Windows)
+```
+
+> ⚠️ The `Host` header is **not** the address the client connected to.
+> The client connects to a bare IP and sends `Host: qosapi:<port>`. A
+> server must therefore route on the **path**, never on `Host`.
+
+#### 3.4.2 What a ProtoHttp client needs back
+
+ProtoHttp is a plain HTTP/1.1 client. Its response parser only recognises
+these header names (file offsets `0x7575CC0`–`0x7575D08`):
+
+```
+connection   transfer-encoding   chunked   content-length   last-modified   location
+```
+
+So a response to a ProtoHttp client must:
+
+* be framed by an **exact `Content-Length`** — never chunked, and
+* **close the connection**, because the client sends `Connection: Close`.
+
+A response that is chunked, or that omits `Content-Length`, hangs the
+client waiting for a body that never arrives.
+
+#### 3.4.3 The HTTP method
+
+**FACT.** The client selects the method from a *string pool* at file
+offset `0x6DFBA50` (VA `0x146DFDC50`) holding, at 16-byte stride:
+
+```
+HEAD   GET   POST   PUT   DELETE   OPTIONS   PATCH   CONNECT
+```
+
+The pool is referenced from the ProtoHttp library itself
+(`0x140C739C5`), i.e. the method is chosen by an enum index stored on the
+request object, not by a literal in the QoS module. The QoS module
+contains **no** reference to the strings `GET` or `POST`.
+
+**FACT (independent corroboration).** The open-ds2 server analysis states
+the method explicitly:
+
+* `references/open-ds2-server/docs/03-main-executable-analysis.md` line 630:
+  `HTTP GET: /qos/qos, /qos/firetype, /qos/firewall`
+* `references/open-ds2-server/server/include/network/qos_server.hpp` line 21:
+  `GET /qos/qos?vers=<version>&qtyp=<type>`
+
+**ASSUMPTION.** The method for the FIFA 22 QoS probes is therefore taken to
+be **GET**, on the strength of the open-ds2 corroboration plus the fact
+that a query-only endpoint with no body is a GET in every other
+implementation. This was **not** proven from a disassembly of
+`FIFA22.exe`: the method index is set on the request object somewhere
+earlier in the call chain than the URL builder at `0x141FE94D0`, and that
+write was not located.
+
+Because the method was not proven, the emulator's handlers are
+**method-agnostic** — `/qos/qos`, `/qos/firewall`, `/qos/firetype` and
+`/getPeerAddress` answer `GET` and `POST` alike. The method therefore
+cannot be a source of failure.
+
+### 3.5 The endpoint contract
+
+What `crates/services-http-content` serves. `Content-Type` is the only
+header that differs between the endpoints; `Content-Length` is always the
+exact body length and the connection always closes.
+
+| Path | Method | Status | `Content-Type` | Body |
+| :--- | :--- | :--- | :--- | :--- |
+| `/qos/qos` | GET (POST also accepted) | `200 OK` | `application/xml` | `<qos>` with `qosip`, `qosport`, `numprobes`, `probesize`, `requestid`, `reqsecret` |
+| `/qos/firewall` | GET (POST also accepted) | `200 OK` | `application/xml` | `<firewall>` with `numinterfaces`, `ips/ips`, `ports/ports`, `requestid`, `reqsecret` |
+| `/qos/firetype` | GET (POST also accepted) | `200 OK` | `application/xml` | `<firetype>` with `firetype` |
+| `/getPeerAddress` | GET (POST also accepted) | `200 OK` | `text/plain` | `name=value` lines — **not** XML |
+
+Request parameters are read from the query string **and** from an
+`application/x-www-form-urlencoded` body (§3.2.1), so `rqid`, `rqsc`,
+`myIP`, `myPort`, `sourceIP`, `sourcePort`, `tag` and `sendCount` are
+honoured wherever the client puts them.
+
+**ASSUMPTION.** The `Content-Type` values are not read by the client: the
+QoS parser is a flat text scanner over the body (§2) and the
+`getPeerAddress` parser splits on `=` and CR/LF. The values are set
+because they describe the bodies correctly, not because the client
+demands them. `text/plain` for `/getPeerAddress` is the one that matters
+cosmetically — the body genuinely is not XML, and serving it as
+`application/xml` was a defect.
+
+**ASSUMPTION.** The `200 OK` status. The client treats a non-2xx
+ProtoHttp response as a transport error, so `200` is the only safe
+choice, but the exact status the retail QoS service returns was not
+observed.
 
 ---
 
@@ -372,9 +606,87 @@ matches what the retail binary's own registration routine asserts.
 | `QOS_NUM_PROBES` | `2` | The client requires ≥ 2 |
 | `QOS_PROBE_SIZE` | `1200` | The client requires non-zero |
 | `QOS_FIRETYPE` | `0` | The `firetype` value |
+| `PEER_RELAY_UDP_PORT` | `3659` | The ProtoTunnel relay's port (the peer address) |
+| `PEER_ADDRESS` | `127.0.0.1` | The peer address, in dotted-quad form |
+
+`QOS_UDP_PORT` is not a free choice: the emulator already binds a UDP
+socket on `:17498` for the ProtoPing responder
+(`crates/emulator-server/src/lib.rs`), and `QOS_IP_DECIMAL` is
+`127.0.0.1` — the address the client reaches the emulator on. The client
+dials exactly the `(ip, port)` pair this response advertises.
+
+`PEER_RELAY_UDP_PORT` is the same kind of constraint: the emulator binds
+the ProtoTunnel relay on `:3659`, and the Blaze session publishes the
+same port as the player's network address. It is the *peer* port, not
+the QoS probe port — see §3.2.2.
 
 `crates/services-blaze/src/util.rs` builds the `QOSS` struct with
 `qos_ping_site(address, port, site_name)`, which sets `PSA` / `PSP` / `SNA`.
+
+### 8.1 The request id and secret are echoed
+
+The client sends `rqid` and `rqsc` as query parameters (§3.1) and reads
+`<requestid>` and `<reqsecret>` back from the response. The emulator
+therefore echoes them:
+
+| Request | Response |
+| :--- | :--- |
+| `?rqid=42&rqsc=7` | `<requestid>42</requestid>` `<reqsecret>7</reqsecret>` |
+| *(absent)* | `<requestid>1</requestid>` `<reqsecret>0</reqsecret>` |
+| `?rqid=0` | `<requestid>1</requestid>` — **never zero** |
+
+The last row matters: the client aborts the QoS step with `-4` when
+`requestid` is zero (`0x141FE874D`), so a client that sends no id — or a
+zero one — must still be given a non-zero id.
+
+### 8.2 ProtoHttp user-agent handling
+
+`crates/services-http-content/src/protohttp.rs` parses the user agent and
+exposes it as `ProtoHttpUserAgent`:
+
+```rust
+let ua = req.proto_http_user_agent();   // Option<ProtoHttpUserAgent>
+```
+
+* `http_version` — the ProtoHttp library version (`1.3`).
+* `ds_version` — the DirtySDK version (`15.1.7.0.3`).
+* `platform` — the parenthesised token (`Some("Windows")`), optional.
+
+A request that carries a ProtoHttp user agent is answered with a
+ProtoHttp-shaped response (§3.4.2): an exact `Content-Length`, no chunked
+framing, and `Connection: Close`. The response also carries a
+`User-Agent` header of its own — **ASSUMPTION**: the client does not read
+a `User-Agent` *response* header, so this is cosmetic, and it exists only
+so the ProtoHttp path is visible on the wire.
+
+### 8.3 The sink speaks HTTP/1.1 only
+
+`crates/services-http-content` implements HTTP/1.1. The client offers
+`h2` in its ALPN extension, and the emulator's TLS acceptor advertises
+**no** ALPN protocol at all, so the offer is declined and ProtoHttp falls
+back to HTTP/1.1 — which the client accepts.
+
+`parse_http_request` detects the HTTP/2 connection preface
+(`PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n`) and refuses it, because the preface's
+first line would otherwise parse as an HTTP/1.1 request line (`PRI * HTTP/2.0`)
+and be silently mis-routed to the fast-path fallback. The transport logs
+the preface at `warn` level so it cannot pass unnoticed.
+
+### 8.4 What the sink logs
+
+Every request is logged at `info` with the full request line, the path
+*including* its query string, the `Host` header, the `User-Agent`, the
+`Content-Type`, whether the caller is ProtoHttp, and the ALPN (when the
+transport supplied it):
+
+```
+[HTTP Sink] request: GET /qos/qos?vers=1&qtyp=2 | host=qosapi:443 |
+  ua=ProtoHttp 1.3/DS 15.1.7.0.3 (Windows) | ctype=<none> | protohttp=true | alpn=<tls-layer>
+```
+
+An unmapped path is fast-pathed with `200 OK` and
+`{"status":"ok","code":0,"server_status":0}` so the client never stalls
+waiting for a response.
 
 ---
 
@@ -409,11 +721,30 @@ And three endpoints did not exist at all:
 * `/qos/firetype` — root element `firetype`, field `.firetype`.
 * `/getPeerAddress` — the `name=value` pair format described in §3.2.
 
+### 9.1 What the second pass fixed (October 22, 2026)
+
+| Defect | Consequence | Fix |
+| :--- | :--- | :--- |
+| `/getPeerAddress` was served as `application/xml` | The body is `name=value` lines, not XML | Served as `text/plain` |
+| `requestid` was the constant `1` | The client's own `rqid` was ignored | `rqid`/`rqsc` are echoed; the constant is only the fallback |
+| The ProtoHttp user agent was not recognised | A ProtoHttp client got the generic response shape | `ProtoHttpUserAgent` parsing; ProtoHttp requests get `Connection: Close` and an exact `Content-Length` |
+| The request line, `Host` and `User-Agent` were not logged | An unmapped endpoint logged only `Fast-pathing unmapped endpoint: /genericEvents` | Every request is logged at `info` with the full request line, path + query, `Host`, `User-Agent`, `Content-Type`, the ProtoHttp flag and the ALPN |
+| The HTTP/2 connection preface was parsed as a request line | An h2 connection was silently fast-pathed and answered with HTTP/1.1 | The preface is detected and refused; the transport logs it at `warn` |
+
+### 9.2 What the third pass fixed (October 22, 2026)
+
+| Defect | Consequence | Fix |
+| :--- | :--- | :--- |
+| Only the query string was read for request parameters | `sourceIP`, `sourcePort`, `tag` and `sendCount` — which the client sends in an `application/x-www-form-urlencoded` **body** (§3.2.1) — were silently ignored | `HttpRequest::form_pairs` / `HttpRequest::param` read the body as well; a body is only parsed as form data when the `Content-Type` says so |
+| The `getPeerAddress` response hard-coded `tag=emulator` and `sendCount=1` | The client's own correlation values did not survive the round trip | Both are echoed from the request |
+| The `getPeerAddress` peer address pointed at the **QoS** port (17498) | 17498 is the ProtoPing responder; peer traffic goes over the ProtoTunnel relay | The peer address is now `127.0.0.1:3659`, the relay port the emulator binds and the Blaze session publishes (§3.2.2) |
+| The QoS request id was read from the query string only | A client that puts `rqid` in a form body lost its correlation | `rqid`/`rqsc` are read through `HttpRequest::param` |
+
 ---
 
 ## 10. Verification
 
-`crates/services-http-content` pins this document with 15 unit tests, and
+`crates/services-http-content` pins this document with 38 unit tests, and
 `crates/services-blaze` with 4 more:
 
 ```bash
@@ -427,6 +758,27 @@ reconstructs the four bytes the client would build from `qosip` and asserts
 they are `[127, 0, 0, 1]`, and
 `test_firewall_ip_and_port_lists_have_matching_lengths` asserts the
 `.ips.ips` / `.ports.ports` pairing the client requires.
+
+The ProtoHttp and request-shape facts are pinned the same way:
+
+| Test | Asserts |
+| :--- | :--- |
+| `test_proto_http_user_agent_is_recognised` | The live user agent parses into `1.3` / `15.1.7.0.3` / `Windows` |
+| `test_proto_http_requests_get_a_proto_http_shaped_response` | Exact `Content-Length`, `Connection: Close`, no `Transfer-Encoding` |
+| `test_non_proto_http_user_agent_is_not_recognised` | A browser user agent is not mistaken for ProtoHttp |
+| `test_host_header_does_not_affect_routing` | `Host: accounts.ea.com` still reaches `/qos/qos` |
+| `test_qos_endpoints_accept_both_get_and_post` | Every QoS path answers `GET` and `POST` |
+| `test_qos_response_echoes_the_client_request_id` | `rqid`/`rqsc` come back as `requestid`/`reqsecret` |
+| `test_qos_request_id_is_never_zero` | `requestid` is never `0`, even for `?rqid=0` |
+| `test_get_peer_address_is_served_as_text_plain` | The `name=value` body is not served as XML |
+| `test_get_peer_address_carries_every_name_the_client_looks_up` | All seven lookup names are present |
+| `test_get_peer_address_echoes_the_requested_address` | `sourceIP`/`sourcePort` echo the request; the peer is `127.0.0.1` |
+| `test_get_peer_address_reads_the_form_body` | `sourceIP`/`sourcePort`/`tag`/`sendCount` are read from the form body and echoed |
+| `test_a_non_form_body_is_not_parsed_as_form_data` | A `text/plain` body is never mis-parsed as form data |
+| `test_the_advertised_peer_port_is_a_port_the_emulator_binds` | The peer port is `3659`, the relay the emulator binds |
+| `test_the_advertised_qos_port_is_the_port_the_emulator_binds` | `qosport` is `17498` |
+| `test_no_response_points_at_a_real_ea_host` | No response body contains an EA URL or hostname |
+| `test_http2_preface_is_detected_and_not_parsed_as_http11` | The h2 preface is never mis-routed |
 
 Offline validation against the client's own parsing rules is done with
 `tools/qos_dom_model.py`:

@@ -74,6 +74,14 @@ static bool ShouldRerouteHost(std::string_view host) {
             host.ends_with(".ea.com") || host.ends_with(".ea.net") || host.ends_with(".dice.se")) {
             return true;
         }
+
+        // The authentic EA preAuth CONF advertises this one non-EA host
+        // ("xboxOneStringValidationUri" = client-strings.xboxlive.com).
+        // Reroute it too: the emulator must never let the game reach the
+        // real internet.
+        if (host.ends_with(".xboxlive.com") || host.find("xbl.") != std::string_view::npos) {
+            return true;
+        }
     }
 
     return false;
@@ -136,6 +144,16 @@ static int WSAAPI Hooked_getaddrinfo(
         return res;
     }
 
+    // Not rerouted: the real resolver runs. Log it anyway, because a name
+    // that resolves to something other than the emulator (a LAN address, a
+    // real EA host) is exactly what we need to see when diagnosing a
+    // connection that the game opens to a bare IP.
+    if (GetConfig().log_sockets) {
+        std::ostringstream ss;
+        ss << "[WinSock] getaddrinfo(\"" << query_host << "\") -> passthrough to the real resolver";
+        LogInfo(ss.str());
+    }
+
     return g_orig_getaddrinfo(pNodeName, pServiceName, pHints, ppResult);
 }
 
@@ -188,6 +206,16 @@ static int WSAAPI Hooked_GetAddrInfoW(
         }
     }
 
+    // Not rerouted: the real resolver runs. Log the name so a lookup that
+    // lands on something other than the emulator is visible in the log.
+    if (GetConfig().log_sockets) {
+        char narrow_buf[256];
+        WideCharToMultiByte(CP_UTF8, 0, pNodeName ? pNodeName : L"", -1, narrow_buf, sizeof(narrow_buf), nullptr, nullptr);
+        std::ostringstream ss;
+        ss << "[WinSock] GetAddrInfoW(\"" << narrow_buf << "\") -> passthrough to the real resolver";
+        LogInfo(ss.str());
+    }
+
     return g_orig_GetAddrInfoW(pNodeName, pServiceName, pHints, ppResult);
 }
 
@@ -196,6 +224,13 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
     if (!name || !out_addr || !out_len) {
         return false;
     }
+
+    // A module that carries its own copy of EA's root-CA table (the web /
+    // HTTP-2 stack in `EAWebKit.dll`) may have been loaded since the shim
+    // started.  Its copy has to be patched *before* the TLS handshake that
+    // follows this connect, otherwise the client's certificate validation
+    // fails with `certificate_unknown`.
+    EnsureCaTablePatched();
 
     const auto& cfg = GetConfig();
 

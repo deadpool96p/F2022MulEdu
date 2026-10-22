@@ -3,10 +3,35 @@
 
 use std::sync::Arc;
 use std::path::Path;
-use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, SanType};
+use rcgen::{
+    BasicConstraints, CertificateParams, CertificateRevocationListParams, CrlDistributionPoint,
+    DnType, IsCa, KeyIdMethod, KeyPair, KeyUsagePurpose, SanType, SerialNumber,
+};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use time::{Duration, OffsetDateTime};
 use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
+
+/// The port the certificate revocation list is published on.
+///
+/// The CRL has to be reachable over **plain HTTP**: a `https://` distribution
+/// point would make Windows fetch the CRL over TLS, and that TLS fetch would
+/// itself need a revocation check -- which is the very thing that is missing.
+/// A loopback HTTP port breaks the recursion.
+pub const CRL_PORT: u16 = 8099;
+
+/// The CRL distribution point that is baked into the leaf certificate.
+///
+/// Windows' revocation engine (crypt32) reads the `crlDistributionPoints`
+/// extension of the leaf and fetches the CRL from this URL. Without it the
+/// chain has no revocation information at all, and a strict TLS client --
+/// WinHTTP, which is what FIFA 22's HTTP/2 stack is -- refuses the
+/// handshake with `CRYPT_E_NO_REVOCATION_CHECK` (0x80092012) even though
+/// the chain itself is perfectly valid and trusted.
+pub const CRL_DISTRIBUTION_POINT_URL: &str = "http://127.0.0.1:8099/f22_ca.crl";
+
+/// The file the DER-encoded CRL is written to.
+pub const CRL_FILE_NAME: &str = "f22_ca.crl";
 
 /// Helper to extract the 256-byte RSA-2048 modulus from an X.509 certificate DER.
 pub fn extract_rsa_2048_modulus(cert_der: &[u8]) -> Option<[u8; 256]> {
@@ -123,16 +148,36 @@ pub fn format_fingerprint(hash: &[u8; 32]) -> String {
         .join(":")
 }
 
-/// Generates fresh persistent RSA-2048 DigiCert Root CA and Server certificates,
-/// saving them to disk and returning (server_der, ca_der, server_key_der).
-pub fn generate_and_save_certs(
+/// The artefacts a generated certificate chain consists of.
+pub struct ChainArtifacts {
+    /// The leaf (server) certificate, DER.
+    pub leaf_der: Vec<u8>,
+    /// The root CA certificate, DER.
+    pub ca_der: Vec<u8>,
+    /// The leaf's private key, PKCS#8 DER.
+    pub leaf_key_der: Vec<u8>,
+    /// The revocation list the leaf points at, DER.
+    pub crl_der: Vec<u8>,
+    /// The root CA's RSA modulus, 256 bytes big endian.
+    pub ca_modulus: [u8; 256],
+}
+
+/// Generates a fresh RSA-2048 root CA, a leaf certificate signed by it and a
+/// revocation list, and writes all of them into `dir`.
+///
+/// Nothing outside `dir` is written, so a test can generate a chain into a
+/// temporary directory without disturbing the certificates the running
+/// emulator serves.
+pub fn generate_chain(
+    dir: &Path,
     custom_cn: Option<&str>,
-) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), Box<dyn std::error::Error + Send + Sync>> {
-    let ca_cert_path = Path::new("f22_ca.crt");
-    let ca_key_path = Path::new("f22_ca.key");
-    let leaf_cert_path = Path::new("f22_server.crt");
-    let leaf_key_path = Path::new("f22_server.key");
-    let modulus_path = Path::new("f22_ca_modulus.bin");
+) -> Result<ChainArtifacts, Box<dyn std::error::Error + Send + Sync>> {
+    let ca_cert_path = dir.join("f22_ca.crt");
+    let ca_key_path = dir.join("f22_ca.key");
+    let leaf_cert_path = dir.join("f22_server.crt");
+    let leaf_key_path = dir.join("f22_server.key");
+    let modulus_path = dir.join("f22_ca_modulus.bin");
+    let crl_path = dir.join(CRL_FILE_NAME);
 
     tracing::info!("[TLS] Generating fresh persistent RSA 2048 DigiCert Root CA and Server certificate");
 
@@ -148,6 +193,14 @@ pub fn generate_and_save_certs(
     ca_params.not_before = rcgen::date_time_ymd(2006, 11, 10);
     ca_params.not_after = rcgen::date_time_ymd(2031, 11, 10);
     ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    // The real DigiCert Global Root CA carries `keyCertSign` and `cRLSign`.
+    // Ours has to carry them too: `cRLSign` is what authorises this CA to
+    // issue the revocation list that the leaf points at, and rcgen refuses
+    // to sign a CRL with a CA whose key usages do not include it.
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    // Writes the `authorityKeyIdentifier` extension, which is what lets a
+    // verifier bind a CRL to this CA by key id instead of by name alone.
+    ca_params.use_authority_key_identifier_extension = true;
     ca_params.distinguished_name.push(DnType::CommonName, "DigiCert Global Root CA");
     ca_params.distinguished_name.push(DnType::OrganizationName, "DigiCert Inc");
     ca_params.distinguished_name.push(DnType::OrganizationalUnitName, "www.digicert.com");
@@ -171,15 +224,11 @@ pub fn generate_and_save_certs(
         modulus[256 - modulus_be.len()..].copy_from_slice(&modulus_be);
     }
 
-    let _ = std::fs::write(modulus_path, &modulus);
-    tracing::info!("[TLS] Exported 256-byte Root CA RSA modulus to f22_ca_modulus.bin");
-
-    // Also copy to game directory if present
-    let game_modulus_path = Path::new(r"G:\Games\FIFA 22\f22_ca_modulus.bin");
-    if game_modulus_path.parent().map(|p| p.exists()).unwrap_or(false) {
-        let _ = std::fs::write(game_modulus_path, &modulus);
-        tracing::info!("[TLS] Deployed f22_ca_modulus.bin directly to G:\\Games\\FIFA 22\\");
-    }
+    let _ = std::fs::write(&modulus_path, &modulus);
+    tracing::info!(
+        "[TLS] Exported 256-byte Root CA RSA modulus to {}",
+        modulus_path.display()
+    );
 
     // 2. Leaf certificate signed by the DigiCert Root CA
     let cn = custom_cn.unwrap_or("gosredirector.ea.com");
@@ -203,12 +252,30 @@ pub fn generate_and_save_certs(
         SanType::DnsName("freeform-river.data.ea.com".try_into()?),
         SanType::DnsName("rl.data.ea.com".try_into()?),
         SanType::DnsName("localhost".try_into()?),
+        // The QoS service is advertised to the client under its real EA host
+        // names (see `services_blaze::util::QOSS`). The client turns that host
+        // into the TLS SNI, so the leaf has to cover the whole `gos.ea.com`
+        // zone or the handshake fails on name mismatch.
+        SanType::DnsName("*.gos.ea.com".try_into()?),
+        SanType::DnsName("qos-prod-bio-dub-common-common.gos.ea.com".try_into()?),
+        SanType::DnsName("qos-prod-bio-iad-common-common.gos.ea.com".try_into()?),
+        SanType::DnsName("qos-prod-bio-sjc-common-common.gos.ea.com".try_into()?),
+        SanType::DnsName("qos-prod-bio-syd-common-common.gos.ea.com".try_into()?),
+        SanType::DnsName("qos-prod-m3d-brz-common-common.gos.ea.com".try_into()?),
+        SanType::DnsName("qos-prod-m3d-nrt-common-common.gos.ea.com".try_into()?),
         SanType::IpAddress("127.0.0.1".parse()?),
         SanType::IpAddress("26.178.140.32".parse()?),
     ];
     // Remove duplicate SANs
     sans.dedup();
     leaf_params.subject_alt_names = sans;
+
+    // Tell the verifier where to find this certificate's revocation status.
+    // Without this extension Windows has nothing to check and a strict TLS
+    // client rejects the chain with `CRYPT_E_NO_REVOCATION_CHECK`.
+    leaf_params.crl_distribution_points = vec![CrlDistributionPoint {
+        uris: vec![CRL_DISTRIBUTION_POINT_URL.to_string()],
+    }];
 
     let leaf_rsa = RsaPrivateKey::new(&mut rng, 2048)?;
     let leaf_rsa_der = leaf_rsa.to_pkcs8_der()?;
@@ -217,19 +284,83 @@ pub fn generate_and_save_certs(
     let leaf_der = leaf_cert.der().to_vec();
     let leaf_key_der = leaf_key_pair.serialize_der();
 
-    let _ = std::fs::write(ca_cert_path, &ca_der);
-    let _ = std::fs::write(ca_key_path, &ca_key_der);
-    let _ = std::fs::write(leaf_cert_path, &leaf_der);
-    let _ = std::fs::write(leaf_key_path, &leaf_key_der);
+    // The revocation list the leaf points at. It revokes nothing: it exists
+    // so that a strict TLS client has something to fetch and can conclude
+    // that the leaf is good.
+    let crl_der = build_crl(&ca_cert, &ca_key_pair)?;
+    let _ = std::fs::write(&crl_path, &crl_der);
+    tracing::info!(
+        "[TLS] Published an empty CRL ({} bytes) at {}",
+        crl_der.len(),
+        CRL_DISTRIBUTION_POINT_URL
+    );
+
+    let _ = std::fs::write(&ca_cert_path, &ca_der);
+    let _ = std::fs::write(&ca_key_path, &ca_key_der);
+    let _ = std::fs::write(&leaf_cert_path, &leaf_der);
+    let _ = std::fs::write(&leaf_key_path, &leaf_key_der);
 
     // Also write PEM formats
-    let _ = std::fs::write("f22_ca.pem", ca_cert.pem());
-    let _ = std::fs::write("f22_server.pem", leaf_cert.pem());
+    let _ = std::fs::write(dir.join("f22_ca.pem"), ca_cert.pem());
+    let _ = std::fs::write(dir.join("f22_server.pem"), leaf_cert.pem());
+
+    Ok(ChainArtifacts {
+        leaf_der,
+        ca_der,
+        leaf_key_der,
+        crl_der,
+        ca_modulus: modulus,
+    })
+}
+
+/// Generates fresh persistent RSA-2048 DigiCert Root CA and Server certificates,
+/// saving them to disk and returning (server_der, ca_der, server_key_der).
+pub fn generate_and_save_certs(
+    custom_cn: Option<&str>,
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), Box<dyn std::error::Error + Send + Sync>> {
+    let artifacts = generate_chain(Path::new("."), custom_cn)?;
+
+    // Also copy the modulus to the game directory if it is there.
+    let game_modulus_path = Path::new(r"G:\Games\FIFA 22\f22_ca_modulus.bin");
+    if game_modulus_path.parent().map(|p| p.exists()).unwrap_or(false) {
+        let _ = std::fs::write(game_modulus_path, &artifacts.ca_modulus);
+        tracing::info!("[TLS] Deployed f22_ca_modulus.bin directly to G:\\Games\\FIFA 22\\");
+    }
 
     // Install Root CA into Windows Certificate Store
-    install_cert_into_windows_root(ca_cert_path);
+    install_cert_into_windows_root(Path::new("f22_ca.crt"));
 
-    Ok((leaf_der, ca_der, leaf_key_der))
+    Ok((artifacts.leaf_der, artifacts.ca_der, artifacts.leaf_key_der))
+}
+
+/// Builds the DER-encoded certificate revocation list for the emulator's CA.
+///
+/// The list is intentionally empty -- nothing is revoked -- but it is
+/// *signed by the CA*, carries the CA's `authorityKeyIdentifier` and a CRL
+/// number, exactly like a real CA's list. Windows matches the fetched CRL
+/// against the issuer of the certificate it is validating; a list that is
+/// not signed by that issuer is ignored and the chain stays unverifiable.
+pub fn build_crl(
+    ca_cert: &rcgen::Certificate,
+    ca_key_pair: &KeyPair,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    let now = OffsetDateTime::now_utc();
+    let crl = CertificateRevocationListParams {
+        this_update: now,
+        next_update: now + Duration::days(365),
+        crl_number: SerialNumber::from(1),
+        issuing_distribution_point: None,
+        revoked_certs: Vec::new(),
+        key_identifier_method: KeyIdMethod::Sha256,
+    }
+    .signed_by(ca_cert, ca_key_pair)?;
+
+    Ok(crl.der().to_vec())
+}
+
+/// Reads the persisted CRL from disk, if it is there.
+pub fn load_crl() -> Option<Vec<u8>> {
+    std::fs::read(Path::new(CRL_FILE_NAME)).ok()
 }
 
 /// CLI subcommand implementation to regenerate f22_server.crt/f22_ca.crt with configurable CN
@@ -271,6 +402,11 @@ pub fn create_self_signed_tls_acceptor() -> Result<TlsAcceptor, Box<dyn std::err
         && leaf_cert_path.exists()
         && leaf_key_path.exists()
         && modulus_path.exists()
+        // A chain that was issued before the revocation list existed has no
+        // `crlDistributionPoints` extension, so a strict TLS client has
+        // nothing to check and rejects it. The presence of the CRL file is
+        // the marker that the chain on disk carries the distribution point.
+        && Path::new(CRL_FILE_NAME).exists()
     {
         tracing::info!("[TLS] Loading existing RSA 2048 certificate chain from disk");
         (
@@ -281,6 +417,18 @@ pub fn create_self_signed_tls_acceptor() -> Result<TlsAcceptor, Box<dyn std::err
     } else {
         generate_and_save_certs(None)?
     };
+
+    // The chain on disk is only trusted by the game if our root CA is in the
+    // Windows trusted-root store. The game's DirtySDK ProtoSSL stack is
+    // handled by patching the DigiCert root's RSA modulus (see the shim's
+    // `f22_ca_modulus.bin` mechanism), but a *Windows* TLS client -- which
+    // is what FIFA 22's HTTP/2 stack is -- validates against the store and
+    // rejects our leaf with `UntrustedRoot` otherwise.
+    //
+    // This must run on the "load existing" path too: the certificates
+    // persist across restarts, so the install would otherwise only ever
+    // happen on the very first run.
+    install_cert_into_windows_root(ca_cert_path);
 
     let cert_chain = vec![
         CertificateDer::from(leaf_der_bytes),
@@ -295,14 +443,77 @@ pub fn create_self_signed_tls_acceptor() -> Result<TlsAcceptor, Box<dyn std::err
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
 
+/// Installs the emulator's root CA into the current user's Windows
+/// certificate stores so that Windows TLS clients trust it.
+///
+/// This is **opt-in**, because it changes the machine's trust configuration:
+/// set `F22_TRUST_CA=1` in the environment before starting the emulator.
+/// The certificate is
+///
+/// ```text
+/// CN=DigiCert Global Root CA, OU=www.digicert.com, O=DigiCert Inc, C=US
+/// ```
+///
+/// and it is written to `Cert:\CurrentUser\Root` (plus `CA` and
+/// `TrustedPublisher`), user scope only, so no elevation is required.
+/// Remove it again with:
+///
+/// ```text
+/// certutil -user -delstore Root "DigiCert Global Root CA"
+/// ```
+///
+/// The game itself does not need this: FIFA 22 validates the emulator's
+/// certificate against the root table that is compiled into its own modules
+/// (`FIFA22.exe`, `EAWebKit.dll`), which the shim patches in-process
+/// (`shim/src/cert_bypass.cpp`).  The store matters only for a stock
+/// Windows TLS client -- `curl.exe`, for instance -- that has to talk to
+/// the emulator's HTTPS sink.
+///
+/// `Root` is the store that decides whether a leaf certificate validates: it
+/// is the "trusted root" store, and a self-signed CA is only a *root* there.
+/// The `CA` store holds *intermediate* authorities, and a certificate sitting
+/// in it is not trusted as a root -- a Windows TLS client still reports
+/// `UntrustedRoot` for it.
 fn install_cert_into_windows_root(cert_path: &Path) {
-    if let Some(path_str) = cert_path.to_str() {
-        let _ = std::process::Command::new("certutil")
-            .args(["-user", "-f", "-addstore", "CA", path_str])
-            .output();
-        let _ = std::process::Command::new("certutil")
-            .args(["-user", "-f", "-addstore", "TrustedPublisher", path_str])
-            .output();
+    let enabled = std::env::var("F22_TRUST_CA")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false);
+
+    if !enabled {
+        tracing::info!(
+            "[TLS] Not installing the root CA into the Windows certificate store \
+             (set F22_TRUST_CA=1 to enable it for stock Windows TLS clients)"
+        );
+        return;
+    }
+
+    let Some(path_str) = cert_path.to_str() else {
+        tracing::warn!("[TLS] CA path is not valid UTF-8; not installing into the Windows store");
+        return;
+    };
+
+    for store in ["Root", "CA", "TrustedPublisher"] {
+        match std::process::Command::new("certutil")
+            .args(["-user", "-f", "-addstore", store, path_str])
+            .output()
+        {
+            Ok(out) if out.status.success() => {
+                tracing::info!(
+                    "[TLS] Installed root CA into the Windows store '{}' (user scope)",
+                    store
+                );
+            }
+            Ok(out) => {
+                tracing::warn!(
+                    "[TLS] certutil -addstore {} failed: {}",
+                    store,
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+            Err(e) => {
+                tracing::warn!("[TLS] Could not run certutil for store '{}': {}", store, e);
+            }
+        }
     }
 }
 

@@ -3,7 +3,9 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
-use services_http_content::{parse_http_request, route_http_request, HttpResponse};
+use services_http_content::{
+    is_http2_preface, parse_http_request, route_http_request, HttpResponse,
+};
 use services_redirector::{handle_redirector_packet, RedirectorConfig};
 use blaze_core::frame::BlazeHeader;
 use blaze_core::BlazePacket;
@@ -16,6 +18,7 @@ pub async fn run_telemetry_server(listener: TcpListener, tls_acceptor: TlsAccept
         host: "127.0.0.1".to_string(),
         port: 42128,
         secure: false,
+        ..Default::default()
     };
 
     while let Ok((tcp_stream, peer_addr)) = listener.accept().await {
@@ -56,10 +59,36 @@ pub async fn run_telemetry_server(listener: TcpListener, tls_acceptor: TlsAccept
                         // Standard HTTP Telemetry / River request
                         let resp = match parse_http_request(&buffer[..n]) {
                             Some(req) => {
-                                tracing::debug!("[Telemetry:443] HTTP {} {}", req.method, req.path);
+                                tracing::debug!("[Telemetry:443] HTTP {} {} from {}", req.method, req.path, peer_addr);
                                 route_http_request(&req)
                             }
-                            None => HttpResponse::ok_json(r#"{"status":"ok"}"#),
+                            None => {
+                                // The sink speaks HTTP/1.1 only.  An HTTP/2
+                                // connection preface, or a request that
+                                // arrived split across TCP segments, must be
+                                // visible in the log rather than silently
+                                // fast-pathed.
+                                let first_line = String::from_utf8_lossy(&buffer[..n])
+                                    .lines()
+                                    .next()
+                                    .unwrap_or("<empty>")
+                                    .to_string();
+                                if is_http2_preface(&buffer[..n]) {
+                                    tracing::warn!(
+                                        "[Telemetry:443] HTTP/2 connection preface from {} ({:?}) — the sink is HTTP/1.1 only; \
+                                         the TLS acceptor must not select the `h2` ALPN protocol",
+                                        peer_addr,
+                                        first_line
+                                    );
+                                } else {
+                                    tracing::warn!(
+                                        "[Telemetry:443] Unparsed HTTP request from {}: {:?}",
+                                        peer_addr,
+                                        first_line
+                                    );
+                                }
+                                HttpResponse::ok_json(r#"{"status":"ok"}"#)
+                            }
                         };
                         let _ = stream.write_all(&resp.to_bytes()).await;
                         let _ = stream.flush().await;

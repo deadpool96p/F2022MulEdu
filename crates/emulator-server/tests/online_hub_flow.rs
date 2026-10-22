@@ -86,6 +86,7 @@ async fn test_full_online_hub_two_player_flow() {
         host: "127.0.0.1".to_string(),
         port: blaze_port,
         secure: false,
+        ..Default::default()
     };
     tokio::spawn(run_redirector_server(
         redir_listener,
@@ -164,13 +165,18 @@ async fn test_full_online_hub_two_player_flow() {
         send_and_recv_blaze(&mut c1_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
     assert_eq!(c1_pre_auth.header.command, 0x0007);
 
-    // expressLogin
+    // createWalUserSession
     let mut c1_login_tdf = TdfStruct::new();
     c1_login_tdf.set("DSNM", TdfValue::String("FifaPro_1".to_string()));
     let (c1_login_resp, _) =
-        send_and_recv_blaze(&mut c1_stream, 0x0001, 0x001C, 2, c1_login_tdf).await;
+        send_and_recv_blaze(&mut c1_stream, 0x0001, 0x00E6, 2, c1_login_tdf).await;
+    // `createWalUserSession` carries the display name in `PDTL.DSNM`.
+    let c1_persona = match c1_login_resp.payload.get("PDTL") {
+        Some(TdfValue::Struct(s)) => s,
+        other => panic!("createWalUserSession must carry PDTL, got {:?}", other),
+    };
     assert_eq!(
-        c1_login_resp.payload.get("DSNM"),
+        c1_persona.get("DSNM"),
         Some(&TdfValue::String("FifaPro_1".to_string()))
     );
 
@@ -202,13 +208,18 @@ async fn test_full_online_hub_two_player_flow() {
     // preAuth
     send_and_recv_blaze(&mut c2_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
 
-    // login
+    // createWalUserSession
     let mut c2_login_tdf = TdfStruct::new();
     c2_login_tdf.set("DSNM", TdfValue::String("FifaPro_2".to_string()));
     let (c2_login_resp, _) =
-        send_and_recv_blaze(&mut c2_stream, 0x0001, 0x0028, 2, c2_login_tdf).await;
+        send_and_recv_blaze(&mut c2_stream, 0x0001, 0x00E6, 2, c2_login_tdf).await;
+    // `createWalUserSession` carries the display name in `PDTL.DSNM`.
+    let c2_persona = match c2_login_resp.payload.get("PDTL") {
+        Some(TdfValue::Struct(s)) => s,
+        other => panic!("createWalUserSession must carry PDTL, got {:?}", other),
+    };
     assert_eq!(
-        c2_login_resp.payload.get("DSNM"),
+        c2_persona.get("DSNM"),
         Some(&TdfValue::String("FifaPro_2".to_string()))
     );
 

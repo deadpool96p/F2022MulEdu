@@ -125,7 +125,7 @@ async fn test_matchready_response_emitted_before_state_131() {
 
     let mut p1_login = TdfStruct::new();
     p1_login.set("DSNM", TdfValue::String("HostMatchReadyTester".to_string()));
-    send_blaze_req(&mut p1_stream, 0x0001, 0x001C, 2, p1_login).await; // login
+    send_blaze_req(&mut p1_stream, 0x0001, 0x00E6, 2, p1_login).await; // login
     let _ = read_blaze_packet(&mut p1_stream).await;
     let _ = read_blaze_packet(&mut p1_stream).await; // NotifyUserAdded
 
@@ -136,7 +136,7 @@ async fn test_matchready_response_emitted_before_state_131() {
 
     let mut p2_login = TdfStruct::new();
     p2_login.set("DSNM", TdfValue::String("GuestMatchReadyTester".to_string()));
-    send_blaze_req(&mut p2_stream, 0x0001, 0x001C, 2, p2_login).await; // login
+    send_blaze_req(&mut p2_stream, 0x0001, 0x00E6, 2, p2_login).await; // login
     let _ = read_blaze_packet(&mut p2_stream).await;
     let _ = read_blaze_packet(&mut p2_stream).await; // NotifyUserAdded
 

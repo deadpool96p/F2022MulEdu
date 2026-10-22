@@ -704,10 +704,33 @@ Three details in that structure are easy to get wrong, and each one was:
 `map<string, string>`. Both authentic replies decode as `CONF (struct)`
 containing `CONF (map)`. The emulator used to send a bare map.
 
-**`QOSS` is a struct of its own**, holding `BWPS` (a `QosPingSiteInfo`),
-`LNP`, `LTPS` (a map of alias → `QosPingSiteInfo`) and `SVID`. Each
-`QosPingSiteInfo` carries `PSA` (address), `PSP` (port) and `SNA` (site
-name).
+**The `CONF` map carries EA's own host names, verbatim.** The emulator used
+to rewrite every service to `127.0.0.1` (`nucleusConnect`,
+`nucleusConnectTrusted`, `nucleusPortal`, `nucleusProxy`,
+`bytevaultHostname`). That is wrong: a URL whose host is an IP literal makes
+the client send a TLS `server_name` extension with a zero-length host name,
+which rustls 0.23 rejects with `InvalidMessage(IllegalEmptyValue)`, so the
+handshake dies before any HTTP request is made. EA advertises host names, so
+the emulator does too (`https://accounts.ea.com`,
+`https://accounts2s.ea.com`, `https://signin.ea.com`,
+`https://gateway.ea.com`, `bytevault.gameservices.ea.com`). The names stay
+local because the shim's `getaddrinfo` hook (`shim/src/hooks_winsock.cpp`,
+`ShouldRerouteHost`) rewrites every `.ea.com` / `.ea.net` / `.dice.se` /
+`.xboxlive.com` name to the emulator host, and the emulator's certificate
+already carries `*.ea.com` and `*.ea.net` SANs.
+
+**`QOSS` is a struct of its own.** In Blaze 15 it holds `BWPS` (a
+`QosPingSiteInfo`), `LNP`, `LTPS` (a map of alias → `QosPingSiteInfo`) and
+`TIME`. Each `QosPingSiteInfo` carries exactly `PSA` (address) and `PSP`
+(port).
+
+The open-source Skate3 TDF models (`references/Skate3BlazeServer/.../Util/Models/QosConfigInfo.cs`
+and `QosPingSiteInfo.cs`) reconstruct the *older* Blaze 2/3 schema, whose
+`QosConfigInfo` has `SVID` and whose `QosPingSiteInfo` has `SNA`. Neither
+the 15.1.1.4.6 nor the 18.3.0 authentic reply carries either tag. A member
+tag the client's schema does not know is fatal to EA's TDF decoder
+(`BLAZE_ERR_TDF_TAG_NOT_FOUND`), so the emulator sends the Blaze 15 member
+set, not the older one.
 
 **Members are emitted in alphabetical tag order.** The authentic replies are
 sorted (`ASRC`, `CIDS`, `CLID`, `CONF`, …). The Rust `TdfStruct` is a
@@ -716,8 +739,8 @@ sorted (`ASRC`, `CIDS`, `CLID`, `CONF`, …). The Rust `TdfStruct` is a
 The fixtures are in `crates/services-blaze/tests/fixtures/`, and
 `crates/services-blaze/tests/preauth_matches_ea.rs` asserts that the
 emulator's reply carries exactly the fourteen members above, that its `CONF`
-has EA's shape, and that its `QOSS` points at the emulator's own responder
-rather than at a real EA host.
+has EA's shape and EA's host names, and that its `QOSS` points at the
+emulator's own responder.
 
 **`Util::PreAuthRequest`**: `clientVersion`, `clientType`, `locale`,
 `platformId`, `productId`, `blazeVersion`, `clientBuild`, `macAddress`

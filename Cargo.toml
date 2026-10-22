@@ -9,12 +9,23 @@ members = [
     "crates/services-qos-relay",
     "crates/emulator-server",
 ]
+# `third_party/rustls-0.23.46` is a patched copy of the crates.io release.
+# It is a path dependency (see `[patch.crates-io]` below), not a member.
+exclude = ["third_party/rustls-0.23.46"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 authors = ["FIFA 22 Multiplayer Emulator Project"]
 license = "MIT OR Apache-2.0"
+
+# rustls 0.23.46 rejects a ClientHello whose `server_name` extension
+# carries a zero-length hostname, which is exactly what EA's client sends
+# when it dials a bare IP address. The vendored copy teaches it to treat
+# an empty hostname as "no server name" instead of failing the handshake.
+# See third_party/rustls-0.23.46/PATCHES.md for the exact diff.
+[patch.crates-io]
+rustls = { path = "third_party/rustls-0.23.46" }
 
 [profile.dev.package.rsa]
 opt-level = 3

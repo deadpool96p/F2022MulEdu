@@ -89,7 +89,7 @@ async fn test_abrupt_disconnect_recovery_and_peer_notification() {
     // Login Host
     let mut auth_req = TdfStruct::new();
     auth_req.set("MAIL", TdfValue::String("host_player@fifa22.com".to_string()));
-    send_blaze_req(&mut p1_stream, 0x0001, 0x0028, 2, auth_req).await;
+    send_blaze_req(&mut p1_stream, 0x0001, 0x00E6, 2, auth_req).await;
     let p1_auth_resp = read_blaze_packet(&mut p1_stream).await;
     let p1_uid = match p1_auth_resp.payload.get("UID") {
         Some(TdfValue::Integer(uid)) => *uid,
@@ -118,7 +118,7 @@ async fn test_abrupt_disconnect_recovery_and_peer_notification() {
     // Login Guest
     let mut auth_req2 = TdfStruct::new();
     auth_req2.set("MAIL", TdfValue::String("guest_player@fifa22.com".to_string()));
-    send_blaze_req(&mut p2_stream, 0x0001, 0x0028, 11, auth_req2).await;
+    send_blaze_req(&mut p2_stream, 0x0001, 0x00E6, 11, auth_req2).await;
     let p2_auth_resp = read_blaze_packet(&mut p2_stream).await;
     let p2_uid = match p2_auth_resp.payload.get("UID") {
         Some(TdfValue::Integer(uid)) => *uid,

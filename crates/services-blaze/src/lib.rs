@@ -59,12 +59,16 @@ mod tests {
         assert!(pre_auth_resp.payload.get("QOSS").is_some());
         assert!(pre_auth_resp.payload.get("CIDS").is_some());
 
-        // 2. Test expressLogin for Player 1
+        // 2. Test createWalUserSession for Player 1
+        //
+        // `createWalUserSession` (230) is the one `Authentication` command
+        // whose EA response model carries the user's identity, so it is the
+        // one the emulator's own clients use to log in.
         let mut login_req_payload = TdfStruct::new();
         login_req_payload.set("DSNM", TdfValue::String("PlayerOne".to_string()));
         let login_req = BlazePacket::new(
             COMPONENT_AUTH,
-            CMD_EXPRESS_LOGIN,
+            CMD_CREATE_WAL_USER_SESSION,
             0,
             MessageType::SubmitRequest,
             0,
@@ -75,11 +79,18 @@ mod tests {
 
         let (login_resp, _) = router1.handle_packet(&login_req).unwrap();
         assert_eq!(login_resp.header.component, COMPONENT_AUTH);
-        assert_eq!(login_resp.header.command, CMD_EXPRESS_LOGIN);
+        assert_eq!(login_resp.header.command, CMD_CREATE_WAL_USER_SESSION);
+        assert_eq!(login_resp.header.error_code, 0x0000);
+        let persona = match login_resp.payload.get("PDTL") {
+            Some(TdfValue::Struct(s)) => s,
+            other => panic!("createWalUserSession must carry PDTL, got {:?}", other),
+        };
         assert_eq!(
-            login_resp.payload.get("DSNM"),
+            persona.get("DSNM"),
             Some(&TdfValue::String("PlayerOne".to_string()))
         );
+        assert!(login_resp.payload.get("UID").is_some());
+        assert!(login_resp.payload.get("BUID").is_some());
         assert!(router1.session.is_logged_in);
         assert_eq!(router1.session.user_id, 10001);
 
@@ -89,7 +100,7 @@ mod tests {
         login2_payload.set("DSNM", TdfValue::String("PlayerTwo".to_string()));
         let login2_req = BlazePacket::new(
             COMPONENT_AUTH,
-            CMD_LOGIN,
+            CMD_ACCEPT_TOS,
             0,
             MessageType::SubmitRequest,
             0,
@@ -98,10 +109,10 @@ mod tests {
         )
         .unwrap();
         let (login2_resp, _) = router2.handle_packet(&login2_req).unwrap();
-        assert_eq!(
-            login2_resp.payload.get("DSNM"),
-            Some(&TdfValue::String("PlayerTwo".to_string()))
-        );
+        // `acceptTos` is answered with an empty response, exactly as EA's
+        // own router does.
+        assert_eq!(login2_resp.header.command, CMD_ACCEPT_TOS);
+        assert!(login2_resp.payload.fields.is_empty());
         assert_eq!(router2.session.user_id, 10002);
         assert_eq!(store.count(), 2);
 

@@ -16,6 +16,12 @@ services-qos-relay = { path = "../services-qos-relay" }
 
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
+# HTTP/2 for the QoS API. FIFA 22's HTTP/2 stack negotiates the `h2` ALPN
+# protocol, so the `:443` sink has to speak it; the HTTP/1.1 ProtoHttp
+# stack is served by the same `route_http_request` bodies.
+h2 = "0.4"
+http = "1"
+bytes = "1"
 rustls-pki-types = "1"
 rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
 serde = { version = "1", features = ["derive"] }
@@ -24,5 +30,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 blaze-ssl-async = "0.4.0"
 rsa = "0.9"
+time = "0.3"
 
 [dev-dependencies]

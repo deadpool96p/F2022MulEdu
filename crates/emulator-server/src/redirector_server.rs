@@ -8,8 +8,275 @@ use blaze_core::frame::BlazeHeader;
 use blaze_core::framing::{detect_framing, Framing};
 use blaze_core::BlazePacket;
 use blaze_tdf::deserialize_tdf;
-use services_redirector::{handle_redirector_packet, RedirectorConfig};
+use services_redirector::{handle_redirector_packet, RedirectorConfig, ServiceInstance};
 use crate::listener::{accept_dual_stream, DualStream};
+
+/// Escapes the characters that are not allowed in XML text.
+fn xml_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+/// Renders the registered `ServerInstanceInfo` record of one advertised
+/// service instance as XML.
+///
+/// The element names are the classic EA Redirector names: `type`,
+/// `servicename`, `servicenames`, `serviceid`, `hostname`, `ip`, `port`,
+/// `srcip`, `netmask`, `srcport`, `dstport` and the `addresses` list of
+/// `ServerAddressInfo` entries.
+///
+/// The host name of the QoS instance is a `gosredirector` name and **not** one
+/// of EA's `qos-prod-*.gos.ea.com` names: the client turns it into the TLS
+/// SNI of the QoS connection, and the leaf certificate that is on disk
+/// (`f22_server.crt`) only covers the `gosredirector.ea.com` names -- the
+/// `*.ea.com` SAN does not match a multi-label `qos-prod-*.gos.ea.com` name.
+/// A name the certificate does not cover would fail the handshake.
+fn render_service_instance_xml(svc: &ServiceInstance) -> String {
+    let service_names = svc
+        .service_names
+        .iter()
+        .map(|n| xml_escape(n))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let mut out = String::new();
+    out.push_str("  <instance>\n");
+    out.push_str(&format!("    <type>{}</type>\n", svc.instance_type));
+    out.push_str(&format!(
+        "    <servicename>{}</servicename>\n",
+        xml_escape(&svc.service_name)
+    ));
+    out.push_str(&format!(
+        "    <servicenames>{}</servicenames>\n",
+        service_names
+    ));
+    out.push_str(&format!(
+        "    <serviceid>{}</serviceid>\n",
+        svc.service_id
+    ));
+    out.push_str(&format!(
+        "    <hostname>{}</hostname>\n",
+        xml_escape(&svc.hostname)
+    ));
+    out.push_str(&format!("    <ip>{}</ip>\n", svc.ip));
+    out.push_str(&format!("    <port>{}</port>\n", svc.port));
+    out.push_str(&format!("    <srcip>{}</srcip>\n", svc.ip));
+    out.push_str(&format!("    <netmask>{}</netmask>\n", svc.netmask));
+    out.push_str(&format!("    <srcport>{}</srcport>\n", svc.src_port));
+    out.push_str(&format!("    <dstport>{}</dstport>\n", svc.dst_port));
+    out.push_str("    <addresses>\n");
+    out.push_str("      <address member=\"0\">\n");
+    out.push_str("        <valu>\n");
+    out.push_str("          <ipaddress>\n");
+    out.push_str(&format!(
+        "            <hostname>{}</hostname>\n",
+        xml_escape(&svc.hostname)
+    ));
+    out.push_str(&format!("            <ip>{}</ip>\n", svc.ip));
+    out.push_str(&format!("            <port>{}</port>\n", svc.port));
+    out.push_str(&format!("            <srcip>{}</srcip>\n", svc.ip));
+    out.push_str(&format!("            <netmask>{}</netmask>\n", svc.netmask));
+    out.push_str(&format!("            <srcport>{}</srcport>\n", svc.src_port));
+    out.push_str(&format!("            <dstport>{}</dstport>\n", svc.dst_port));
+    out.push_str(&format!(
+        "            <serviceid>{}</serviceid>\n",
+        svc.service_id
+    ));
+    out.push_str("          </ipaddress>\n");
+    out.push_str("        </valu>\n");
+    out.push_str("      </address>\n");
+    out.push_str("    </addresses>\n");
+    out.push_str("  </instance>\n");
+    out
+}
+
+/// Renders the redirector reply body as XML.
+///
+/// The body keeps the legacy `ServerInstanceInfo` elements that already make
+/// the client reach the Blaze port (`address` / `valu` / `ipaddress`,
+/// `secure`, `msiz`, `trialService`, `defaultDnsAddress`) and adds the
+/// registered members plus one `<instance>` record per advertised service,
+/// so that FIFA 22 finds the `qosapi` service instead of falling back to a
+/// hard-coded EA address.
+pub fn render_redirector_xml(config: &RedirectorConfig, services: &[ServiceInstance]) -> String {
+    let secure_val = if config.secure { 1 } else { 0 };
+    let primary = &services[0];
+
+    let mut out = String::new();
+    out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    out.push_str("<serverinstanceinfo>\n");
+    // The legacy address block always points at the Blaze service: that is
+    // the address the client uses to reach the Blaze port.
+    out.push_str("  <address member=\"0\">\n");
+    out.push_str("    <valu>\n");
+    out.push_str(&format!(
+        "      <hostname>{}</hostname>\n",
+        xml_escape(&config.host)
+    ));
+    out.push_str(&format!("      <ip>{}</ip>\n", config.ip));
+    out.push_str(&format!("      <port>{}</port>\n", config.port));
+    out.push_str("    </valu>\n");
+    out.push_str("    <ipaddress>\n");
+    out.push_str(&format!(
+        "      <hostname>{}</hostname>\n",
+        xml_escape(&config.host)
+    ));
+    out.push_str(&format!("      <ip>{}</ip>\n", config.ip));
+    out.push_str(&format!("      <port>{}</port>\n", config.port));
+    out.push_str("    </ipaddress>\n");
+    out.push_str("  </address>\n");
+    out.push_str(&format!("  <secure>{}</secure>\n", secure_val));
+    out.push_str("  <msiz>131072</msiz>\n");
+    out.push_str("  <trialService>0</trialService>\n");
+    out.push_str("  <defaultDnsAddress>0</defaultDnsAddress>\n");
+    out.push_str(&format!("  <type>{}</type>\n", primary.instance_type));
+    out.push_str(&format!(
+        "  <servicename>{}</servicename>\n",
+        xml_escape(&primary.service_name)
+    ));
+    out.push_str(&format!(
+        "  <servicenames>{}</servicenames>\n",
+        primary
+            .service_names
+            .iter()
+            .map(|n| xml_escape(n))
+            .collect::<Vec<_>>()
+            .join(",")
+    ));
+    for svc in services {
+        out.push_str(&render_service_instance_xml(svc));
+    }
+    out.push_str("</serverinstanceinfo>");
+    out
+}
+
+/// Renders the redirector reply body as JSON, mirroring the XML body.
+pub fn render_redirector_json(config: &RedirectorConfig, services: &[ServiceInstance]) -> String {
+    let secure_val = if config.secure { 1 } else { 0 };
+    let primary = &services[0];
+
+    let mut out = String::new();
+    out.push('{');
+    // The legacy address object is kept as-is.
+    out.push_str(&format!(
+        "\"address\":{{\"ipAddress\":{{\"hostname\":\"{}\",\"ip\":{},\"port\":{}}}}},",
+        config.host, config.ip, config.port
+    ));
+    out.push_str(&format!("\"secure\":{},", secure_val));
+    out.push_str("\"msiz\":131072,");
+    out.push_str(&format!("\"trialService\":0,"));
+    out.push_str("\"defaultDnsAddress\":0,");
+    out.push_str(&format!("\"type\":{},", primary.instance_type));
+    out.push_str(&format!(
+        "\"serviceName\":\"{}\",",
+        primary.service_name
+    ));
+    out.push_str(&format!(
+        "\"serviceNames\":[{}],",
+        primary
+            .service_names
+            .iter()
+            .map(|n| format!("\"{}\"", n))
+            .collect::<Vec<_>>()
+            .join(",")
+    ));
+    out.push_str("\"instance\":");
+    out.push_str(&render_service_instance_json(primary));
+    out.push_str(",\"instances\":[");
+    for (i, svc) in services.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(&render_service_instance_json(svc));
+    }
+    out.push_str("]}");
+    out
+}
+
+/// Renders one advertised service instance as JSON.
+fn render_service_instance_json(svc: &ServiceInstance) -> String {
+    format!(
+        "{{\"type\":{},\"serviceName\":\"{}\",\"serviceNames\":[{}],\"serviceId\":{},\"hostname\":\"{}\",\"ip\":{},\"port\":{},\"srcIp\":{},\"netMask\":{},\"srcPort\":{},\"dstPort\":{},\"addresses\":[{{\"hostname\":\"{}\",\"ip\":{},\"port\":{}}}]}}",
+        svc.instance_type,
+        svc.service_name,
+        svc.service_names
+            .iter()
+            .map(|n| format!("\"{}\"", n))
+            .collect::<Vec<_>>()
+            .join(","),
+        svc.service_id,
+        svc.hostname,
+        svc.ip,
+        svc.port,
+        svc.ip,
+        svc.netmask,
+        svc.src_port,
+        svc.dst_port,
+        svc.hostname,
+        svc.ip,
+        svc.port
+    )
+}
+
+/// Extracts the text of the first `<tag>...</tag>` element in `text`.
+fn xml_element_value(text: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = text.find(&open)? + open.len();
+    let end = text[start..].find(&close)? + start;
+    Some(text[start..end].trim().to_string())
+}
+
+/// The service the client asked the redirector for, if it named one.
+///
+/// FIFA 22's own request body does not name a service -- the reply has to
+/// advertise every service the client may bind.  A request that does name
+/// one gets that service advertised first.
+fn requested_service(request: &str, config: &RedirectorConfig) -> Option<String> {
+    let known = [
+        config.blaze_service_name.as_str(),
+        config.qos_service_name.as_str(),
+    ];
+
+    // Query parameters of the request line: "?service=qosapi".
+    let request_line = request.lines().next().unwrap_or_default();
+    if let Some(query) = request_line.split_once('?').map(|(_, q)| q) {
+        // The query string ends at the first space (the HTTP version).
+        let query = query.split_whitespace().next().unwrap_or_default();
+        for pair in query.split('&') {
+            let Some((key, value)) = pair.split_once('=') else {
+                continue;
+            };
+            if !matches!(key.to_ascii_lowercase().as_str(), "service" | "servicename" | "svc") {
+                continue;
+            }
+            let value = value.trim().to_ascii_lowercase();
+            if known.contains(&value.as_str()) {
+                return Some(value);
+            }
+        }
+    }
+
+    // Or an element in the request body: "<servicename>qosapi</servicename>".
+    for tag in ["servicename", "serviceName"] {
+        if let Some(value) = xml_element_value(request, tag) {
+            let value = value.to_ascii_lowercase();
+            if known.contains(&value.as_str()) {
+                return Some(value);
+            }
+        }
+    }
+
+    None
+}
 
 /// Runs the Redirector service listener loop.
 pub async fn run_redirector_server(
@@ -221,34 +488,15 @@ async fn handle_http_redirector(
     // When config.secure is false, downgrade to Plain TCP (0) to allow clean certificate-free socket flow
     let secure_val = if config.secure { 1 } else { 0 };
 
+    // The service instances the reply advertises.  The Blaze service comes
+    // first unless the client asked for the QoS service by name.
+    let requested = requested_service(&req_str, config);
+    let services = config.advertised_services_for(requested.as_deref());
+
     let response_body = if is_json {
-        format!(
-            r#"{{"address":{{"ipAddress":{{"hostname":"{}","ip":2130706433,"port":{}}}}},"secure":{},"msiz":131072}}"#,
-            config.host, config.port, secure_val
-        )
+        render_redirector_json(config, &services)
     } else {
-        format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
-<serverinstanceinfo>
-  <address member="0">
-    <valu>
-      <hostname>{}</hostname>
-      <ip>2130706433</ip>
-      <port>{}</port>
-    </valu>
-    <ipaddress>
-      <hostname>{}</hostname>
-      <ip>2130706433</ip>
-      <port>{}</port>
-    </ipaddress>
-  </address>
-  <secure>{}</secure>
-  <msiz>131072</msiz>
-  <trialService>0</trialService>
-  <defaultDnsAddress>0</defaultDnsAddress>
-</serverinstanceinfo>"#,
-            config.host, config.port, config.host, config.port, secure_val
-        )
+        render_redirector_xml(config, &services)
     };
 
     let content_type = if is_json {
@@ -272,15 +520,141 @@ X-BLAZE-SEQNO: 0\r\n\r\n{}",
     );
 
     tracing::info!(
-        "[Redirector HTTP] Responded 200 OK: redirecting client to {}:{} (Format={}, Secure={})",
+        "[Redirector HTTP] Responded 200 OK: redirecting client to {}:{} (Format={}, Secure={}), advertised services: {}",
         config.host,
         config.port,
         if is_json { "JSON" } else { "XML" },
-        secure_val
+        secure_val,
+        services
+            .iter()
+            .map(|s| format!("{}={}:{}", s.service_name, s.hostname, s.port))
+            .collect::<Vec<_>>()
+            .join(", ")
     );
 
     stream.write_all(http_response.as_bytes()).await?;
     stream.flush().await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_config() -> RedirectorConfig {
+        RedirectorConfig {
+            host: "127.0.0.1".to_string(),
+            port: 42128,
+            secure: true,
+            ..Default::default()
+        }
+    }
+
+    /// The reply has to advertise the `qosapi` service with the EA host
+    /// name, the loopback address in EA's u32 form and port 443.
+    #[test]
+    fn test_redirector_xml_advertises_the_qosapi_service() {
+        let config = default_config();
+        let services = config.advertised_services();
+        let body = render_redirector_xml(&config, &services);
+
+        assert!(body.contains("<servicename>qosapi</servicename>"), "{}", body);
+        assert!(body.contains("<servicenames>qosapi</servicenames>"), "{}", body);
+        assert!(
+            body.contains("<hostname>spring18.gosredirector.ea.com</hostname>"),
+            "{}",
+            body
+        );
+        assert!(body.contains("<ip>2130706433</ip>"), "{}", body);
+        assert!(body.contains("<port>443</port>"), "{}", body);
+        assert!(body.contains("<srcport>443</srcport>"), "{}", body);
+        assert!(body.contains("<dstport>443</dstport>"), "{}", body);
+        assert!(body.contains("<serviceid>2</serviceid>"), "{}", body);
+    }
+
+    /// The Blaze service must still be advertised, and the legacy elements
+    /// that make the client reach the Blaze port must not change.
+    #[test]
+    fn test_redirector_xml_still_advertises_the_blaze_service() {
+        let config = default_config();
+        let services = config.advertised_services();
+        let body = render_redirector_xml(&config, &services);
+
+        assert!(body.contains("<servicename>blaze</servicename>"), "{}", body);
+        assert!(body.contains("<port>42128</port>"), "{}", body);
+
+        // The legacy ServerInstanceInfo elements.
+        assert!(body.contains("<address member=\"0\">"), "{}", body);
+        assert!(body.contains("<valu>"), "{}", body);
+        assert!(body.contains("<ipaddress>"), "{}", body);
+        assert!(body.contains("<secure>1</secure>"), "{}", body);
+        assert!(body.contains("<msiz>131072</msiz>"), "{}", body);
+        assert!(body.contains("<trialService>0</trialService>"), "{}", body);
+        assert!(
+            body.contains("<defaultDnsAddress>0</defaultDnsAddress>"),
+            "{}",
+            body
+        );
+
+        // The Blaze address still points at the Blaze port.
+        let blaze = &services[0];
+        assert_eq!(blaze.hostname, "127.0.0.1");
+        assert_eq!(blaze.port, 42128);
+    }
+
+    /// The JSON body mirrors the XML body.
+    #[test]
+    fn test_redirector_json_advertises_the_qosapi_service() {
+        let config = default_config();
+        let services = config.advertised_services();
+        let body = render_redirector_json(&config, &services);
+
+        assert!(body.contains("\"serviceName\":\"qosapi\""), "{}", body);
+        assert!(
+            body.contains("\"hostname\":\"spring18.gosredirector.ea.com\""),
+            "{}",
+            body
+        );
+        assert!(body.contains("\"ip\":2130706433"), "{}", body);
+        assert!(body.contains("\"port\":443"), "{}", body);
+        assert!(body.contains("\"serviceName\":\"blaze\""), "{}", body);
+        assert!(body.contains("\"port\":42128"), "{}", body);
+        // The legacy address object is still there.
+        assert!(
+            body.contains("\"address\":{\"ipAddress\":{\"hostname\":\"127.0.0.1\",\"ip\":2130706433,\"port\":42128}}"),
+            "{}",
+            body
+        );
+    }
+
+    /// A request that names a service gets that service advertised first.
+    #[test]
+    fn test_requested_service_is_taken_from_the_request() {
+        let config = default_config();
+
+        // No service named -> the default order.
+        assert_eq!(requested_service("POST /redirector/getServerInstance HTTP/1.1", &config), None);
+
+        // From the query string.
+        assert_eq!(
+            requested_service("POST /redirector/getServerInstance?service=qosapi HTTP/1.1", &config),
+            Some("qosapi".to_string())
+        );
+
+        // From the request body.
+        let body_request = "POST /redirector/getServerInstance HTTP/1.1\r\n\r\n\
+            <?xml version=\"1.0\"?>\n<serverinstancerequest>\n  \
+            <servicename>qosapi</servicename>\n</serverinstancerequest>";
+        assert_eq!(
+            requested_service(body_request, &config),
+            Some("qosapi".to_string())
+        );
+
+        // An unknown service name is ignored.
+        assert_eq!(
+            requested_service("POST /redirector/getServerInstance?service=nope HTTP/1.1", &config),
+            None
+        );
+    }
 }

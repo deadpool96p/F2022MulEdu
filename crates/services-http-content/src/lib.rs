@@ -7,7 +7,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
 
+pub mod protohttp;
 pub mod squads;
+pub use protohttp::*;
 pub use squads::*;
 
 /// Real-time UDP Netcode Metrics exposed to HTTP Netcode HUD & monitoring
@@ -64,6 +66,151 @@ pub struct HttpRequest {
     pub path: String,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
+    /// The ALPN protocol negotiated on the TLS connection this request
+    /// arrived on, when the caller knows it.
+    ///
+    /// ALPN is negotiated in the TLS layer, so the HTTP layer cannot see
+    /// it; the transport that owns the TLS acceptor is expected to fill
+    /// this in via [`HttpRequest::with_alpn`] so the sink can log it.
+    pub alpn: Option<String>,
+}
+
+impl HttpRequest {
+    /// Attaches the ALPN protocol negotiated by the TLS layer.
+    pub fn with_alpn(mut self, alpn: Option<String>) -> Self {
+        self.alpn = alpn;
+        self
+    }
+
+    /// The request target without its query string.
+    pub fn path_only(&self) -> &str {
+        self.path.split('?').next().unwrap_or(&self.path)
+    }
+
+    /// The raw query string, without the leading `?`.
+    pub fn query(&self) -> &str {
+        self.path.split_once('?').map(|(_, q)| q).unwrap_or("")
+    }
+
+    /// The query parameters, in order, percent-decoded.
+    pub fn query_pairs(&self) -> Vec<(String, String)> {
+        self.query()
+            .split('&')
+            .filter(|p| !p.is_empty())
+            .map(|pair| match pair.split_once('=') {
+                Some((k, v)) => (percent_decode(k), percent_decode(v)),
+                None => (percent_decode(pair), String::new()),
+            })
+            .collect()
+    }
+
+    /// A single query parameter, by name.
+    pub fn query_param(&self, key: &str) -> Option<String> {
+        self.query_pairs()
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
+    }
+
+    /// The form parameters carried in the request body, percent-decoded.
+    ///
+    /// The client sends `Content-Type: application/x-www-form-urlencoded`
+    /// (the literal is at file offset `0x79F6076` in `FIFA22.exe`) and
+    /// formats four of its own fields that way: `sourceIP=%s`
+    /// (`0x79F5F78`), `sourcePort=%d` (`0x79F5F85`), `tag=%s`
+    /// (`0x79F5F94`) and `sendCount=%d` (`0x79F5F9C`).
+    ///
+    /// Those four names are **not** part of the query string in either
+    /// URL format the client builds (`0x79F6010` and `0x79F5F28`), so
+    /// they can only arrive in the body.  Reading them is therefore
+    /// required to answer `/getPeerAddress` faithfully.
+    pub fn form_pairs(&self) -> Vec<(String, String)> {
+        let content_type = self.header("content-type").unwrap_or_default();
+        let is_form = content_type
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .eq_ignore_ascii_case("application/x-www-form-urlencoded");
+        if !is_form {
+            return Vec::new();
+        }
+        let body = String::from_utf8_lossy(&self.body);
+        body.split('&')
+            .filter(|p| !p.is_empty())
+            .map(|pair| match pair.split_once('=') {
+                Some((k, v)) => (percent_decode(k), percent_decode(v)),
+                None => (percent_decode(pair), String::new()),
+            })
+            .collect()
+    }
+
+    /// A request parameter, from the query string or from the form body.
+    ///
+    /// The query string wins; the form body is the fallback.  An empty
+    /// query value does **not** shadow a form value, because
+    /// `?myIP=` carries no information while the body does.
+    pub fn param(&self, key: &str) -> Option<String> {
+        if let Some(value) = self.query_param(key) {
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+        self.form_pairs()
+            .into_iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v)
+    }
+
+    /// A header value, by (case-insensitive) name.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(&name.to_ascii_lowercase()).map(String::as_str)
+    }
+
+    /// The ProtoHttp user agent, when this request came from a ProtoHttp
+    /// (DirtySDK) client.
+    pub fn proto_http_user_agent(&self) -> Option<ProtoHttpUserAgent> {
+        self.header("user-agent")
+            .and_then(ProtoHttpUserAgent::parse)
+    }
+
+    /// True when the request carries a ProtoHttp user agent.
+    pub fn is_proto_http(&self) -> bool {
+        self.proto_http_user_agent().is_some()
+    }
+}
+
+/// Decodes `%XX` escapes and `+` as space in a query-string component.
+fn percent_decode(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hex = &input[i + 1..i + 3];
+                match u8::from_str_radix(hex, 16) {
+                    Ok(byte) => {
+                        out.push(byte);
+                        i += 3;
+                    }
+                    Err(_) => {
+                        out.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+            }
+            other => {
+                out.push(other);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// HTTP response structure.
@@ -128,6 +275,51 @@ impl HttpResponse {
         }
     }
 
+    /// A `text/plain` response.
+    ///
+    /// Used by `/getPeerAddress`, whose body is a list of `name=value`
+    /// pairs and **not** XML.
+    pub fn ok_text(body: &str) -> Self {
+        Self {
+            status_code: 200,
+            reason_phrase: "OK",
+            content_type: "text/plain",
+            headers: HashMap::new(),
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
+    /// Sets (or replaces) a response header.
+    ///
+    /// Header names are matched case-insensitively, so a caller can
+    /// override a header this crate sets by default.
+    pub fn set_header(&mut self, name: &str, value: &str) -> &mut Self {
+        self.headers
+            .retain(|k, _| !k.eq_ignore_ascii_case(name));
+        self.headers.insert(name.to_string(), value.to_string());
+        self
+    }
+
+    /// Shapes the response for a ProtoHttp (DirtySDK) client.
+    ///
+    /// ProtoHttp is a plain HTTP/1.1 client whose response parser only
+    /// recognises `content-length`, `transfer-encoding`, `chunked`,
+    /// `location`, `last-modified` and `connection` (file offsets
+    /// `0x7575CC0`-`0x7575D08` in `FIFA22.exe`).  So the response must:
+    ///
+    /// * carry an exact `Content-Length` — never chunked, and
+    /// * close the connection, because the client sends `Connection: Close`.
+    ///
+    /// **ASSUMPTION.** The `User-Agent` response header is *not* read by
+    /// the client (see [`PROTO_HTTP_SERVER_USER_AGENT`]).  It is sent
+    /// anyway so the ProtoHttp path is observable on the wire, and so a
+    /// version-sensitive client does not see an unrecognised stack.
+    pub fn for_proto_http(mut self, _ua: Option<&ProtoHttpUserAgent>) -> Self {
+        self.set_header("Connection", "Close");
+        self.set_header("User-Agent", PROTO_HTTP_SERVER_USER_AGENT);
+        self
+    }
+
     pub fn ok_binary(body: Vec<u8>) -> Self {
         Self {
             status_code: 200,
@@ -174,13 +366,37 @@ impl HttpResponse {
     }
 
     /// Serializes the response into raw HTTP wire bytes.
+    ///
+    /// The `Content-Type`, `Content-Length` and `Connection` headers are
+    /// emitted by default, but any of them can be overridden through
+    /// [`HttpResponse::set_header`] — the override wins, and the default
+    /// is not emitted twice.
     pub fn to_bytes(&self) -> Vec<u8> {
+        // Defaults first, in a stable order.
+        let mut headers: Vec<(String, String)> = vec![
+            ("Content-Type".to_string(), self.content_type.to_string()),
+            ("Content-Length".to_string(), self.body.len().to_string()),
+            ("Connection".to_string(), "close".to_string()),
+            ("Access-Control-Allow-Origin".to_string(), "*".to_string()),
+        ];
+
+        // Caller-supplied headers override the defaults, case-insensitively.
+        for (k, v) in &self.headers {
+            match headers
+                .iter_mut()
+                .find(|(name, _)| name.eq_ignore_ascii_case(k))
+            {
+                Some(slot) => slot.1 = v.clone(),
+                None => headers.push((k.clone(), v.clone())),
+            }
+        }
+
         let mut out = Vec::new();
         let mut header_str = format!(
-            "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\nAccess-Control-Allow-Origin: *\r\n",
-            self.status_code, self.reason_phrase, self.content_type, self.body.len()
+            "HTTP/1.1 {} {}\r\n",
+            self.status_code, self.reason_phrase
         );
-        for (k, v) in &self.headers {
+        for (k, v) in &headers {
             header_str.push_str(&format!("{}: {}\r\n", k, v));
         }
         header_str.push_str("\r\n");
@@ -190,8 +406,34 @@ impl HttpResponse {
     }
 }
 
+/// The HTTP/2 connection preface a client sends when it has negotiated
+/// the `h2` ALPN protocol.
+pub const HTTP2_CONNECTION_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// True when `raw` starts with the HTTP/2 connection preface.
+///
+/// The sink speaks **HTTP/1.1 only**.  A client that negotiates `h2`
+/// would send this preface, and the first line parses as a request line
+/// (`PRI * HTTP/2.0`) — so the preface has to be detected explicitly,
+/// otherwise the request is silently mis-routed to the fast-path
+/// fallback and answered with an HTTP/1.1 response the client cannot
+/// read.
+///
+/// The emulator's TLS acceptor advertises **no** ALPN protocol (there is
+/// no `alpn_protocols` anywhere in `crates/emulator-server`), so the
+/// client's `h2` offer is declined and ProtoHttp falls back to HTTP/1.1.
+pub fn is_http2_preface(raw: &[u8]) -> bool {
+    raw.starts_with(HTTP2_CONNECTION_PREFACE)
+}
+
 /// Parses a raw HTTP/1.1 request buffer into an HttpRequest.
+///
+/// Returns `None` for an HTTP/2 connection preface — see
+/// [`is_http2_preface`].
 pub fn parse_http_request(raw: &[u8]) -> Option<HttpRequest> {
+    if is_http2_preface(raw) {
+        return None;
+    }
     let header_end = raw.windows(4).position(|w| w == b"\r\n\r\n")?;
     let header_str = String::from_utf8_lossy(&raw[..header_end]);
     let body = raw[header_end + 4..].to_vec();
@@ -215,12 +457,20 @@ pub fn parse_http_request(raw: &[u8]) -> Option<HttpRequest> {
         path,
         headers,
         body,
+        alpn: None,
     })
 }
 
 /// The QoS UDP responder's port. The client learns it from the `/qos/qos`
 /// response and then sends `ProtoPing` probes here.
 pub const QOS_UDP_PORT: u16 = 17498;
+
+/// The emulator's own address, in dotted-quad form.
+///
+/// The `getPeerAddress` IP fields are parsed with a dotted-quad parser
+/// (`0x140C96010`), unlike `qosip`, which is a decimal u32.  The address
+/// is the same loopback address the client reaches the emulator on.
+pub const PEER_ADDRESS: &str = "127.0.0.1";
 
 /// The QoS responder's address, encoded the way FIFA 22 expects it.
 ///
@@ -248,6 +498,42 @@ const QOS_PROBE_SIZE: u32 = 1200;
 /// responder directly.
 const QOS_FIRETYPE: u32 = 0;
 
+/// The request-scoped values a QoS response echoes back to the client.
+///
+/// The client sends `rqid` (request id) and `rqsc` (request secret) as
+/// query parameters — they are visible in the URL formats the client
+/// builds, e.g. `/qos/firetype?vers=..&rqid=..&rqsc=..&inip=..&inpt=..`
+/// (the `&rqid=` and `&rqsc=` literals are at file offsets `0x77947A8`
+/// and `0x77947A0` in `FIFA22.exe`).  The response carries the same two
+/// values back as `<requestid>` and `<reqsecret>`.
+///
+/// `requestid` **must** be non-zero: the client rejects a type-2 QoS
+/// response whose `requestid` is zero (`0x141FE874D` -> fail with -4).
+/// A client that sends no `rqid` therefore gets the constant 1.
+#[derive(Debug, Clone, Copy)]
+struct QosRequest {
+    request_id: u32,
+    request_secret: u32,
+}
+
+impl QosRequest {
+    fn from_request(req: &HttpRequest) -> Self {
+        let request_id = req
+            .param("rqid")
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|v| *v != 0)
+            .unwrap_or(1);
+        let request_secret = req
+            .param("rqsc")
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(0);
+        Self {
+            request_id,
+            request_secret,
+        }
+    }
+}
+
 /// Builds the `/qos/qos` response body.
 ///
 /// The client resolves the root element `qos` and then reads `.qosport`,
@@ -257,7 +543,13 @@ const QOS_FIRETYPE: u32 = 0;
 ///
 /// `qosip` and `qosport` are mandatory: a zero value in either makes the
 /// client fail the QoS step with -3 (`0x141FE85EC` / `0x141FE85F6`).
-fn qos_response_body() -> String {
+///
+/// One body serves both request types.  The client picks type 1 or type 2
+/// with the `qtyp` query parameter, but it reads the same field names
+/// either way, and a type-2 request additionally requires
+/// `numprobes >= 2`, `probesize != 0` and `requestid != 0` — all of
+/// which this body satisfies.
+fn qos_response_body(qos: &QosRequest) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <qos>\n\
@@ -265,9 +557,10 @@ fn qos_response_body() -> String {
          \x20   <qosport>{QOS_UDP_PORT}</qosport>\n\
          \x20   <numprobes>{QOS_NUM_PROBES}</numprobes>\n\
          \x20   <probesize>{QOS_PROBE_SIZE}</probesize>\n\
-         \x20   <requestid>1</requestid>\n\
-         \x20   <reqsecret>0</reqsecret>\n\
-         </qos>"
+         \x20   <requestid>{}</requestid>\n\
+         \x20   <reqsecret>{}</reqsecret>\n\
+         </qos>",
+        qos.request_id, qos.request_secret
     )
 }
 
@@ -281,7 +574,11 @@ fn qos_response_body() -> String {
 /// The two list elements hold one child element per interface: the
 /// client walks the children of `.ips.ips` and `.ports.ports` in lockstep
 /// (`0x141FE8822`) and reads each pair as an address/port tuple.
-fn firewall_response_body() -> String {
+///
+/// The `ips` entry uses the same **big-endian decimal u32** encoding as
+/// `qosip` (the client converts it to a socket address the same way, at
+/// `0x141FE8D90`).
+fn firewall_response_body(qos: &QosRequest) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <firewall>\n\
@@ -292,9 +589,10 @@ fn firewall_response_body() -> String {
          \x20   <ports>\n\
          \x20       <ports>{QOS_UDP_PORT}</ports>\n\
          \x20   </ports>\n\
-         \x20   <requestid>1</requestid>\n\
-         \x20   <reqsecret>0</reqsecret>\n\
-         </firewall>"
+         \x20   <requestid>{}</requestid>\n\
+         \x20   <reqsecret>{}</reqsecret>\n\
+         </firewall>",
+        qos.request_id, qos.request_secret
     )
 }
 
@@ -311,12 +609,29 @@ fn firetype_response_body() -> String {
     )
 }
 
+/// The emulator's peer relay port.
+///
+/// The ProtoTunnel / NetGameDist relay is the UDP socket that carries
+/// *peer* traffic, as opposed to [`QOS_UDP_PORT`], which carries the
+/// ProtoPing latency probes.  The emulator binds it on `:3659`
+/// (`crates/emulator-server/src/lib.rs`), and the Blaze session
+/// publishes the same port as the player's network address.
+///
+/// **ASSUMPTION.** The client does not say in the request which peer it
+/// is asking about, and the emulator hosts *both* players, so the peer
+/// is the emulator itself.  The peer address is therefore the relay's
+/// address — the same address the Blaze session hands the client for
+/// the game session.
+pub const PEER_RELAY_UDP_PORT: u16 = 3659;
+
 /// Builds the `/getPeerAddress` response body.
 ///
-/// The client sends
-/// `getPeerAddress?myIP=<ip>&myPort=<port>&version=1.0` and then reads
-/// the response as a list of `name=value` pairs separated by newlines
-/// (`0x144AA06F0`). The fields it looks up are:
+/// The client requests
+/// `http://<host>:<port>/getPeerAddress?myIP=<ip>&myPort=<port>&version=1.0`
+/// (the URL format is at file offset `0x79F6010` in `FIFA22.exe` — note
+/// that it is **plain `http`**, not `https`) and then reads the response
+/// as a list of `name=value` pairs separated by newlines.  The names it
+/// looks up are:
 ///
 /// | Field | Read at |
 /// | :--- | :--- |
@@ -328,47 +643,80 @@ fn firetype_response_body() -> String {
 /// | `peerIP` | `0x144AA151D` |
 /// | `peerPort` | `0x144AA159C` |
 ///
-/// The IP fields are parsed with a dotted-quad parser (`0x140C96010`),
-/// unlike the `/qos/qos` response's `qosip`, which is a decimal u32.
+/// The IP fields are parsed with a **dotted-quad** parser
+/// (`0x140C96010`), unlike the `/qos/qos` response's `qosip`, which is a
+/// decimal u32.
 ///
-/// `sourceIP` is the address the client believes it is using; we echo it
-/// back so the peer address agrees with it.
+/// The client describes *itself* with `myIP`/`myPort` (query string)
+/// and `sourceIP`/`sourcePort`/`tag`/`sendCount` (form body — see
+/// [`HttpRequest::form_pairs`]).  All of those are echoed back, so the
+/// response is self-describing and the client's own correlation values
+/// survive the round trip.
 fn get_peer_address_response_body(req: &HttpRequest) -> String {
-    let query = req.path.split_once('?').map(|(_, q)| q).unwrap_or("");
-    let mut my_ip = "127.0.0.1".to_string();
-    let mut my_port: u32 = 0;
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            match k {
-                "myIP" => my_ip = v.to_string(),
-                "myPort" => my_port = v.parse().unwrap_or(0),
-                _ => {}
-            }
-        }
-    }
-    if my_ip.is_empty() {
-        my_ip = "127.0.0.1".to_string();
-    }
+    let my_ip = req
+        .param("myIP")
+        .filter(|v| !v.is_empty())
+        .or_else(|| req.param("sourceIP").filter(|v| !v.is_empty()))
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let my_port: u32 = req
+        .param("myPort")
+        .and_then(|v| v.parse().ok())
+        .or_else(|| req.param("sourcePort").and_then(|v| v.parse().ok()))
+        .unwrap_or(0);
+    let tag = req
+        .param("tag")
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "emulator".to_string());
+    let send_count: u32 = req
+        .param("sendCount")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
 
+    // The peer is the emulator itself: the peer traffic is relayed by
+    // the ProtoTunnel relay the emulator binds on :3659.
     format!(
         "sourceIP={my_ip}\r\n\
          sourcePort={my_port}\r\n\
-         targetIP={my_ip}\r\n\
-         targetPort={QOS_UDP_PORT}\r\n\
-         tag=emulator\r\n\
-         sendCount=1\r\n\
-         peerIP={my_ip}\r\n\
-         peerPort={QOS_UDP_PORT}\r\n"
+         targetIP={PEER_ADDRESS}\r\n\
+         targetPort={PEER_RELAY_UDP_PORT}\r\n\
+         tag={tag}\r\n\
+         sendCount={send_count}\r\n\
+         peerIP={PEER_ADDRESS}\r\n\
+         peerPort={PEER_RELAY_UDP_PORT}\r\n"
     )
 }
 
 /// Routes HTTP requests for telemetry sinks and squad content distribution.
+///
+/// # Logging
+///
+/// Every request is logged at `info` with the full request line, the
+/// path *including* its query string, the `Host` header, the
+/// `User-Agent`, the `Content-Type` and whether the caller is a ProtoHttp
+/// client.  This is the only place the sink sees the request, and the
+/// request line is what tells us what the client is really asking for —
+/// the routing decision alone is not enough to diagnose a probe that
+/// goes missing.
+///
+/// The `Host` header is **not** used for routing: the client may connect
+/// to a bare IP while sending `Host: accounts.ea.com` (or
+/// `Host: spring18.gosredirector.ea.com`), so routing is by path only.
 pub fn route_http_request(req: &HttpRequest) -> HttpResponse {
-    let path = req.path.split('?').next().unwrap_or(&req.path);
+    let path = req.path_only();
+    let proto_http_ua = req.proto_http_user_agent();
 
-    tracing::debug!("[HTTP Sink] {} {}", req.method, path);
+    tracing::info!(
+        "[HTTP Sink] request: {method} {target} | host={host} | ua={ua} | ctype={ctype} | protohttp={proto} | alpn={alpn}",
+        method = req.method,
+        target = req.path,
+        host = req.header("host").unwrap_or("<none>"),
+        ua = req.header("user-agent").unwrap_or("<none>"),
+        ctype = req.header("content-type").unwrap_or("<none>"),
+        proto = proto_http_ua.is_some(),
+        alpn = req.alpn.as_deref().unwrap_or("<tls-layer>"),
+    );
 
-    match path {
+    let response = match path {
         // Fast telemetry sink endpoints for river / pinEvents
         "/pinEvents" | "/river" | "/telemetry" | "/" => {
             tracing::info!("[Telemetry Sink] Absorbed {} telemetry ping", req.method);
@@ -380,13 +728,19 @@ pub fn route_http_request(req: &HttpRequest) -> HttpResponse {
         // catch-all Nucleus pattern matches any path containing "auth",
         // and `/qos/firewall` does not, but `/qos/qos` must not be
         // swallowed by the telemetry fall-through either.
+        //
+        // The client issues these with GET; the arms are deliberately
+        // method-agnostic so a POST from a different ProtoHttp build
+        // still gets a well-formed answer.
         "/qos/qos" => {
             tracing::info!("[QoS HTTP] Serving QoS configuration metadata");
-            HttpResponse::ok_xml(&qos_response_body())
+            let qos = QosRequest::from_request(req);
+            HttpResponse::ok_xml(&qos_response_body(&qos))
         }
         "/qos/firewall" => {
             tracing::info!("[QoS HTTP] Serving firewall metadata");
-            HttpResponse::ok_xml(&firewall_response_body())
+            let qos = QosRequest::from_request(req);
+            HttpResponse::ok_xml(&firewall_response_body(&qos))
         }
         "/qos/firetype" => {
             tracing::info!("[QoS HTTP] Serving firewall-type classification");
@@ -394,7 +748,8 @@ pub fn route_http_request(req: &HttpRequest) -> HttpResponse {
         }
         "/getPeerAddress" => {
             tracing::info!("[QoS HTTP] Serving peer address discovery");
-            HttpResponse::ok_xml(&get_peer_address_response_body(req))
+            // The body is a list of `name=value` pairs, not XML.
+            HttpResponse::ok_text(&get_peer_address_response_body(req))
         }
         // Synthetic EA Nucleus / Gateway / Identity Auth Token endpoint
         p if p.contains("token") || p.contains("auth") || p.contains("login") || p.contains("pid") => {
@@ -442,6 +797,13 @@ pub fn route_http_request(req: &HttpRequest) -> HttpResponse {
             tracing::info!("[HTTP Sink] Fast-pathing unmapped endpoint: {}", path);
             HttpResponse::ok_json(r#"{"status":"ok","code":0,"server_status":0}"#)
         }
+    };
+
+    // A ProtoHttp client gets a ProtoHttp-shaped response: an exact
+    // Content-Length, no chunked framing, and a closed connection.
+    match proto_http_ua {
+        Some(ua) => response.for_proto_http(Some(&ua)),
+        None => response,
     }
 }
 
@@ -821,5 +1183,392 @@ mod tests {
         assert!(body.contains("\"jitter_ms\":3"));
         assert!(body.contains("\"dropped_frames\":0"));
         assert!(body.contains("\"cipher_reuse_count\":42"));
+    }
+
+    // -----------------------------------------------------------------
+    // ProtoHttp user-agent handling
+    // -----------------------------------------------------------------
+
+    /// The live FIFA 22 ProtoHttp user agent, verbatim from the
+    /// `/redirector/getServerInstance` request in `emulator_server.log`
+    /// and from the format string at `FIFA22.exe` file offset
+    /// `0x7575C00`.
+    const FIFA22_PROTO_HTTP_UA: &str = "ProtoHttp 1.3/DS 15.1.7.0.3 (Windows)";
+
+    /// A ProtoHttp user agent must be recognised, and its versions
+    /// recovered.
+    #[test]
+    fn test_proto_http_user_agent_is_recognised() {
+        let raw = format!(
+            "GET /qos/qos?vers=1&qtyp=2 HTTP/1.1\r\n\
+             Host: qosapi:443\r\n\
+             User-Agent: {FIFA22_PROTO_HTTP_UA}\r\n\r\n"
+        );
+        let req = parse_http_request(raw.as_bytes()).unwrap();
+
+        assert!(req.is_proto_http(), "the ProtoHttp user agent must be recognised");
+
+        let ua = req.proto_http_user_agent().expect("must parse");
+        assert_eq!(ua.http_version, (1, 3));
+        assert_eq!(ua.ds_version, [15, 1, 7, 0, 3]);
+        assert_eq!(ua.platform.as_deref(), Some("Windows"));
+    }
+
+    /// A non-ProtoHttp user agent must not be mistaken for one.
+    #[test]
+    fn test_non_proto_http_user_agent_is_not_recognised() {
+        let raw = b"GET /qos/qos HTTP/1.1\r\n\
+                    Host: qosapi:443\r\n\
+                    User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        assert!(!req.is_proto_http());
+        assert!(req.proto_http_user_agent().is_none());
+    }
+
+    /// ProtoHttp is a plain HTTP/1.1 client that sends `Connection: Close`
+    /// and frames responses by `Content-Length`.  A response to a ProtoHttp
+    /// client must therefore close the connection and carry an exact
+    /// `Content-Length` — and must never be chunked, because the client
+    /// has no chunked decoder for arbitrary servers.
+    #[test]
+    fn test_proto_http_requests_get_a_proto_http_shaped_response() {
+        let raw = format!(
+            "GET /qos/qos?vers=1&qtyp=2 HTTP/1.1\r\n\
+             Host: qosapi:443\r\n\
+             User-Agent: {FIFA22_PROTO_HTTP_UA}\r\n\r\n"
+        );
+        let req = parse_http_request(raw.as_bytes()).unwrap();
+        let resp = route_http_request(&req);
+        let bytes = resp.to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+
+        // Show the exact bytes on the wire.
+        println!("--- ProtoHttp response ---\n{text}\n---");
+
+        assert!(text.starts_with("HTTP/1.1 200 OK\r\n"));
+        assert!(
+            text.contains("\r\nConnection: Close\r\n"),
+            "a ProtoHttp client asked for `Connection: Close`; got:\n{text}"
+        );
+        assert!(
+            !text.contains("Transfer-Encoding"),
+            "ProtoHttp must never be sent a chunked response; got:\n{text}"
+        );
+
+        // The Content-Length must be the exact body length.
+        let body = &bytes[bytes
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("the header block must end")
+            + 4..];
+        assert!(
+            text.contains(&format!("Content-Length: {}\r\n", body.len())),
+            "the Content-Length must equal the body length; got:\n{text}"
+        );
+    }
+
+    /// A request that is *not* ProtoHttp keeps the default response shape.
+    #[test]
+    fn test_non_proto_http_requests_keep_the_default_response_shape() {
+        let raw = b"GET /qos/qos HTTP/1.1\r\nHost: qosapi:443\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        let bytes = resp.to_bytes();
+        let text = String::from_utf8_lossy(&bytes);
+
+        assert!(text.contains("\r\nConnection: close\r\n"));
+        assert!(
+            !text.contains("User-Agent:"),
+            "the ProtoHttp user agent is only added for ProtoHttp clients; got:\n{text}"
+        );
+    }
+
+    /// The `Host` header must not influence routing: the client connects
+    /// to a bare IP but sends `Host: accounts.ea.com` (or
+    /// `Host: spring18.gosredirector.ea.com`).
+    #[test]
+    fn test_host_header_does_not_affect_routing() {
+        for host in [
+            "accounts.ea.com",
+            "spring18.gosredirector.ea.com",
+            "qosapi",
+            "127.0.0.1:443",
+        ] {
+            let raw = format!("GET /qos/qos HTTP/1.1\r\nHost: {host}\r\n\r\n");
+            let req = parse_http_request(raw.as_bytes()).unwrap();
+            let resp = route_http_request(&req);
+            let body = String::from_utf8(resp.body).unwrap();
+            assert!(
+                body.contains("<qosport>"),
+                "Host: {host} must still reach the /qos/qos handler"
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // QoS request/response details
+    // -----------------------------------------------------------------
+
+    /// The client issues the QoS probes with GET.  The handlers are
+    /// method-agnostic so a POST from a different ProtoHttp build still
+    /// gets a well-formed answer rather than the fast-path fallback.
+    #[test]
+    fn test_qos_endpoints_accept_both_get_and_post() {
+        for method in ["GET", "POST"] {
+            for path in [
+                "/qos/qos?vers=1&qtyp=2",
+                "/qos/firewall?vers=1&nint=1",
+                "/qos/firetype?vers=1&rqid=7&rqsc=0&inip=0&inpt=0",
+                "/getPeerAddress?myIP=127.0.0.1&myPort=5000&version=1.0",
+            ] {
+                let raw = format!("{method} {path} HTTP/1.1\r\nHost: qosapi:443\r\n\r\n");
+                let req = parse_http_request(raw.as_bytes()).unwrap();
+                let resp = route_http_request(&req);
+                assert_eq!(resp.status_code, 200, "{method} {path}");
+                let body = String::from_utf8_lossy(&resp.body);
+                assert!(
+                    !body.contains("\"status\":\"ok\""),
+                    "{method} {path} must be answered by the QoS handler, not the fast path"
+                );
+            }
+        }
+    }
+
+    /// The client sends `rqid` (request id) as a query parameter and the
+    /// response must carry the same value back as `<requestid>`.
+    #[test]
+    fn test_qos_response_echoes_the_client_request_id() {
+        let raw = b"GET /qos/qos?vers=1&qtyp=2&rqid=42&rqsc=7 HTTP/1.1\r\nHost: qosapi:443\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        let body = String::from_utf8(resp.body).unwrap();
+
+        assert_eq!(
+            extract_element(&body, "requestid").as_deref(),
+            Some("42"),
+            "the response must echo the client's rqid"
+        );
+        assert_eq!(
+            extract_element(&body, "reqsecret").as_deref(),
+            Some("7"),
+            "the response must echo the client's rqsc"
+        );
+    }
+
+    /// The client *rejects* a QoS response whose `requestid` is zero
+    /// (`0x141FE874D` -> fail with -4), so a client that sends no `rqid`
+    /// — or sends a zero one — must still be given a non-zero id.
+    #[test]
+    fn test_qos_request_id_is_never_zero() {
+        for query in ["", "?rqid=0", "?rqid=notanumber"] {
+            let raw = format!("GET /qos/qos?vers=1&qtyp=2{query} HTTP/1.1\r\nHost: qosapi:443\r\n\r\n");
+            let req = parse_http_request(raw.as_bytes()).unwrap();
+            let resp = route_http_request(&req);
+            let body = String::from_utf8(resp.body).unwrap();
+
+            let requestid: u32 = extract_element(&body, "requestid")
+                .expect("<requestid> must be present")
+                .parse()
+                .expect("<requestid> must be an integer");
+            assert_ne!(
+                requestid, 0,
+                "the client aborts the QoS step when requestid is 0 (FIFA22.exe 0x141FE874D)"
+            );
+        }
+    }
+
+    /// The `firewall` response must carry the same values the QoS
+    /// response does, because it is the same type-3 request.
+    #[test]
+    fn test_firewall_response_echoes_the_client_request_id() {
+        let raw = b"GET /qos/firewall?vers=1&nint=1&rqid=99 HTTP/1.1\r\nHost: qosapi:443\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        let body = String::from_utf8(resp.body).unwrap();
+        assert_eq!(extract_element(&body, "requestid").as_deref(), Some("99"));
+    }
+
+    /// The `getPeerAddress` body is a list of `name=value` pairs, not
+    /// XML, so it must not be served as `application/xml`.
+    #[test]
+    fn test_get_peer_address_is_served_as_text_plain() {
+        let raw = b"GET /getPeerAddress?myIP=127.0.0.1&myPort=5000&version=1.0 HTTP/1.1\r\nHost: qosapi:443\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+
+        assert_eq!(resp.status_code, 200);
+        assert_eq!(
+            resp.content_type, "text/plain",
+            "the getPeerAddress body is `name=value` lines, not XML"
+        );
+        let body = String::from_utf8(resp.body).unwrap();
+        assert!(
+            !body.contains("<"),
+            "the getPeerAddress body must not look like XML; got:\n{body}"
+        );
+    }
+
+    /// The client parses the `getPeerAddress` IP fields with a
+    /// dotted-quad parser (`0x140C96010`), so the response must carry a
+    /// dotted quad — unlike `qosip`, which is a decimal u32.
+    #[test]
+    fn test_get_peer_address_echoes_the_requested_address() {
+        let raw = b"GET /getPeerAddress?myIP=10.1.2.3&myPort=5000&version=1.0 HTTP/1.1\r\nHost: qosapi:443\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        let body = String::from_utf8(resp.body).unwrap();
+
+        // The client's own address is echoed back.
+        assert!(body.contains("sourceIP=10.1.2.3\r\n"), "{body}");
+        assert!(body.contains("sourcePort=5000\r\n"), "{body}");
+        // The peer is the emulator, on the relay port it binds.
+        assert!(body.contains("targetIP=127.0.0.1\r\n"), "{body}");
+        assert!(
+            body.contains(&format!("peerPort={PEER_RELAY_UDP_PORT}\r\n")),
+            "the peer port must be the UDP port the emulator binds; got:\n{body}"
+        );
+    }
+
+    /// `sourceIP`, `sourcePort`, `tag` and `sendCount` are not in either
+    /// URL format the client builds (`0x79F6010`, `0x79F5F28`) — the
+    /// client sends them as an `application/x-www-form-urlencoded` body
+    /// (`0x79F6076`).  They must be read from the body and echoed.
+    #[test]
+    fn test_get_peer_address_reads_the_form_body() {
+        let body = b"sourceIP=10.1.2.3&sourcePort=5000&tag=player-2&sendCount=4";
+        let mut raw = Vec::new();
+        raw.extend_from_slice(
+            b"POST /getPeerAddress?myIP=10.1.2.3&myPort=5000&version=1.0 HTTP/1.1\r\n\
+              Host: qosapi:443\r\n\
+              Content-Type: application/x-www-form-urlencoded\r\n\
+              Content-Length: ",
+        );
+        raw.extend_from_slice(body.len().to_string().as_bytes());
+        raw.extend_from_slice(b"\r\n\r\n");
+        raw.extend_from_slice(body);
+
+        let req = parse_http_request(&raw).unwrap();
+        let resp = route_http_request(&req);
+        let text = String::from_utf8(resp.body).unwrap();
+
+        assert!(text.contains("sourceIP=10.1.2.3\r\n"), "{text}");
+        assert!(text.contains("sourcePort=5000\r\n"), "{text}");
+        assert!(text.contains("tag=player-2\r\n"), "{text}");
+        assert!(text.contains("sendCount=4\r\n"), "{text}");
+    }
+
+    /// A body is only read as form data when the client says it is form
+    /// data — otherwise a `text/plain` body would be mis-parsed.
+    #[test]
+    fn test_a_non_form_body_is_not_parsed_as_form_data() {
+        let raw = b"POST /getPeerAddress?myIP=127.0.0.1&myPort=5000 HTTP/1.1\r\n\
+                    Host: qosapi:443\r\n\
+                    Content-Type: text/plain\r\n\
+                    Content-Length: 32\r\n\
+                    \r\n\
+                    sourceIP=1.2.3.4&sourcePort=99\r\n";
+        let req = parse_http_request(raw).unwrap();
+        assert!(req.form_pairs().is_empty());
+        assert_eq!(req.param("sourceIP"), None);
+        // The query string still works.
+        assert_eq!(req.param("myIP").as_deref(), Some("127.0.0.1"));
+    }
+
+    /// The peer port the response advertises must be one the emulator
+    /// actually binds: the ProtoTunnel relay is on `:3659`
+    /// (`crates/emulator-server/src/lib.rs`).
+    #[test]
+    fn test_the_advertised_peer_port_is_a_port_the_emulator_binds() {
+        assert_eq!(PEER_RELAY_UDP_PORT, 3659);
+        assert_eq!(QOS_UDP_PORT, 17498);
+    }
+
+    /// The client looks up exactly these seven names in the
+    /// `getPeerAddress` response.
+    #[test]
+    fn test_get_peer_address_carries_every_name_the_client_looks_up() {
+        let raw = b"GET /getPeerAddress?myIP=127.0.0.1&myPort=5000&version=1.0 HTTP/1.1\r\nHost: qosapi:443\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        let body = String::from_utf8(resp.body).unwrap();
+
+        for field in [
+            "targetIP", "targetPort", "tag", "sendCount", "sourcePort", "peerIP", "peerPort",
+        ] {
+            assert!(
+                body.contains(&format!("{field}=")),
+                "the client looks up `{field}`; the response must carry it"
+            );
+        }
+    }
+
+    /// The QoS responder the client is told to probe is the emulator's own
+    /// UDP listener, which binds `:17498`
+    /// (`crates/emulator-server/src/lib.rs`).
+    #[test]
+    fn test_the_advertised_qos_port_is_the_port_the_emulator_binds() {
+        assert_eq!(QOS_UDP_PORT, 17498);
+        let raw = b"GET /qos/qos HTTP/1.1\r\nHost: qosapi:443\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+        let body = String::from_utf8(resp.body).unwrap();
+        assert!(body.contains("<qosport>17498</qosport>"), "{body}");
+    }
+
+    /// An unknown path is fast-pathed with a 200 so the client never
+    /// stalls waiting for a response.
+    #[test]
+    fn test_unknown_path_is_fast_pathed_with_a_200() {
+        let raw = b"GET /some/unmapped/ea/path HTTP/1.1\r\nHost: accounts.ea.com\r\n\r\n";
+        let req = parse_http_request(raw).unwrap();
+        let resp = route_http_request(&req);
+
+        assert_eq!(resp.status_code, 200);
+        assert_eq!(resp.content_type, "application/json");
+        let body = String::from_utf8(resp.body).unwrap();
+        assert!(body.contains("\"status\":\"ok\""), "{body}");
+    }
+
+    /// The sink speaks HTTP/1.1 only.  An HTTP/2 connection preface must
+    /// be detected, and must never be mis-routed as the request line
+    /// `PRI * HTTP/2.0`.
+    #[test]
+    fn test_http2_preface_is_detected_and_not_parsed_as_http11() {
+        let preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n\x00\x00\x00\x04\x00";
+
+        assert!(is_http2_preface(preface));
+        assert!(
+            parse_http_request(preface).is_none(),
+            "an HTTP/2 preface must not be parsed as an HTTP/1.1 request"
+        );
+
+        assert!(!is_http2_preface(b"GET /qos/qos HTTP/1.1\r\n\r\n"));
+        assert!(parse_http_request(b"GET /qos/qos HTTP/1.1\r\n\r\n").is_some());
+    }
+
+    /// The sink must never point the client at a real EA host: the
+    /// responses are fully self-contained, and the QoS peer address is
+    /// the emulator's own loopback address.
+    #[test]
+    fn test_no_response_points_at_a_real_ea_host() {
+        let paths = [
+            "/qos/qos",
+            "/qos/firewall",
+            "/qos/firetype",
+            "/getPeerAddress?myIP=127.0.0.1&myPort=5000&version=1.0",
+        ];
+        for path in paths {
+            let raw = format!("GET {path} HTTP/1.1\r\nHost: accounts.ea.com\r\n\r\n");
+            let req = parse_http_request(raw.as_bytes()).unwrap();
+            let resp = route_http_request(&req);
+            let body = String::from_utf8_lossy(&resp.body).to_lowercase();
+
+            for forbidden in ["http://", "https://", ".ea.com", ".ea.net", ".dice.se"] {
+                assert!(
+                    !body.contains(forbidden),
+                    "{path} must not reference {forbidden}; got:\n{body}"
+                );
+            }
+        }
     }
 }

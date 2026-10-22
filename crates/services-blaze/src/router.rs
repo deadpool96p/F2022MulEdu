@@ -95,29 +95,67 @@ impl BlazeRouter {
             }
 
             // Authentication Component (0x0001)
-            (COMPONENT_AUTH, CMD_LIST_USER_ENTITLEMENTS)
-            | (COMPONENT_AUTH, 0x0032)
-            | (COMPONENT_AUTH, 0x0047)
-            | (COMPONENT_AUTH, 0x005A) => {
-                let notif = if !self.session.is_logged_in {
-                    let _ = handle_login(req, &mut self.session, &self.store)?;
-                    let notif_pkt = build_notify_user_added(&self.session)?;
-                    Some(notif_pkt)
-                } else {
-                    None
-                };
-                let resp = handle_list_user_entitlements(req, &self.session)?;
-                Ok((resp, notif))
-            }
-            (COMPONENT_AUTH, _) => {
-                let resp = handle_login(req, &mut self.session, &self.store)?;
+            //
+            // The routing mirrors EA's own `AuthenticationRouter`
+            // (`references/Skate3BlazeServer/.../Blaze/Routers/AuthenticationRouter.cs`):
+            // `acceptTos` and `getEntitlements` get an empty response,
+            // `createWalUserSession` gets EA's own response model, and every
+            // other command gets `ERR_COMMAND_NOT_FOUND`.
+            //
+            // The emulator used to answer *any* `Authentication` command with
+            // a fabricated login response and an entitlement list. That is
+            // what the live FIFA 22 capture shows going wrong: the client
+            // sent `Comp=0x0001, Cmd=0x0046` -- `logout`, with an empty
+            // payload -- and the reply it got back was a login response full
+            // of members the client's `logout` schema does not have, so the
+            // client could not decode it and retried every ~10 s.
+            //
+            // `logout` itself is answered with an empty **success**, not with
+            // `ERR_COMMAND_NOT_FOUND`. The reference router does not
+            // implement it, but the retail server does, and the live client
+            // answers an errored `logout` by sending `logout` again -- the
+            // capture shows a fresh Fire2 message number on every attempt
+            // (0x29, 0x2A, 0x2B, ... 0x2F), so these are new requests, not
+            // retransmissions.
+            (COMPONENT_AUTH, CMD_ACCEPT_TOS) => {
+                ensure_session(req, &mut self.session, &self.store);
+                let resp = handle_accept_tos(req)?;
                 let notif_pkt = build_notify_user_added(&self.session)?;
                 Ok((resp, Some(notif_pkt)))
             }
+            (COMPONENT_AUTH, CMD_GET_ENTITLEMENTS) => {
+                let resp = handle_get_entitlements(req)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_AUTH, CMD_LOGOUT) => {
+                let resp = handle_logout(req)?;
+                // The client considers itself logged out now, so the local
+                // session must go with it.  The identity fields are kept so
+                // that a command arriving before the next `ensure_session`
+                // still has a usable user to book against.
+                self.session.is_logged_in = false;
+                Ok((resp, None))
+            }
+            (COMPONENT_AUTH, CMD_CREATE_WAL_USER_SESSION) => {
+                ensure_session(req, &mut self.session, &self.store);
+                let resp = handle_create_wal_user_session(req, &self.session)?;
+                let notif_pkt = build_notify_user_added(&self.session)?;
+                Ok((resp, Some(notif_pkt)))
+            }
+            (COMPONENT_AUTH, _) => {
+                let resp = handle_command_not_found(req)?;
+                Ok((resp, None))
+            }
 
             // UserSessions Component (0x7802 / 0x0019)
+            //
+            // `updateNetworkInfo` is where a client registers itself with
+            // the server, so it is also where the emulator creates its local
+            // user if the client has not established one through
+            // `acceptTos` or `createWalUserSession`.
             (COMPONENT_USER_SESSIONS, CMD_UPDATE_NETWORK_INFO)
             | (COMPONENT_USERS, CMD_UPDATE_NETWORK_INFO) => {
+                ensure_session(req, &mut self.session, &self.store);
                 handle_update_network_info(req, &mut self.session, &self.store)
             }
             (COMPONENT_USER_SESSIONS, CMD_LOOKUP_USERS) => {

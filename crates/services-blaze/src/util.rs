@@ -42,21 +42,108 @@ pub const CMD_SET_CONNECTION_STATE: u16 = 0x0017;
 pub const COMPONENT_STATS: u16 = 0x0007;
 pub const COMPONENT_CENSUS_DATA: u16 = 0x000A;
 
+/// The components the emulator implements, in the order they are advertised
+/// to the client in the `preAuth` reply's `CIDS` list.
+///
+/// `CIDS` is how the client learns which components the server implements:
+/// it will not call a component that is not on the list, and it will call one
+/// that is. So the list must contain exactly the components the emulator can
+/// answer.
+///
+/// The authoritative Blaze 15 reference is the retail `preAuth` reply
+/// (`crates/services-blaze/tests/fixtures/ea_preauth_blaze_15_1_1_4_6.bin`),
+/// whose `CIDS` lists 22 ids:
+///
+/// ```text
+/// 30728, 1, 30729, 25, 30730, 27, 4, 7, 9, 10, 33, 63490, 15,
+/// 30720, 30721, 30722, 30723, 30724, 30725, 30726, 30727, 2000
+/// ```
+///
+/// Mapping those through EA's own component table
+/// (`references/Skate3BlazeServer/.../Blaze/MessageLists/ComponentsList.cs`
+/// and `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §4.1) gives
+/// `1` Authentication, `4` GameManager, `7` Stats, `9` Util, `10`
+/// CensusData, `15` Messaging, `25` AssociationLists, `27`
+/// GpsContentController, `33` Achievements, `30722` (`0x7802`) UserSessions,
+/// plus the game-specific `0x7800`-range components, `2000` and `63490`.
+///
+/// The emulator implements the subset it can genuinely answer. The rest
+/// (Messaging, GpsContentController, Achievements, the game-specific
+/// `0x7800`-range ids, `2000` and `63490`) are **not** advertised: listing a
+/// component the emulator cannot serve invites a call that can only fail.
+pub const SUPPORTED_COMPONENT_IDS: &[u16] = &[
+    0x0001, // Authentication
+    0x0004, // GameManager
+    0x0007, // Stats
+    0x0009, // Util
+    0x000A, // CensusData
+    0x0019, // AssociationLists
+    0x08BA, // PerfComponent (FIFA Online)
+    0x7802, // UserSessions
+];
+
+/// The QoS ping-site alias the emulator advertises.
+///
+/// The alias is the key the client looks up in the `QOSS.LTPS` map, and it is
+/// the same name the emulator reports as the user's band-width ping site in
+/// the `NotifyUserAdded` notification (`BPS`, see
+/// `crates/services-blaze/src/usersessions.rs`). EA's own Blaze 15 server
+/// advertises `bio-dub`, `bio-iad`, `bio-sjc`, `bio-syd`, `i3d-gru` and
+/// `i3d-nrt`; the emulator advertises the same six, so the two agree.
+pub const QOS_SITE_ALIAS: &str = "bio-iad";
+
+/// The QoS ping sites EA's own Blaze 15 server advertises: the alias and the
+/// host name, verbatim from the authentic `preAuth` reply
+/// (`crates/services-blaze/tests/fixtures/ea_preauth_blaze_15_1_1_4_6.bin`).
+///
+/// The client resolves the host name to probe the site, so the name has to
+/// be a name (an IP literal buys nothing here -- the QoS probe is plain UDP
+/// and carries no TLS, so there is no SNI to get right), and it has to be a
+/// name the local shim reroutes. The shim's `getaddrinfo` hook
+/// (`shim/src/hooks_winsock.cpp`, `ShouldRerouteHost`) rewrites every host
+/// that ends in `.ea.com` to the emulator host, so `qos-prod-*.gos.ea.com`
+/// resolves to the local responder and never leaves the machine.
+///
+/// Note that EA's own site port is `17504`; the emulator advertises its own
+/// responder's port instead, because the shim rewrites the *host* and not
+/// the UDP port -- a probe to `127.0.0.1:17504` would find nothing
+/// listening.
+pub const EA_QOS_PING_SITES: &[(&str, &str)] = &[
+    ("bio-dub", "qos-prod-bio-dub-common-common.gos.ea.com"),
+    ("bio-iad", "qos-prod-bio-iad-common-common.gos.ea.com"),
+    ("bio-sjc", "qos-prod-bio-sjc-common-common.gos.ea.com"),
+    ("bio-syd", "qos-prod-bio-syd-common-common.gos.ea.com"),
+    ("i3d-gru", "qos-prod-m3d-brz-common-common.gos.ea.com"),
+    ("i3d-nrt", "qos-prod-m3d-nrt-common-common.gos.ea.com"),
+];
+
+/// The number of latency probes the client should send, as advertised by
+/// EA's own Blaze 15 server.
+pub const QOS_NUM_LATENCY_PROBES: u64 = 10;
+
+/// The QoS round-trip budget, in microseconds, as advertised by EA's own
+/// Blaze 15 server (`5 s`).
+pub const QOS_TIME_MICROSECONDS: u64 = 5_000_000;
+
 /// Builds a `QosPingSiteInfo` struct.
 ///
-/// EA's schema (`QosPingSiteInfo` in
-/// `references/Skate3BlazeServer/.../Util/Models/QosPingSiteInfo.cs`):
+/// EA's Blaze 15 schema -- the one the two authentic EA `preAuth` replies
+/// use -- carries exactly two members:
 ///
 /// ```text
 /// PSA : string   (address)
 /// PSP : ushort   (port)
-/// SNA : string   (site name)
 /// ```
-fn qos_ping_site(address: &str, port: u16, site_name: &str) -> TdfStruct {
+///
+/// The open-source reconstruction of the *older* Blaze 2/3 schema
+/// (`references/Skate3BlazeServer/.../Util/Models/QosPingSiteInfo.cs`) also
+/// declares `SNA` (site name), but no retail Blaze 15 or Blaze 18 server
+/// sends it, and an unknown member tag is fatal to EA's TDF decoder
+/// (`BLAZE_ERR_TDF_TAG_NOT_FOUND`). It is therefore not sent.
+fn qos_ping_site(address: &str, port: u16) -> TdfStruct {
     let mut site = TdfStruct::new();
     site.set("PSA", TdfValue::String(address.to_string()));
     site.set("PSP", TdfValue::Integer(port as u64));
-    site.set("SNA", TdfValue::String(site_name.to_string()));
     site
 }
 
@@ -85,39 +172,84 @@ fn fetch_config_response(entries: Vec<(TdfValue, TdfValue)>) -> TdfStruct {
 
 /// The client configuration map EA's server ships in the `preAuth` reply.
 ///
-/// The keys and their values are taken from the two authentic EA `preAuth`
-/// replies (Blaze 15.1.1.4.6 and 18.3.0), with two changes:
+/// The two authentic EA `preAuth` replies carry 19 (Blaze 15.1.1.4.6) and 22
+/// (Blaze 18.3.0) keys, of which 13 are common to both:
 ///
-///  * every host is rewritten to `127.0.0.1`, so the client can never reach
-///    a real EA service, and
-///  * the keys that carry third-party credentials or third-party endpoints
-///    (`voipSTT*`, `voipTTS*`, `xbl*`, `xboxOne*`) are dropped entirely --
-///    the emulator speaks no Watson and no Live services.
+/// ```text
+/// associationListSkipInitialSet  autoReconnectEnabled
+/// cachedUserRefreshInterval      connIdleTimeout
+/// defaultRequestTimeout          maxReconnectAttempts
+/// nucleusConnect                 nucleusConnectTrusted
+/// nucleusPortal                  nucleusProxy
+/// pingPeriod                     userManagerMaxCachedUsers
+/// voipHeadsetUpdateRate
+/// ```
+///
+/// Those 13 are all present here, plus `clientUserMetricsUpdateRate` and
+/// `nonResumableTimeoutScale` (Blaze 18.3.0), the three Bytevault keys and
+/// the four `xbl`/`xboxOne`/ProtoHttp keys (Blaze 15.1.1.4.6) -- 21 keys in
+/// all.
+///
+/// **The service host names are EA's own, verbatim.** This used to be a
+/// deliberate divergence: every service was rewritten to `127.0.0.1`, on the
+/// theory that the client must never be told about a real EA host. That
+/// theory is wrong, and it breaks the client:
+///
+/// * A URL whose host is an IP literal (`https://127.0.0.1`) makes the
+///   client send a TLS `server_name` extension with a zero-length host
+///   name. rustls 0.23 rejects that (`InvalidMessage(IllegalEmptyValue)`),
+///   so the TLS handshake dies before any HTTP request is made.
+/// * A URL whose host is a name sends a proper SNI, and the emulator's
+///   certificate already carries `*.ea.com` and `*.ea.net` SANs
+///   (`crates/emulator-server/src/tls.rs`).
+///
+/// The name never leaves the machine: the local shim's `getaddrinfo` hook
+/// (`shim/src/hooks_winsock.cpp`, `ShouldRerouteHost`) rewrites every host
+/// that ends in `.ea.com`, `.ea.net` or `.dice.se` to the emulator host, and
+/// `RerouteAllEA = true` is the shipped default (`f22_emu.ini`).
+///
+/// The map is `map<string, string>`, so unlike a struct there is no
+/// "unknown member tag" hazard: a key the client does not know is simply
+/// ignored, and a key it does know but that is missing falls back to the
+/// client's built-in default.
+///
+/// The keys that carry third-party credentials or third-party endpoints are
+/// dropped: `voipSTT*` and `voipTTS*` (Watson speech endpoints, plus EA's
+/// own API keys) and `pinGameId` (game-specific). The emulator speaks no
+/// Watson service and holds no EA credentials.
 fn client_config_entries() -> Vec<(TdfValue, TdfValue)> {
     let entry = |k: &str, v: &str| (TdfValue::String(k.to_string()), TdfValue::String(v.to_string()));
 
     vec![
         entry("associationListSkipInitialSet", "1"),
         entry("autoReconnectEnabled", "0"),
+        entry("bytevaultHostname", "bytevault.gameservices.ea.com"),
+        // EA's own Bytevault port is 42210. The shim rewrites the host but
+        // not the port, so 42210 would connect to nothing; 443 is the port
+        // the emulator's own HTTPS sink serves.
+        entry("bytevaultPort", "443"),
+        entry("bytevaultSecure", "true"),
         entry("cachedUserRefreshInterval", "1s"),
         entry("clientUserMetricsUpdateRate", "60000"),
         entry("connIdleTimeout", "40s"),
         entry("defaultRequestTimeout", "20s"),
         entry("maxReconnectAttempts", "30"),
         entry("nonResumableTimeoutScale", "2.0"),
+        // The Nucleus endpoints, verbatim from EA's Blaze 15 reply. The
+        // shim reroutes each of them to the emulator's HTTPS sink, and the
+        // client sends the right SNI because the URL host is a name.
+        entry("nucleusConnect", "https://accounts.ea.com"),
+        entry("nucleusConnectTrusted", "https://accounts2s.ea.com"),
+        entry("nucleusPortal", "https://signin.ea.com"),
+        entry("nucleusProxy", "https://gateway.ea.com"),
+        entry("Override_ProtoHttp_LoginStateMachine_DedicatedServer_vers", "770,0,NULL"),
         entry("pingPeriod", "20s"),
         entry("userManagerMaxCachedUsers", "0"),
         entry("voipHeadsetUpdateRate", "1000"),
-        // The Nucleus and Bytevault services are served locally by the
-        // emulator's own HTTP sink, which already answers the synthetic
-        // Nucleus auth-token request.
-        entry("nucleusConnect", "https://127.0.0.1"),
-        entry("nucleusConnectTrusted", "https://127.0.0.1"),
-        entry("nucleusPortal", "https://127.0.0.1"),
-        entry("nucleusProxy", "https://127.0.0.1"),
-        entry("bytevaultHostname", "127.0.0.1"),
-        entry("bytevaultPort", "42127"),
-        entry("bytevaultSecure", "true"),
+        entry("xblTokenUrn", "accounts.ea.com"),
+        // The one non-EA host EA's own reply carries. The shim reroutes
+        // `.xboxlive.com` too, so it stays local.
+        entry("xboxOneStringValidationUri", "client-strings.xboxlive.com"),
     ]
 }
 
@@ -150,13 +282,14 @@ fn client_config_entries() -> Vec<(TdfValue, TdfValue)> {
 /// NASP : string   authentication namespace
 /// PILD : string
 /// PLAT : string   platform
-/// QOSS : QosConfigInfo { BWPS, LNP, LTPS, SVID }
+/// QOSS : QosConfigInfo { BWPS, LNP, LTPS, TIME }
 /// RSRC : string
 /// SVER : string   server version
 /// ```
 ///
 /// Note that `ANAM` and a root-level `TIME` are *not* members: the emulator
-/// used to send both, and neither exists in the schema.
+/// used to send both, and neither exists in the schema. `TIME` *is* a member
+/// of `QOSS`, though -- just not of the root struct.
 pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::Result<BlazePacket> {
     let mut resp = TdfStruct::new();
 
@@ -174,22 +307,15 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
     resp.set("PLAT", TdfValue::String("pc".to_string()));
     resp.set("RSRC", TdfValue::String("5091917".to_string()));
 
-    // CIDS: List of supported component IDs
-    let components = vec![
-        TdfValue::Integer(0x0001), // Authentication
-        TdfValue::Integer(0x0004), // GameManager
-        TdfValue::Integer(0x0007), // Stats
-        TdfValue::Integer(0x0009), // Util
-        TdfValue::Integer(0x000A), // CensusData
-        TdfValue::Integer(0x000F), // Clubs
-        TdfValue::Integer(0x0010), // Cards
-        TdfValue::Integer(0x0018), // Stats/Achievements
-        TdfValue::Integer(0x0019), // Users / AssociationLists
-        TdfValue::Integer(0x001C), // GameReporting
-        TdfValue::Integer(0x0021), // Store/Catalog
-        TdfValue::Integer(0x08BA), // PerfComponent
-        TdfValue::Integer(0x7802), // UserSessions
-    ];
+    // CIDS: List of supported component IDs.
+    //
+    // Exactly the components the emulator implements -- see
+    // `SUPPORTED_COMPONENT_IDS` for the derivation from the retail Blaze 15
+    // capture.
+    let components: Vec<TdfValue> = SUPPORTED_COMPONENT_IDS
+        .iter()
+        .map(|id| TdfValue::Integer(*id as u64))
+        .collect();
     resp.set("CIDS", TdfValue::List(blaze_tdf::TdfList::new(TdfType::Integer, components)));
 
     // CONF: the server's client configuration. A struct wrapping a map --
@@ -199,37 +325,58 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
     // QOSS: QoS server configuration pointing at the emulator's QoS
     // responder.
     //
-    // The member names are EA's own, from the code-generated
-    // `QosConfigInfo` (see
-    // `references/Skate3BlazeServer/.../Util/Models/QosConfigInfo.cs`):
+    // The member set is the one the authentic Blaze 15 reply carries
+    // (`crates/services-blaze/tests/fixtures/ea_preauth_blaze_15_1_1_4_6.bin`):
     //
     //   BWPS : QosPingSiteInfo          (the default ping site)
     //   LNP  : ushort                   (number of latency probes)
     //   LTPS : map<string, QosPingSiteInfo>
-    //   SVID : uint                     (service id)
+    //   TIME : uint                     (the QoS time budget, in microseconds)
     //
-    // and `QosPingSiteInfo` carries `PSA` (address), `PSP` (port) and
-    // `SNA` (site name).
-    let site = qos_ping_site(qos_host, qos_port, "emulator-qos");
+    // and `QosPingSiteInfo` carries `PSA` (address) and `PSP` (port).
+    //
+    // The open-source reconstruction of the older Blaze 2/3 schema
+    // (`references/Skate3BlazeServer/.../Util/Models/QosConfigInfo.cs`)
+    // declares `SVID` (service id) instead of `TIME`, and its
+    // `QosPingSiteInfo` also declares `SNA` (site name). Neither retail
+    // Blaze 15 nor retail Blaze 18 sends either tag, and EA's TDF decoder
+    // rejects a member tag that is not in the struct's schema
+    // (`BLAZE_ERR_TDF_TAG_NOT_FOUND`), so sending them would break the
+    // session rather than help it.
+    //
+    // The `LTPS` map advertises the same six sites EA's own Blaze 15 server
+    // advertises, by EA's own host names. The client resolves the name to
+    // probe the site, and the shim reroutes every `.ea.com` name to the
+    // emulator, so the probe still lands on the emulator's UDP responder.
+    let site = qos_ping_site(qos_host, qos_port);
     let mut qos_struct = TdfStruct::new();
-    qos_struct.set("BWPS", TdfValue::Struct(site.clone()));
-    qos_struct.set("LNP", TdfValue::Integer(2));
+    qos_struct.set("BWPS", TdfValue::Struct(site));
+    qos_struct.set("LNP", TdfValue::Integer(QOS_NUM_LATENCY_PROBES));
     qos_struct.set(
         "LTPS",
         TdfValue::Map(TdfMap::new(
             TdfType::String,
             TdfType::Struct,
-            vec![(TdfValue::String("emulator-qos".to_string()), TdfValue::Struct(site))],
+            EA_QOS_PING_SITES
+                .iter()
+                .map(|(alias, host)| {
+                    (
+                        TdfValue::String(alias.to_string()),
+                        TdfValue::Struct(qos_ping_site(host, qos_port)),
+                    )
+                })
+                .collect(),
         )),
     );
-    qos_struct.set("SVID", TdfValue::Integer(1));
+    qos_struct.set("TIME", TdfValue::Integer(QOS_TIME_MICROSECONDS));
     resp.set("QOSS", TdfValue::Struct(qos_struct));
 
     // SVER: the server version, in EA's own format
-    // ("Blaze <sdk> (CL# <build>)").
+    // ("Blaze <sdk> (CL# <build>)"). The retail replies carry a trailing
+    // newline; the emulator matches them byte for byte in shape.
     resp.set(
         "SVER",
-        TdfValue::String("Blaze 15.1.1.10.3 (CL# 5091917)".to_string()),
+        TdfValue::String("Blaze 15.1.1.10.3 (CL# 5091917)\n".to_string()),
     );
 
     tracing::info!("[Blaze Util] Handled preAuth -> QoS directed to {}:{}", qos_host, qos_port);
@@ -535,13 +682,23 @@ mod tests {
         );
     }
 
-    /// Nothing in the configuration map may point at a real EA service.
+    /// The configuration map must advertise EA's own service host names, and
+    /// every one of them must be a host the local shim reroutes.
     ///
-    /// The emulator is a private server: the client must never be sent to
-    /// `accounts.ea.com`, `gateway.ea.com`, `signin.ea.com`, a Bytevault
-    /// host, a Live service, or a Watson speech endpoint.
+    /// This replaces an earlier test that asserted the opposite -- that no
+    /// configuration value may name an EA service. That assumption was
+    /// wrong: a URL whose host is an IP literal makes the client send a TLS
+    /// `server_name` extension with a zero-length host name, which rustls
+    /// 0.23 rejects (`InvalidMessage(IllegalEmptyValue)`), so the handshake
+    /// dies. EA's server advertises host names, and the emulator's
+    /// certificate already carries `*.ea.com` / `*.ea.net` SANs.
+    ///
+    /// The names stay local because the shim reroutes them
+    /// (`shim/src/hooks_winsock.cpp`, `ShouldRerouteHost`), so this test
+    /// pins the set of names to exactly the ones that rule covers: no
+    /// service may point at a host the shim does not rewrite.
     #[test]
-    fn test_no_config_entry_points_at_a_real_ea_service() {
+    fn test_every_config_service_host_is_one_the_shim_reroutes() {
         let req = BlazePacket::new(
             COMPONENT_UTIL,
             CMD_PRE_AUTH,
@@ -563,48 +720,162 @@ mod tests {
             other => panic!("the CONF struct's member must be a map, got {:?}", other),
         };
 
+        // The host names the shim's `ShouldRerouteHost` rewrites.
+        const REROUTED_SUFFIXES: &[&str] = &[
+            ".ea.com",
+            ".ea.net",
+            ".dice.se",
+            ".xboxlive.com",
+            "gosredirector.ea.com",
+        ];
+
+        // The keys whose value names a service the client will connect to.
+        const SERVICE_KEYS: &[&str] = &[
+            "nucleusConnect",
+            "nucleusConnectTrusted",
+            "nucleusPortal",
+            "nucleusProxy",
+            "bytevaultHostname",
+            "xblTokenUrn",
+            "xboxOneStringValidationUri",
+        ];
+
         for (key, value) in &map.entries {
             let (TdfValue::String(key), TdfValue::String(value)) = (key, value) else {
                 panic!("configuration entries must be string -> string");
             };
-            for forbidden in [
-                "ea.com",
-                "eac.ea.com",
-                "gos.ea.com",
-                "xboxlive.com",
-                "watson.cloud.ibm.com",
-            ] {
-                assert!(
-                    !value.contains(forbidden),
-                    "configuration entry `{}` points at a real EA service: {}",
-                    key,
-                    value
-                );
+
+            // No value may be an IP literal: an IP literal is what breaks
+            // the TLS handshake.
+            assert!(
+                !value.contains("127.0.0.1") && !value.contains("localhost"),
+                "configuration entry `{}` names a loopback address: {}",
+                key,
+                value
+            );
+
+            if !SERVICE_KEYS.contains(&key.as_str()) {
+                continue;
             }
+
+            // Strip the scheme and the port, and take the host.
+            let host = value
+                .split("://")
+                .nth(1)
+                .unwrap_or(value)
+                .split('/')
+                .next()
+                .unwrap_or("")
+                .split(':')
+                .next()
+                .unwrap_or("");
+            assert!(
+                !host.is_empty() && !host.parse::<std::net::IpAddr>().is_ok(),
+                "configuration entry `{}` must name a host, not an address: {}",
+                key,
+                value
+            );
+            assert!(
+                REROUTED_SUFFIXES.iter().any(|s| host.ends_with(s)),
+                "configuration entry `{}` names the host `{}`, which the shim does not reroute",
+                key,
+                host
+            );
         }
     }
 
-    /// The `QOSS` struct must use EA's own member names.
+    /// The configuration map must carry EA's host names verbatim, and no
+    /// loopback literal.
+    #[test]
+    fn test_conf_map_carries_ea_hostnames_and_no_loopback_literal() {
+        let req = BlazePacket::new(
+            COMPONENT_UTIL,
+            CMD_PRE_AUTH,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            1,
+            TdfStruct::new(),
+        )
+        .unwrap();
+        let resp = handle_pre_auth(&req, "127.0.0.1", 17498).expect("preAuth handler must not error");
+
+        let conf = match resp.payload.get("CONF") {
+            Some(TdfValue::Struct(s)) => s,
+            other => panic!("CONF must be a struct, got {:?}", other),
+        };
+        let map = match conf.get("CONF") {
+            Some(TdfValue::Map(m)) => m,
+            other => panic!("the CONF struct's member must be a map, got {:?}", other),
+        };
+
+        let mut entries: Vec<(String, String)> = map
+            .entries
+            .iter()
+            .map(|(k, v)| match (k, v) {
+                (TdfValue::String(k), TdfValue::String(v)) => (k.clone(), v.clone()),
+                _ => panic!("configuration entries must be string -> string"),
+            })
+            .collect();
+        entries.sort();
+
+        for (key, value) in &entries {
+            assert!(
+                !value.contains("127.0.0.1") && !value.contains("localhost"),
+                "configuration entry `{}` must not name a loopback address: {}",
+                key,
+                value
+            );
+        }
+
+        for (key, expected) in [
+            ("nucleusConnect", "https://accounts.ea.com"),
+            ("nucleusConnectTrusted", "https://accounts2s.ea.com"),
+            ("nucleusPortal", "https://signin.ea.com"),
+            ("nucleusProxy", "https://gateway.ea.com"),
+            ("bytevaultHostname", "bytevault.gameservices.ea.com"),
+            ("xblTokenUrn", "accounts.ea.com"),
+            (
+                "Override_ProtoHttp_LoginStateMachine_DedicatedServer_vers",
+                "770,0,NULL",
+            ),
+        ] {
+            let found = entries
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str());
+            assert_eq!(
+                found,
+                Some(expected),
+                "configuration entry `{}` must carry EA's own value",
+                key
+            );
+        }
+    }
+
+    /// The `QOSS` struct must use exactly the member set the authentic
+    /// Blaze 15 `preAuth` reply carries.
     ///
-    /// The schema is the one EA's code generator emitted, preserved in
-    /// `references/Skate3BlazeServer/.../Util/Models/QosConfigInfo.cs`:
+    /// The wire schema is the one in the retail capture
+    /// (`crates/services-blaze/tests/fixtures/ea_preauth_blaze_15_1_1_4_6.bin`):
     ///
     /// ```text
     /// QosConfigInfo
     ///   BWPS : QosPingSiteInfo
     ///   LNP  : ushort
     ///   LTPS : map<string, QosPingSiteInfo>
-    ///   SVID : uint
+    ///   TIME : uint
     ///
     /// QosPingSiteInfo
     ///   PSA  : string   (address)
     ///   PSP  : ushort   (port)
-    ///   SNA  : string   (site name)
     /// ```
     ///
-    /// The names we used to ship -- `BWHR`, `LATT`, `PSA` as a nested
-    /// struct, `SKEY` -- do not exist in the schema, so a client that
-    /// decodes `QOSS` by type would read none of them.
+    /// The names we used to ship -- `BWHR`, `LATT`, `SKEY` -- do not exist in
+    /// the schema at all, and `SVID`/`SNA` belong to the older Blaze 2/3
+    /// schema that the open-source model files reconstruct. A member tag the
+    /// client's schema does not know is fatal to EA's TDF decoder, so the
+    /// member set has to be exact.
     #[test]
     fn test_qoss_uses_ea_member_names() {
         let req = BlazePacket::new(
@@ -624,26 +895,34 @@ mod tests {
             other => panic!("QOSS must be a struct, got {:?}", other),
         };
 
-        for member in ["BWPS", "LNP", "LTPS", "SVID"] {
+        for member in ["BWPS", "LNP", "LTPS", "TIME"] {
             assert!(
                 qoss.get(member).is_some(),
-                "QOSS must carry the `{}` member from EA's QosConfigInfo schema",
+                "QOSS must carry the `{}` member from EA's Blaze 15 QosConfigInfo schema",
                 member
             );
         }
-        for bogus in ["BWHR", "LATT", "SKEY"] {
+        for bogus in ["BWHR", "LATT", "SKEY", "SVID"] {
             assert!(
                 qoss.get(bogus).is_none(),
-                "QOSS must not carry `{}`; it is not part of EA's schema",
+                "QOSS must not carry `{}`; it is not part of the Blaze 15 schema",
                 bogus
             );
         }
     }
 
     /// The `LTPS` map maps a site alias to a `QosPingSiteInfo`, and each
-    /// value carries `PSA` (address), `PSP` (port) and `SNA` (site name).
-    /// The emulator's QoS responder must be reachable under the alias the
-    /// client is told to use.
+    /// value carries `PSA` (address) and `PSP` (port).
+    ///
+    /// The map must carry the same six sites EA's own Blaze 15 server
+    /// advertises, by EA's own host names, and every one of them must
+    /// point at the emulator's own UDP responder -- the shim rewrites the
+    /// host name to the emulator, so the probe still lands on the
+    /// responder, and the port has to be the port the responder listens
+    /// on.
+    ///
+    /// The alias the emulator reports as the user's band-width ping site
+    /// (`BPS`) in the `NotifyUserAdded` notification must be one of them.
     #[test]
     fn test_qoss_ltps_map_points_at_the_emulator_qos_responder() {
         let req = BlazePacket::new(
@@ -672,29 +951,139 @@ mod tests {
             "LTPS must advertise at least one QoS ping site"
         );
 
-        let (_alias, site) = ltps
+        // The same six sites EA's own Blaze 15 server advertises.
+        let expected: Vec<(String, String)> = EA_QOS_PING_SITES
+            .iter()
+            .map(|(alias, host)| (alias.to_string(), host.to_string()))
+            .collect();
+        let actual: Vec<(String, String)> = ltps
             .entries
-            .first()
-            .expect("LTPS must have at least one entry");
-        let site = match site {
-            TdfValue::Struct(s) => s,
-            other => panic!("an LTPS value must be a struct, got {:?}", other),
-        };
+            .iter()
+            .map(|(alias, site)| {
+                let alias = match alias {
+                    TdfValue::String(a) => a.clone(),
+                    other => panic!("an LTPS key must be a string, got {:?}", other),
+                };
+                let site = match site {
+                    TdfValue::Struct(s) => s,
+                    other => panic!("an LTPS value must be a struct, got {:?}", other),
+                };
+                let host = match site.get("PSA") {
+                    Some(TdfValue::String(h)) => h.clone(),
+                    other => panic!("a ping site must carry `PSA`, got {:?}", other),
+                };
+                (alias, host)
+            })
+            .collect();
 
         assert_eq!(
-            site.get("PSA"),
-            Some(&TdfValue::String("127.0.0.1".to_string())),
-            "the QoS site address must be the emulator host"
+            actual, expected,
+            "LTPS must advertise the same sites, by the same host names, as EA's Blaze 15 server"
         );
-        assert_eq!(
-            site.get("PSP"),
-            Some(&TdfValue::Integer(17498)),
-            "the QoS site port must be the UDP responder's port"
-        );
+
+        // Every one of them must point at the emulator's own responder: the
+        // shim rewrites the host name, but not the UDP port.
+        for (alias, site) in &ltps.entries {
+            let site = match site {
+                TdfValue::Struct(s) => s,
+                other => panic!("an LTPS value must be a struct, got {:?}", other),
+            };
+            assert_eq!(
+                site.get("PSP"),
+                Some(&TdfValue::Integer(17498)),
+                "the QoS site `{:?}` must carry the UDP responder's port",
+                alias
+            );
+            assert!(
+                site.get("SNA").is_none(),
+                "`SNA` is not part of the Blaze 15 QosPingSiteInfo schema"
+            );
+        }
+
+        // The alias the session notification reports as the user's
+        // band-width ping site must be one of the advertised sites.
         assert!(
-            site.get("SNA").is_some(),
-            "a QoS site must carry its `SNA` site name"
+            ltps.entries.iter().any(|(alias, _)| {
+                matches!(alias, TdfValue::String(a) if a == QOS_SITE_ALIAS)
+            }),
+            "the ping site alias must be the one the session notification uses"
         );
+    }
+
+    /// The `CIDS` list must name exactly the components the emulator
+    /// implements, and it must not name any of the components EA's Blaze 15
+    /// server advertises but the emulator cannot answer.
+    #[test]
+    fn test_cids_names_the_components_the_emulator_implements() {
+        let req = BlazePacket::new(
+            COMPONENT_UTIL,
+            CMD_PRE_AUTH,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            1,
+            TdfStruct::new(),
+        )
+        .unwrap();
+        let resp = handle_pre_auth(&req, "127.0.0.1", 17498).expect("preAuth handler must not error");
+
+        let cids = match resp.payload.get("CIDS") {
+            Some(TdfValue::List(l)) => l,
+            other => panic!("CIDS must be a list, got {:?}", other),
+        };
+
+        let ids: Vec<u64> = cids
+            .items
+            .iter()
+            .map(|v| match v {
+                TdfValue::Integer(i) => *i,
+                other => panic!("a CIDS entry must be an integer, got {:?}", other),
+            })
+            .collect();
+
+        assert_eq!(
+            ids,
+            SUPPORTED_COMPONENT_IDS
+                .iter()
+                .map(|id| *id as u64)
+                .collect::<Vec<u64>>(),
+            "CIDS must list exactly the components the emulator implements"
+        );
+
+        // The components the emulator implements are all on the list.
+        for id in [
+            0x0001u64, // Authentication
+            0x0004,    // GameManager
+            0x0007,    // Stats
+            0x0009,    // Util
+            0x000A,    // CensusData
+            0x0019,    // AssociationLists
+            0x7802,    // UserSessions
+        ] {
+            assert!(ids.contains(&id), "CIDS must contain {:#06X}", id);
+        }
+
+        // The components EA's Blaze 15 server advertises but the emulator
+        // does not implement must not be on the list: a component the
+        // emulator cannot answer is a call that can only fail.
+        for id in [
+            0x000Fu64, // Clubs
+            0x0010,    // Cards
+            0x0018,    // Stats/Achievements
+            0x001C,    // GameReporting
+            0x0021,    // Achievements / Store
+            0x07D0,    // 2000, a game-specific component
+            0xF812,    // 63490, a game-specific component
+            0x7800,    // a 0x7800-range component the emulator does not implement
+            0x7801,
+            0x7803,
+        ] {
+            assert!(
+                !ids.contains(&id),
+                "CIDS must not contain {:#06X}; the emulator does not implement it",
+                id
+            );
+        }
     }
 }
 

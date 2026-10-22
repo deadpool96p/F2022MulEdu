@@ -126,7 +126,7 @@ async fn test_full_match_kickoff_and_60hz_sync() {
 
     let mut p1_login = TdfStruct::new();
     p1_login.set("DSNM", TdfValue::String("RealMadridHost".to_string()));
-    send_blaze_req(&mut p1_stream, 0x0001, 0x001C, 2, p1_login).await; // login
+    send_blaze_req(&mut p1_stream, 0x0001, 0x00E6, 2, p1_login).await; // login
     let _ = read_blaze_packet(&mut p1_stream).await;
     let _ = read_blaze_packet(&mut p1_stream).await; // NotifyUserAdded (0x7802)
 
@@ -139,7 +139,7 @@ async fn test_full_match_kickoff_and_60hz_sync() {
 
     let mut p2_login = TdfStruct::new();
     p2_login.set("DSNM", TdfValue::String("LiverpoolGuest".to_string()));
-    send_blaze_req(&mut p2_stream, 0x0001, 0x001C, 2, p2_login).await; // login
+    send_blaze_req(&mut p2_stream, 0x0001, 0x00E6, 2, p2_login).await; // login
     let _ = read_blaze_packet(&mut p2_stream).await;
     let _ = read_blaze_packet(&mut p2_stream).await; // NotifyUserAdded (0x7802)
 

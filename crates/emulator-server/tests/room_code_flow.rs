@@ -113,7 +113,7 @@ async fn test_steam_independent_room_code_flow() {
     send_blaze_req(&mut host_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut host_stream).await;
 
-    send_blaze_req(&mut host_stream, 0x0001, 0x001C, 2, TdfStruct::new()).await;
+    send_blaze_req(&mut host_stream, 0x0001, 0x00E6, 2, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut host_stream).await; // Login response
     let _ = read_blaze_packet(&mut host_stream).await; // NotifyUserAdded (0x7802)
 
@@ -156,7 +156,7 @@ async fn test_steam_independent_room_code_flow() {
     send_blaze_req(&mut guest_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut guest_stream).await;
 
-    send_blaze_req(&mut guest_stream, 0x0001, 0x001C, 2, TdfStruct::new()).await;
+    send_blaze_req(&mut guest_stream, 0x0001, 0x00E6, 2, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut guest_stream).await;
     let _ = read_blaze_packet(&mut guest_stream).await;
 

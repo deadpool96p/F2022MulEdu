@@ -7,6 +7,8 @@
 pub mod blaze_server;
 pub mod blaze_tracer;
 pub mod control_server;
+pub mod crl_server;
+pub mod http2_server;
 pub mod listener;
 pub mod redirector_server;
 pub mod telemetry_server;
@@ -14,6 +16,7 @@ pub mod tls;
 
 pub use blaze_server::run_blaze_server;
 pub use control_server::run_control_server;
+pub use crl_server::run_crl_server;
 pub use listener::{accept_dual_stream, DualStream};
 pub use redirector_server::run_redirector_server;
 pub use telemetry_server::run_telemetry_server;
@@ -55,6 +58,33 @@ pub async fn start_services_full(
     relay_port: u16,
     secure_redirect: bool,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    start_services_full_with_qos(
+        redirector_port,
+        blaze_port,
+        telemetry_port,
+        qos_port,
+        relay_port,
+        secure_redirect,
+        services_redirector::DEFAULT_QOS_HOSTNAME.to_string(),
+    )
+    .await
+}
+
+/// Starts all emulator server services, advertising the given host name for
+/// the QoS (`qosapi`) service in the redirector reply.
+///
+/// The host name is the one the client turns into the TLS SNI for the QoS
+/// connection, so it has to be a name the emulator's leaf certificate
+/// covers -- see `services_redirector::DEFAULT_QOS_HOSTNAME`.
+pub async fn start_services_full_with_qos(
+    redirector_port: u16,
+    blaze_port: u16,
+    telemetry_port: u16,
+    qos_port: u16,
+    relay_port: u16,
+    secure_redirect: bool,
+    qos_hostname: String,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tls_acceptor = create_self_signed_tls_acceptor()?;
 
     let redir_listener = TcpListener::bind(format!("0.0.0.0:{}", redirector_port)).await?;
@@ -70,6 +100,25 @@ pub async fn start_services_full(
     let relay_socket = UdpSocket::bind(format!("0.0.0.0:{}", relay_port)).await?;
     let control_listener = TcpListener::bind("0.0.0.0:42129").await?;
 
+    // The revocation list the leaf certificate points at. A strict TLS
+    // client (WinHTTP, which is what FIFA 22's HTTP/2 stack is) fetches it
+    // while validating the chain, and refuses the handshake with
+    // `CRYPT_E_NO_REVOCATION_CHECK` when it cannot. It is served over
+    // plain HTTP on loopback: an `https://` distribution point would make
+    // the CRL fetch itself depend on a revocation check.
+    let crl_listener = match TcpListener::bind(format!("127.0.0.1:{}", tls::CRL_PORT)).await {
+        Ok(l) => Some(l),
+        Err(e) => {
+            tracing::warn!(
+                "[CRL] Could not bind port {}: {:?}. Windows TLS clients will reject the chain.",
+                tls::CRL_PORT,
+                e
+            );
+            None
+        }
+    };
+    let crl = Arc::new(tls::load_crl().unwrap_or_default());
+
     tracing::info!("============================================================");
     tracing::info!("  FIFA 22 Frostbite 3 Clean-Room Multiplayer Emulator       ");
     tracing::info!("============================================================");
@@ -78,6 +127,7 @@ pub async fn start_services_full(
     tracing::info!("  * Telemetry Sink (river.data.ea.com): Port {}", telemetry_port);
     tracing::info!("  * QoS / STUN Server (ProtoPing UDP) : Port {}", qos_port);
     tracing::info!("  * ProtoTunnel UDP Relay             : Port {}", relay_port);
+    tracing::info!("  * Certificate Revocation List (HTTP) : Port {}", tls::CRL_PORT);
     tracing::info!("  * Control Channel REST API          : Port 42129");
     tracing::info!("  * Secure Redirect (TLS on Blaze)    : {}", secure_redirect);
     tracing::info!("============================================================");
@@ -86,6 +136,12 @@ pub async fn start_services_full(
         host: "127.0.0.1".to_string(),
         port: blaze_port,
         secure: secure_redirect,
+        // The QoS (ProtoPing) HTTP endpoints are served by the telemetry
+        // sink, so that is the port the redirector advertises for the
+        // `qosapi` service.
+        qos_port: telemetry_port,
+        qos_hostname,
+        ..Default::default()
     };
 
     let redir_task = tokio::spawn(run_redirector_server(
@@ -210,6 +266,13 @@ pub async fn start_services_full(
         game_registry.clone(),
     ));
 
+    let crl_task = tokio::spawn(async move {
+        match crl_listener {
+            Some(listener) => run_crl_server(listener, crl).await,
+            None => std::future::pending::<()>().await,
+        }
+    });
+
     tokio::select! {
         _ = redir_task => {},
         _ = blaze_task => {},
@@ -217,6 +280,7 @@ pub async fn start_services_full(
         _ = qos_task => {},
         _ = relay_task => {},
         _ = control_task => {},
+        _ = crl_task => {},
     }
 
     Ok(())

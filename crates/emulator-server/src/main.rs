@@ -1,6 +1,6 @@
 //! Main executable entry point for FIFA 22 Blaze Emulator Server.
 
-use emulator_server::start_services;
+use emulator_server::start_services_full_with_qos;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[tokio::main]
@@ -123,5 +123,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(true); // Default to true (standardSecure_v4 requires TLS)
 
-    start_services(redirector_port, blaze_port, telemetry_port, secure_redirect).await
+    // The host name the redirector advertises for the QoS (`qosapi`)
+    // service.  The client turns it into the TLS SNI of the QoS
+    // connection, so it has to be a name the emulator's leaf certificate
+    // covers -- `*.gos.ea.com` does not match the multi-label
+    // `qos-prod-*.gos.ea.com` names, so the default is a `gosredirector`
+    // name.
+    let qos_hostname: String = std::env::var("QOS_HOSTNAME")
+        .unwrap_or_else(|_| services_redirector::DEFAULT_QOS_HOSTNAME.to_string());
+
+    start_services_full_with_qos(
+        redirector_port,
+        blaze_port,
+        telemetry_port,
+        17498, // Default DirtySDK QoS UDP port
+        3659,  // Default DirtySDK NetGameDist / ProtoTunnel UDP port
+        secure_redirect,
+        qos_hostname,
+    )
+    .await
 }

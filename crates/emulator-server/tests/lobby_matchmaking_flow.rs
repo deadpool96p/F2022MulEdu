@@ -69,7 +69,7 @@ async fn test_flow_a_native_menu_matchmaking() {
 
     let mut p1_login = TdfStruct::new();
     p1_login.set("DSNM", TdfValue::String("NativePlayer1".to_string()));
-    send_blaze_req(&mut p1_stream, 0x0001, 0x001C, 2, p1_login).await;
+    send_blaze_req(&mut p1_stream, 0x0001, 0x00E6, 2, p1_login).await;
     let _ = read_blaze_packet(&mut p1_stream).await;
     let _ = read_blaze_packet(&mut p1_stream).await; // NotifyUserAdded (0x7802)
 
@@ -82,7 +82,7 @@ async fn test_flow_a_native_menu_matchmaking() {
 
     let mut p2_login = TdfStruct::new();
     p2_login.set("DSNM", TdfValue::String("NativePlayer2".to_string()));
-    send_blaze_req(&mut p2_stream, 0x0001, 0x001C, 2, p2_login).await;
+    send_blaze_req(&mut p2_stream, 0x0001, 0x00E6, 2, p2_login).await;
     let _ = read_blaze_packet(&mut p2_stream).await;
     let _ = read_blaze_packet(&mut p2_stream).await; // NotifyUserAdded (0x7802)
 
@@ -146,14 +146,14 @@ async fn test_flow_b_room_code_control_api() {
     let mut p1_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
         .await
         .unwrap();
-    send_blaze_req(&mut p1_stream, 0x0001, 0x001C, 1, TdfStruct::new()).await;
+    send_blaze_req(&mut p1_stream, 0x0001, 0x00E6, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut p1_stream).await;
     let _ = read_blaze_packet(&mut p1_stream).await; // NotifyUserAdded (0x7802)
 
     let mut p2_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
         .await
         .unwrap();
-    send_blaze_req(&mut p2_stream, 0x0001, 0x001C, 1, TdfStruct::new()).await;
+    send_blaze_req(&mut p2_stream, 0x0001, 0x00E6, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut p2_stream).await;
     let _ = read_blaze_packet(&mut p2_stream).await; // NotifyUserAdded (0x7802)
 
@@ -272,11 +272,16 @@ async fn test_flow_c_steam_identity_and_invite_sync() {
     send_blaze_req(&mut p1_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut p1_stream).await;
 
-    send_blaze_req(&mut p1_stream, 0x0001, 0x001C, 2, TdfStruct::new()).await;
+    send_blaze_req(&mut p1_stream, 0x0001, 0x00E6, 2, TdfStruct::new()).await;
     let p1_login_resp = read_blaze_packet(&mut p1_stream).await;
     let _ = read_blaze_packet(&mut p1_stream).await; // NotifyUserAdded (0x7802)
+    // `createWalUserSession` carries the display name in `PDTL.DSNM`.
+    let p1_persona = match p1_login_resp.payload.get("PDTL") {
+        Some(TdfValue::Struct(s)) => s,
+        other => panic!("createWalUserSession must carry PDTL, got {:?}", other),
+    };
     assert_eq!(
-        p1_login_resp.payload.get("DSNM").unwrap(),
+        p1_persona.get("DSNM").unwrap(),
         &TdfValue::String("SteamStriker".to_string())
     );
 
@@ -342,7 +347,7 @@ async fn test_flow_c_steam_identity_and_invite_sync() {
 
     let mut p2_login = TdfStruct::new();
     p2_login.set("DSNM", TdfValue::String("InvitedFriend".to_string()));
-    send_blaze_req(&mut p2_stream, 0x0001, 0x001C, 2, p2_login).await;
+    send_blaze_req(&mut p2_stream, 0x0001, 0x00E6, 2, p2_login).await;
     let _ = read_blaze_packet(&mut p2_stream).await;
     let _ = read_blaze_packet(&mut p2_stream).await; // NotifyUserAdded (0x7802)
 

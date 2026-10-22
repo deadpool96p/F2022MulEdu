@@ -485,7 +485,7 @@ mod tests {
             (0x0005u16, 0x0001u16), // redirector getServerInstance
             (0x0009, 0x0002),       // util ping
             (0x0009, 0x0007),       // util preAuth
-            (0x0001, 0x001C),       // auth expressLogin
+            (0x0001, 0x00E6),       // auth createWalUserSession
             (0x7802, 0x0008),       // usersessions updateNetworkInfo
             (0x00FE, 0x0022),       // wildcard unknown RPC
         ] {

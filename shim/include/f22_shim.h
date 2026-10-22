@@ -70,6 +70,14 @@ void LogError(std::string_view message);
 bool InstallWinsockHooks();
 bool InstallCertBypassHooks();
 bool verify_peer(const uint8_t* cert_bytes, size_t cert_len);
+
+// Patches the DirtySDK root-CA table in every loaded module that carries a
+// copy of it.  EA ships one copy per TLS stack (`FIFA22.exe` for the
+// DirtySDK ProtoSSL stack, `EAWebKit.dll` for the web / HTTP-2 stack), and a
+// copy that is left unpatched rejects the emulator's certificate with
+// `certificate_unknown`.  Safe to call repeatedly: modules are only rescanned
+// when they appear or when their table was not initialised yet.
+bool EnsureCaTablePatched();
 bool InstallDXGIHooks();
 void RemoveDXGIHooks();
 

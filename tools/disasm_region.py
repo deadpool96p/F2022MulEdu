@@ -90,8 +90,17 @@ def main(argv):
 
     md = Cs(CS_ARCH_X86, CS_MODE_64)
     md.detail = True
+    if "--skipdata" in argv:
+        # Frostbite's `.ecode`/`.didata` blobs interleave code with data, and
+        # capstone stops at the first byte it cannot decode.  Emitting a
+        # pseudo-instruction for those bytes keeps the stream going.
+        md.skipdata = True
 
     for insn in md.disasm(d[off:off + size], start):
+        if insn.id == 0:
+            # capstone's skipdata pseudo-instruction
+            print("%016X  .byte   0x%02x" % (insn.address, insn.bytes[0]))
+            continue
         extra = ''
         for op in insn.operands:
             if op.type == 3:  # X86_OP_MEM

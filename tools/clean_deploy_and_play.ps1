@@ -116,7 +116,28 @@ if (Test-Path $ServerLog) {
 # 4. Start the emulator server
 Write-Host "[4/5] Starting local Blaze & HTTP Emulator Server (Release)..." -ForegroundColor Yellow
 Push-Location $RepoRoot
-Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoExit -Command `"Write-Host 'Starting Emulator Server...'; target\release\emulator-server.exe`""
+
+# Build first. Step 1 killed the previous server, so the release exe is no
+# longer locked and cargo can relink it. Without this the script would launch
+# whatever binary was on disk, which is not necessarily the current source.
+Write-Host "  [*] Building emulator-server (release)..." -ForegroundColor Gray
+& cargo build --release --package emulator-server
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "cargo build failed; not starting a stale binary."
+    Pop-Location
+    exit 1
+}
+
+# The emulator's root CA is installed into the Windows trusted-root store
+# only when F22_TRUST_CA=1, because that is a machine trust-configuration
+# change (see `crates/emulator-server/src/tls.rs`).  The game itself does not
+# need it -- FIFA 22 validates the emulator's certificate against the root
+# table compiled into its own modules, which the shim patches -- but a stock
+# Windows/schannel TLS client does, and FIFA 22's second TLS stack on port
+# 443 is one.
+$env:F22_TRUST_CA = "1"
+
+Start-Process -FilePath "target\release\emulator-server.exe" -WorkingDirectory $RepoRoot
 Pop-Location
 
 Write-Host "  [*] Waiting 3 seconds for emulator server sockets to bind..." -ForegroundColor Gray

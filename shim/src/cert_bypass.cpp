@@ -3,6 +3,8 @@
 #include <MinHook.h>
 #include <bcrypt.h>
 #include <psapi.h>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <vector>
 #include <wincrypt.h>
@@ -238,18 +240,38 @@
   }
 
   // DirtySDK ProtoSSL certificate bypass: Patches DigiCert Root CA RSA modulus in FIFA 22 memory
-  static bool PatchDirtySdkCaTable() {
-    if (!LoadCaModulus()) {
-      LogWarn("[SSL Bypass] f22_ca_modulus.bin not found yet; waiting for server generation");
-      return false;
-    }
+  //
+  // The root table is **not** a single, process-wide table.  EA compiles the
+  // same trust-anchor structure into every module that does its own TLS:
+  // `FIFA22.exe` (the DirtySDK ProtoSSL stack) and `EAWebKit.dll` (the
+  // web / HTTP-2 stack) each carry their own copy of the "DigiCert Global
+  // Root CA" entry, with the root's RSA modulus behind a pointer at +0x50 of
+  // the entry.
+  //
+  // Validating a server certificate means comparing the chain's root modulus
+  // against that pointer, so a copy that is *not* patched rejects our
+  // certificate with `certificate_unknown` (TLS alert 46) even though the
+  // Blaze / DirtySDK connections work fine.  That is exactly the symptom we
+  // see: the telemetry (ProtoHttp) requests succeed on port 443 while the
+  // HTTP-2 connection from the web stack fails.
+  //
+  // So every module that contains the entry gets patched, and the scan is
+  // repeated when a module is loaded later -- the web stack is not resident
+  // when the shim's `DLL_PROCESS_ATTACH` runs.
 
-    HMODULE h_main = GetModuleHandleW(nullptr);
-    if (!h_main) return false;
+  // Patches every "DigiCert Global Root CA" entry inside one module.
+  //
+  // `found` is the number of entries located.  `ready` is false when an
+  // entry exists but has not been initialised yet -- the exponent fields are
+  // filled in by the module's own start-up code, so a table that was scanned
+  // too early has to be scanned again later.
+  static int PatchCaTableInModule(HMODULE mod, const char* label, bool* ready) {
+    *ready = true;
+    if (!mod) return 0;
 
     MODULEINFO mod_info{};
-    if (!GetModuleInformation(GetCurrentProcess(), h_main, &mod_info, sizeof(mod_info))) {
-      return false;
+    if (!GetModuleInformation(GetCurrentProcess(), mod, &mod_info, sizeof(mod_info))) {
+      return 0;
     }
 
     const uint8_t *base = static_cast<const uint8_t *>(mod_info.lpBaseOfDll);
@@ -258,34 +280,123 @@
     const char kTargetStr[] = "DigiCert Global Root CA";
     const size_t kStrLen = sizeof(kTargetStr); // 24 bytes including null terminator
 
+    int found = 0;
+
     for (size_t i = 0; i < size - kStrLen - 0x60; ++i) {
-      if (std::memcmp(base + i, kTargetStr, kStrLen) == 0) {
-        uintptr_t name_addr = reinterpret_cast<uintptr_t>(base + i);
-        uintptr_t *p_modulus = reinterpret_cast<uintptr_t *>(name_addr + 0x50);
-
-        uint32_t exp_len = *reinterpret_cast<const uint32_t *>(name_addr + 0x58);
-        uint32_t exp_val = *reinterpret_cast<const uint32_t *>(name_addr + 0x5C) & 0x00FFFFFF;
-
-        if (exp_len == 3 && exp_val == 0x010001) {
-          DWORD old_protect = 0;
-          if (VirtualProtect(p_modulus, sizeof(uintptr_t), PAGE_READWRITE, &old_protect)) {
-            uintptr_t old_ptr = *p_modulus;
-            *p_modulus = reinterpret_cast<uintptr_t>(g_ca_modulus);
-            VirtualProtect(p_modulus, sizeof(uintptr_t), old_protect, &old_protect);
-
-            std::ostringstream ss;
-            ss << "[SSL Bypass] SUCCESS: Patched DirtySDK DigiCert Global Root CA modulus pointer at 0x"
-               << std::hex << (name_addr + 0x50) << " (old=0x" << old_ptr << ", new=0x"
-               << reinterpret_cast<uintptr_t>(g_ca_modulus) << ")";
-            LogInfo(ss.str());
-            return true;
-          }
-        }
+      if (std::memcmp(base + i, kTargetStr, kStrLen) != 0) {
+        continue;
       }
+
+      found++;
+      uintptr_t name_addr = reinterpret_cast<uintptr_t>(base + i);
+      uintptr_t *p_modulus = reinterpret_cast<uintptr_t *>(name_addr + 0x50);
+
+      uint32_t exp_len = *reinterpret_cast<const uint32_t *>(name_addr + 0x58);
+      uint32_t exp_val = *reinterpret_cast<const uint32_t *>(name_addr + 0x5C) & 0x00FFFFFF;
+
+      if (exp_len != 3 || exp_val != 0x010001) {
+        // The entry is present but its key material is not initialised yet.
+        *ready = false;
+        std::ostringstream ss;
+        ss << "[SSL Bypass] " << label << ": DigiCert root entry at 0x" << std::hex << name_addr
+           << " is not initialised yet (exp_len=" << std::dec << exp_len << "); retrying later";
+        LogWarn(ss.str());
+        continue;
+      }
+
+      if (*p_modulus == reinterpret_cast<uintptr_t>(g_ca_modulus)) {
+        continue; // already patched
+      }
+
+      DWORD old_protect = 0;
+      if (!VirtualProtect(p_modulus, sizeof(uintptr_t), PAGE_READWRITE, &old_protect)) {
+        continue;
+      }
+      uintptr_t old_ptr = *p_modulus;
+      *p_modulus = reinterpret_cast<uintptr_t>(g_ca_modulus);
+      VirtualProtect(p_modulus, sizeof(uintptr_t), old_protect, &old_protect);
+
+      std::ostringstream ss;
+      ss << "[SSL Bypass] SUCCESS: Patched DirtySDK DigiCert Global Root CA modulus pointer in "
+         << label << " at 0x" << std::hex << (name_addr + 0x50) << " (old=0x" << old_ptr
+         << ", new=0x" << reinterpret_cast<uintptr_t>(g_ca_modulus) << ")";
+      LogInfo(ss.str());
     }
 
-    LogWarn("[SSL Bypass] Could not locate DigiCert Global Root CA struct in FIFA22.exe memory");
-    return false;
+    return found;
+  }
+
+  // Modules already scanned, so a large module (EAWebKit.dll is tens of
+  // megabytes) is only walked once.
+  static std::mutex g_ca_scan_mutex;
+  static std::set<uintptr_t> g_ca_scanned_modules;
+
+  // Patches the root table in every loaded module that carries one.
+  //
+  // Safe to call as often as we like: modules that have been scanned and
+  // patched are skipped, and a module whose table was not initialised yet is
+  // retried on the next call.
+  bool EnsureCaTablePatched() {
+    if (!LoadCaModulus()) {
+      return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_ca_scan_mutex);
+
+    int found_total = 0;
+
+    // The main executable first -- `EnumProcessModules` is not guaranteed to
+    // list the process image itself.
+    HMODULE h_main = GetModuleHandleW(nullptr);
+    if (h_main && g_ca_scanned_modules.find(reinterpret_cast<uintptr_t>(h_main)) ==
+                      g_ca_scanned_modules.end()) {
+        bool ready = true;
+        int found = PatchCaTableInModule(h_main, "FIFA22.exe", &ready);
+        if (found > 0 && ready) {
+            g_ca_scanned_modules.insert(reinterpret_cast<uintptr_t>(h_main));
+        }
+        found_total += found;
+    }
+
+    HMODULE mods[1024];
+    DWORD needed = 0;
+    if (!EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) {
+        return found_total > 0;
+    }
+
+    DWORD count = needed / sizeof(HMODULE);
+    for (DWORD i = 0; i < count && i < 1024; ++i) {
+        HMODULE m = mods[i];
+        uintptr_t key = reinterpret_cast<uintptr_t>(m);
+        if (g_ca_scanned_modules.find(key) != g_ca_scanned_modules.end()) {
+            continue;
+        }
+
+        char name[MAX_PATH] = {0};
+        GetModuleFileNameA(m, name, MAX_PATH);
+
+        bool ready = true;
+        int found = PatchCaTableInModule(m, name[0] ? name : "<module>", &ready);
+        if (found > 0 && ready) {
+            g_ca_scanned_modules.insert(key);
+        }
+        found_total += found;
+    }
+
+    return found_total > 0;
+  }
+
+  static bool PatchDirtySdkCaTable() {
+    if (!LoadCaModulus()) {
+      LogWarn("[SSL Bypass] f22_ca_modulus.bin not found yet; waiting for server generation");
+      return false;
+    }
+
+    if (!EnsureCaTablePatched()) {
+      LogWarn("[SSL Bypass] Could not locate DigiCert Global Root CA struct in any loaded module");
+      return false;
+    }
+    return true;
   }
 
   bool InstallCertBypassHooks() {
