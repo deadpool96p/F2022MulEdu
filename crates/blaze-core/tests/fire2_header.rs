@@ -10,9 +10,9 @@
 //!    wire, is `00 00 00 00 00 00 00 09 00 02 00 00 00 00 00 00` — a
 //!    `Util::ping` (component `0x0009`, command `0x0002`).
 //!
-//! 2. **Authentic EA traffic.** Two complete `Util::fetchClientConfig` reply
-//!    frames captured from a live EA client, which decode byte-exactly under
-//!    this layout and consume their bytes exactly.
+//! 2. **Authentic EA traffic.** Two complete `Util::preAuth` reply frames
+//!    captured from a live EA client, which decode byte-exactly under this
+//!    layout and consume their bytes exactly.
 //!
 //! 3. **The reference decoder** in `mxmstr/hp-server`, whose Fire2 header
 //!    agrees byte-for-byte with (1) and (2).
@@ -276,6 +276,41 @@ fn fire2_payload_size_counts_the_payload_only() {
         encoded.len(),
         16 + metadata_size + payload_size,
         "the frame is header + metadata + payload"
+    );
+}
+
+#[test]
+fn a_fire2_ping_is_answered_with_a_ping_reply() {
+    // A Fire2 transport-level PING is message type 4; it is answered with
+    // message type 5 (PING_REPLY), never with an ordinary RPC response.
+    //
+    // The client reads byte 13 as `messageType << 5 | userIndex`, so a
+    // PING_REPLY from user index 0 is byte 13 == 0xA0.
+    let mut request_header = BlazeHeader::new(0, 0x0009, 0x0002, 0x0000, MessageType::Ping, 3, 0);
+    request_header.message_number = 0x00_AB_CD;
+    request_header.user_index = 0x05;
+
+    let reply = BlazePacket::ping_reply(&request_header).expect("ping_reply");
+    assert_eq!(reply.header.msg_type, MessageType::PingReply);
+
+    let encoded = reply.encode_16().expect("encode_16");
+    assert_eq!(encoded.len(), 16, "a PING_REPLY carries no payload");
+    assert_eq!(
+        &encoded[0..4],
+        &[0x00, 0x00, 0x00, 0x00],
+        "payloadSize is zero"
+    );
+    assert_eq!(&encoded[6..8], &[0x00, 0x09], "component is echoed");
+    assert_eq!(&encoded[8..10], &[0x00, 0x02], "command is echoed");
+    assert_eq!(
+        &encoded[10..13],
+        &[0x00, 0xAB, 0xCD],
+        "the 24-bit message number is echoed"
+    );
+    assert_eq!(
+        encoded[13],
+        (MessageType::PingReply as u8) << 5 | 0x05,
+        "byte 13 carries the message type and the user index"
     );
 }
 

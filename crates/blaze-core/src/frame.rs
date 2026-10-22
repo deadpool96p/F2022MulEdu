@@ -388,6 +388,30 @@ impl BlazePacket {
         Ok(packet)
     }
 
+    /// Constructs the transport-level reply to a Fire2 `PING` frame.
+    ///
+    /// A Fire2 `PING` is message type 4 and is answered with a `PING_REPLY`
+    /// (message type 5) -- **not** with an ordinary RPC response. The reply
+    /// carries no payload, and echoes the request's 24-bit message number
+    /// and 5-bit user index.
+    ///
+    /// Answering a `PING` with a `RECORD_RESPONSE` leaves the client's
+    /// transport keep-alive unsatisfied, and it reconnects.
+    pub fn ping_reply(req_header: &BlazeHeader) -> io::Result<Self> {
+        let mut packet = Self::new(
+            req_header.component,
+            req_header.command,
+            0x0000,
+            MessageType::PingReply,
+            0,
+            req_header.seq_no,
+            TdfStruct::new(),
+        )?;
+        packet.header.message_number = req_header.message_number;
+        packet.header.user_index = req_header.user_index;
+        Ok(packet)
+    }
+
     /// Constructs an asynchronous notification packet.
     pub fn notification(component: u16, command: u16, payload: TdfStruct) -> io::Result<Self> {
         Self::new(

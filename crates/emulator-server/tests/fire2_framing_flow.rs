@@ -178,3 +178,76 @@ async fn the_server_answers_fire2_clients_in_fire2() {
     assert_eq!(ping.header.message_number, 0x04_0202);
     assert_eq!(ping.header.msg_type, MessageType::RecordResponse);
 }
+
+#[tokio::test]
+async fn a_fire2_transport_ping_is_answered_with_a_ping_reply() {
+    // A Fire2 transport-level PING is message type 4, and it is *not* an RPC
+    // request: it is answered with a PING_REPLY (message type 5) that carries
+    // no payload.
+    //
+    // Answering it with an ordinary RPC response leaves the client's
+    // keep-alive unsatisfied; a live capture shows the client sending a PING
+    // frame, the server replying with a RECORD_RESPONSE, and the client
+    // dropping the connection and reconnecting three seconds later.
+    let tls_acceptor = create_self_signed_tls_acceptor().expect("TLS setup failed");
+
+    let blaze_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let blaze_port = blaze_listener.local_addr().unwrap().port();
+
+    let session_store = Arc::new(SessionStore::new());
+    let game_registry = Arc::new(GameRegistry::new());
+    tokio::spawn(run_blaze_server(
+        blaze_listener,
+        tls_acceptor,
+        "127.0.0.1".to_string(),
+        17498,
+        session_store,
+        game_registry,
+    ));
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
+        .await
+        .unwrap();
+
+    let ping = BlazePacket::new(
+        0x0009,
+        0x0002,
+        0,
+        MessageType::Ping,
+        0,
+        0,
+        TdfStruct::new(),
+    )
+    .unwrap();
+    let mut ping_bytes = ping.encode_16().unwrap();
+    // Give the frame a non-zero 24-bit message number so we can prove the
+    // reply echoes it.
+    ping_bytes[10] = 0x00;
+    ping_bytes[11] = 0x12;
+    ping_bytes[12] = 0x34;
+    stream.write_all(&ping_bytes).await.unwrap();
+    stream.flush().await.unwrap();
+
+    let mut hdr_buf = [0u8; 16];
+    stream.read_exact(&mut hdr_buf).await.unwrap();
+
+    assert_eq!(
+        hdr_buf[13] >> 5,
+        MessageType::PingReply as u8,
+        "a transport PING must be answered with a PING_REPLY"
+    );
+    assert_eq!(
+        &hdr_buf[10..13],
+        &[0x00, 0x12, 0x34],
+        "the PING_REPLY must echo the request's message number"
+    );
+    assert_eq!(
+        &hdr_buf[0..4],
+        &[0x00, 0x00, 0x00, 0x00],
+        "a PING_REPLY carries no payload"
+    );
+    assert_eq!(&hdr_buf[6..8], &[0x00, 0x09], "component is echoed");
+    assert_eq!(&hdr_buf[8..10], &[0x00, 0x02], "command is echoed");
+}

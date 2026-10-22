@@ -5,7 +5,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use blaze_core::framing::{detect_framing, try_parse_packet as try_parse_packet_for, Framing};
-use blaze_core::BlazePacket;
+use blaze_core::{BlazePacket, MessageType};
 use services_blaze::{BlazeRouter, GameRegistry, SessionStore};
 use crate::listener::{accept_dual_stream, DualStream};
 
@@ -92,6 +92,27 @@ async fn process_packet(
     let req_bytes = encode_for(req_packet, framing).unwrap_or_default();
     router.games.deadlock_guard.record_message("IN", req_packet.header.component, req_packet.header.command, &req_bytes);
     crate::blaze_tracer::record_trace("IN", req_packet.header.component, req_packet.header.command, &req_bytes);
+
+    // A Fire2 transport-level PING (message type 4) is not an RPC request.
+    // It is answered with a PING_REPLY (message type 5) and never reaches
+    // the router.
+    //
+    // Answering it with an ordinary RPC response leaves the client's
+    // keep-alive unsatisfied. A live capture shows the client sending a
+    // PING frame, the server replying with a RECORD_RESPONSE, and the client
+    // dropping the connection and reconnecting three seconds later.
+    if req_packet.header.msg_type == MessageType::Ping {
+        let reply = BlazePacket::ping_reply(&req_packet.header)?;
+        let reply_bytes = encode_for(&reply, framing)?;
+        tracing::info!(
+            "[Blaze Server] Answering Fire2 PING with PING_REPLY (MsgNum={}, {} bytes)",
+            reply.header.message_number,
+            reply_bytes.len()
+        );
+        stream.write_all(&reply_bytes).await?;
+        stream.flush().await?;
+        return Ok(());
+    }
 
     let (resp_packet, notif_opt) = router.handle_packet(req_packet)?;
 

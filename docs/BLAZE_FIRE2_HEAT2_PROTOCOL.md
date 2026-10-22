@@ -141,6 +141,24 @@ the keepalive pair (`0x14490652F`, `0x144906572`).
 | 4 | `PING` |
 | 5 | `PING_REPLY` |
 
+#### The keepalive pair
+
+A `PING` is a **transport-level** frame, not an RPC request. It carries no
+payload and no metadata, and it must be answered with a `PING_REPLY` — also
+with no payload — echoing the request's 24-bit message number and 5-bit user
+index.
+
+It must **not** be answered with an ordinary `REPLY`. The client reads byte 13
+as `messageType << 5 | userIndex`, so a `REPLY` (type 1) and a `PING_REPLY`
+(type 5) are distinguishable, and the client treats anything other than a
+`PING_REPLY` as an unsatisfied keepalive. A live capture shows the client
+sending a `PING` frame, the server replying with a `REPLY`, and the client
+dropping the connection and reconnecting three seconds later.
+
+`crates/emulator-server/src/blaze_server.rs` therefore intercepts message type
+4 at the transport layer, before the router sees it, and writes a
+`PING_REPLY` built by `BlazePacket::ping_reply`.
+
 ### 2.2 Frame body order
 
 ```
