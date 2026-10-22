@@ -322,7 +322,7 @@ marked as such in `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
    * [ ] Rewrite the 16-byte header to Fire2 in `blaze-core` (Defect B) — the 12-byte legacy path must stay byte-identical so the eight integration test files remain green.
    * [ ] Replace the 12-vs-16 detection heuristic in `blaze_server.rs` and `redirector_server.rs` (Defect E).
    * [ ] Update the `services-blaze/src/util.rs` unit tests for the new layout.
-   * [ ] Re-run the real client and confirm `Util::preAuth` (0x0009 / 0x000B) arrives.
+   * [ ] Re-run the real client and confirm `Util::preAuth` (0x0009 / 0x0007) arrives.
 5. **Phase 2 — Matchmaking & GameManager (PENDING):**
    * [ ] Port `ReserveLobbyRelayServer` (relay port 17000 + gameId) into the Rust GameManager.
    * [ ] Correct the lobby create/join notifications.

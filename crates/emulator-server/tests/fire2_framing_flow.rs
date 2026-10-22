@@ -157,9 +157,9 @@ async fn the_server_answers_fire2_clients_in_fire2() {
     // 2. A second request on the same connection, with a non-zero message
     //    number, must be correlated back exactly.
     // ---------------------------------------------------------------------
-    let pre_auth = send_fire2_request(&mut stream, 0x0009, 0x000B, 0x04_0201, TdfStruct::new()).await;
+    let pre_auth = send_fire2_request(&mut stream, 0x0009, 0x0007, 0x04_0201, TdfStruct::new()).await;
     assert_eq!(pre_auth.header.component, 0x0009);
-    assert_eq!(pre_auth.header.command, 0x000B);
+    assert_eq!(pre_auth.header.command, 0x0007);
     assert_eq!(
         pre_auth.header.message_number, 0x04_0201,
         "the reply must echo the request's 24-bit message number"

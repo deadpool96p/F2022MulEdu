@@ -319,7 +319,7 @@ The names the emulator used to ship — `BWHR`, `LATT`, `SKEY`, and `PSA` as a
 nested struct — do not exist in the schema, so a client decoding `QOSS` by type
 read none of them.
 
-### 7.1 `PreAuthResponse` has exactly four members
+### 7.1 `PreAuthResponse` has four members *in the model*
 
 From `references/Skate3BlazeServer/.../Util/Commands/PreAuthResponse.cs`:
 
@@ -334,6 +334,26 @@ PreAuthResponse
 **There is no `ANAM` and no `TIME` member.** The implementation in
 `crates/services-blaze/src/util.rs` shipped both; they are not part of the
 schema and are ignored by a type-driven decoder.
+
+> ⚠️ **Correction (October 22, 2026).** "Exactly four members" is true of the
+> *open-source model*, not of the *wire*. Two authentic EA `preAuth` replies
+> captured off a live Blaze server (`crates/services-blaze/tests/fixtures/`)
+> carry **fourteen** root members:
+>
+> ```text
+> ASRC  CIDS  CLID  CONF  ESRC  INST  MAID  MINR  NASP  PILD  PLAT  QOSS  RSRC  SVER
+> ```
+>
+> A newer server adds `HPLT`, `LQTK` and `RELT` (game-specific). The four the
+> model names are a subset — the model was generated for a different game
+> build and simply does not describe every member the retail server sends.
+> The emulator must send the full set, because the client decodes the reply
+> by the *wire* schema, not by the model. See
+> `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §4.4.
+>
+> Two shape details also only the wire reveals: `CONF` is a **struct wrapping
+> the map**, not a bare map, and the root struct carries **no trailing
+> terminator** (nested structs do).
 
 Similarly, `PingResponse` has **exactly one** member, `STIM`
 (`references/Skate3BlazeServer/.../Util/Commands/PingResponse.cs`) — which

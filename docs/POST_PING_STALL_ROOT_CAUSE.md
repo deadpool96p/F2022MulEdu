@@ -249,7 +249,7 @@ Recording these explicitly so the next investigation does not re-tread them:
 | 5 | Rewrite `to_bytes_16` / `from_bytes_16` to Fire2 in `blaze-core` | Pending |
 | 6 | Replace the 12-vs-16 detection heuristic in both servers | Pending |
 | 7 | Update `services-blaze/src/util.rs` unit tests for the new layout | Pending |
-| 8 | Re-run the real client; confirm `Util::preAuth` (0x0009/0x000B) arrives | Pending |
+| 8 | Re-run the real client; confirm `Util::preAuth` (0x0009/0x0007) arrives | Pending |
 | 9 | Phase 2 — matchmaking & GameManager | Pending |
 | 10 | Phase 3 — UDP relay & low ping | Pending |
 | 11 | Phase 4 — two-client end-to-end verification | Pending |

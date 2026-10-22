@@ -563,16 +563,52 @@ consumes exactly 13 bytes.
 
 ### 4.2 Util commands (component 0x0009)
 
+From EA's own `UtilMessage` enum
+(`references/Skate3BlazeServer/.../Blaze/MessageLists/UtilMessages.cs`):
+
 | Command | Name |
 | :--- | :--- |
 | `0x0001` | `fetchClientConfig` |
 | `0x0002` | **`ping`** |
 | `0x0003` | `setClientData` |
-| `0x0007` | `userSettingsSave` |
-| `0x0008` | `userSettingsLoad` |
-| `0x000A` | `userSettingsLoadAll` |
-| `0x000B` | **`preAuth`** |
-| `0x000C` | **`postAuth`** |
+| `0x0004` | `localizeStrings` |
+| `0x0005` | `getTelemetryServer` |
+| `0x0006` | `getTickerServer` |
+| `0x0007` | **`preAuth`** |
+| `0x0008` | **`postAuth`** |
+| `0x000A` | `userSettingsLoad` |
+| `0x000B` | `userSettingsSave` |
+| `0x000C` | `userSettingsLoadAll` |
+| `0x000D` | `userSettingsLoadAllForUserId` |
+| `0x0014` | `filterForProfanity` |
+| `0x0015` | `fetchQosConfig` |
+| `0x0016` | `setClientMetrics` |
+| `0x0017` | `setConnectionState` |
+
+> **This table was wrong until the authentic EA `preAuth` reply was decoded.**
+> It used to place `preAuth` at `0x000B` and `userSettingsSave` at `0x0007`.
+> Because a Blaze server dispatches on the numeric command ID alone, the
+> mistake was silent: the emulator answered the FIFA 22 client's opening
+> request — `Comp=0x0009 Cmd=0x0007`, a 230-byte client-identity payload —
+> with an empty `userSettingsSave` reply, and the client never received a
+> `preAuth` response. It then fell into a three-second reconnect loop.
+>
+> Three independent sources now agree that `0x0007` is `preAuth`:
+>
+> 1. EA's `UtilMessage` enum, quoted above.
+> 2. EA's own `PreAuthHandler`
+>    (`references/Skate3BlazeServer/.../Util/Handlers/PreAuthHandler.cs`),
+>    which builds its response with the literal header bytes
+>    `0, 0, 0, 9, 0, 7, 0, 0, 0, 0, 0, 0` — component `0x0009`, command
+>    `0x0007`.
+> 3. The two authentic EA `preAuth` replies, whose payloads decode to a
+>    `PreAuthResponse`-shaped struct carrying `CIDS`, `CONF`, `QOSS` and
+>    `SVER`. The fixtures live in
+>    `crates/services-blaze/tests/fixtures/`, and
+>    `crates/services-blaze/tests/preauth_matches_ea.rs` pins the
+>    emulator's reply to their shape.
+>
+> See §4.4 for the `preAuth` reply's members.
 
 ### 4.3 Schema field names (from the FIFA 22 binary's own schema tables)
 
@@ -589,7 +625,8 @@ repos' TDF model classes. Only the fields this project actually emits are listed
 > The earlier hypothesis that `PING`/`LATN`/`TIME` tags were missing was
 > **false** — `STIM` alone is correct, and the real defect was the varint encoding.
 
-**`Util::PreAuthResponse`** — exactly **four** members:
+**`Util::PreAuthResponse`** — **four** members in EA's own code-generated
+model, **fourteen** on the wire:
 
 | Tag | Type | Meaning |
 | :--- | :--- | :--- |
@@ -611,6 +648,58 @@ repos' TDF model classes. Only the fields this project actually emits are listed
 >
 > See [`FIFA22_QOS_PROTOPING_HTTP.md`](FIFA22_QOS_PROTOPING_HTTP.md) §7 for
 > the `QOSS` member list and the `QosConfigInfo` / `QosPingSiteInfo` schemas.
+>
+> ⚠️ **Correction (October 22, 2026).** The *model* has four members, but
+> the *wire* has more — see §4.4. The four-member model is the open-source
+> reconstruction of one game's schema; it is not what a retail server sends.
+
+### 4.4 The `preAuth` reply on the wire
+
+The two authentic EA `preAuth` replies — Blaze 15.1.1.4.6 and 18.3.0 — decode
+to these root members:
+
+| Tag | Type | Meaning |
+| :--- | :--- | :--- |
+| `ASRC` | STRING | asset source id |
+| `CIDS` | LIST of uint | component ids the server implements |
+| `CLID` | STRING | server id |
+| `CONF` | STRUCT | `FetchConfigResponse` — see below |
+| `ESRC` | STRING | |
+| `INST` | STRING | product id |
+| `MAID` | uint | master account id |
+| `MINR` | uint | |
+| `NASP` | STRING | authentication namespace |
+| `PILD` | STRING | |
+| `PLAT` | STRING | platform |
+| `QOSS` | STRUCT | `QosConfigInfo` |
+| `RSRC` | STRING | |
+| `SVER` | STRING | server version, e.g. `Blaze 18.3.0 (CL# 2115104)` |
+
+The 18.3.0 reply adds three members that belong to that game's schema
+(`HPLT`, `LQTK`, `RELT`); the fourteen above are the ones both replies agree
+on, and the ones the emulator sends.
+
+Three details in that structure are easy to get wrong, and each one was:
+
+**`CONF` is a struct wrapping a map, not a bare map.** EA's
+`FetchConfigResponse` has a single member, `CONF`, of type
+`map<string, string>`. Both authentic replies decode as `CONF (struct)`
+containing `CONF (map)`. The emulator used to send a bare map.
+
+**`QOSS` is a struct of its own**, holding `BWPS` (a `QosPingSiteInfo`),
+`LNP`, `LTPS` (a map of alias → `QosPingSiteInfo`) and `SVID`. Each
+`QosPingSiteInfo` carries `PSA` (address), `PSP` (port) and `SNA` (site
+name).
+
+**Members are emitted in alphabetical tag order.** The authentic replies are
+sorted (`ASRC`, `CIDS`, `CLID`, `CONF`, …). The Rust `TdfStruct` is a
+`BTreeMap`, so the writer emits them in that order for free.
+
+The fixtures are in `crates/services-blaze/tests/fixtures/`, and
+`crates/services-blaze/tests/preauth_matches_ea.rs` asserts that the
+emulator's reply carries exactly the fourteen members above, that its `CONF`
+has EA's shape, and that its `QOSS` points at the emulator's own responder
+rather than at a real EA host.
 
 **`Util::PreAuthRequest`**: `clientVersion`, `clientType`, `locale`,
 `platformId`, `productId`, `blazeVersion`, `clientBuild`, `macAddress`

@@ -110,7 +110,7 @@ async fn test_steam_independent_room_code_flow() {
     let mut host_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
         .await
         .unwrap();
-    send_blaze_req(&mut host_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await;
+    send_blaze_req(&mut host_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut host_stream).await;
 
     send_blaze_req(&mut host_stream, 0x0001, 0x001C, 2, TdfStruct::new()).await;
@@ -153,7 +153,7 @@ async fn test_steam_independent_room_code_flow() {
     let mut guest_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
         .await
         .unwrap();
-    send_blaze_req(&mut guest_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await;
+    send_blaze_req(&mut guest_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut guest_stream).await;
 
     send_blaze_req(&mut guest_stream, 0x0001, 0x001C, 2, TdfStruct::new()).await;

@@ -120,7 +120,7 @@ async fn test_matchready_response_emitted_before_state_131() {
 
     // 1. Connect Client 1 (Host)
     let mut p1_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port)).await.unwrap();
-    send_blaze_req(&mut p1_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await; // preAuth
+    send_blaze_req(&mut p1_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await; // preAuth
     let _ = read_blaze_packet(&mut p1_stream).await;
 
     let mut p1_login = TdfStruct::new();
@@ -131,7 +131,7 @@ async fn test_matchready_response_emitted_before_state_131() {
 
     // 2. Connect Client 2 (Guest)
     let mut p2_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port)).await.unwrap();
-    send_blaze_req(&mut p2_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await; // preAuth
+    send_blaze_req(&mut p2_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await; // preAuth
     let _ = read_blaze_packet(&mut p2_stream).await;
 
     let mut p2_login = TdfStruct::new();

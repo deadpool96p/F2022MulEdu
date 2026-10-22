@@ -121,7 +121,7 @@ async fn test_full_match_kickoff_and_60hz_sync() {
     let mut p1_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
         .await
         .unwrap();
-    send_blaze_req(&mut p1_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await; // preAuth
+    send_blaze_req(&mut p1_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await; // preAuth
     let _ = read_blaze_packet(&mut p1_stream).await;
 
     let mut p1_login = TdfStruct::new();
@@ -134,7 +134,7 @@ async fn test_full_match_kickoff_and_60hz_sync() {
     let mut p2_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
         .await
         .unwrap();
-    send_blaze_req(&mut p2_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await; // preAuth
+    send_blaze_req(&mut p2_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await; // preAuth
     let _ = read_blaze_packet(&mut p2_stream).await;
 
     let mut p2_login = TdfStruct::new();

@@ -38,8 +38,13 @@ const CLIENT_FIRST_REQUEST: [u8; 16] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-/// The header of an authentic EA `Util::fetchClientConfig` reply, taken from
-/// a live client capture. The payload behind it is 1390 bytes.
+/// The header of an authentic EA `Util::preAuth` reply, taken from a live
+/// client capture. The payload behind it is 1390 bytes.
+///
+/// This frame was previously labelled a `Util::fetchClientConfig` reply.
+/// That was wrong: `0x0007` is `preAuth`. The full frames are kept as
+/// fixtures in `crates/services-blaze/tests/fixtures/`, and
+/// `crates/services-blaze/tests/preauth_matches_ea.rs` decodes them.
 const AUTHENTIC_EA_REPLY_HEADER: [u8; 16] = [
     0x00, 0x00, 0x05, 0x6E, 0x00, 0x00, 0x00, 0x09, 0x00, 0x07, 0x00, 0x00, 0x01, 0x20, 0x00, 0x00,
 ];
@@ -65,7 +70,7 @@ fn fire2_header_decodes_the_authentic_ea_reply_header() {
     assert_eq!(header.length, 1390, "payloadSize of the captured reply");
     assert_eq!(header.metadata_size, 0);
     assert_eq!(header.component, 0x0009, "Util");
-    assert_eq!(header.command, 0x0007, "fetchClientConfig");
+    assert_eq!(header.command, 0x0007, "preAuth");
     assert_eq!(header.message_number, 1, "message number is a u24 at bytes 10..13");
     assert_eq!(header.msg_type, MessageType::RecordResponse, "REPLY");
     assert_eq!(header.user_index, 0);

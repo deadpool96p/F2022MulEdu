@@ -277,10 +277,11 @@ Each TDF field starts with the 3-byte Tag followed by a 1-byte Type ID:
 | 0x0001 | fetchClientConfig   | Fetches client XML/INI configurations from server.   |
 | 0x0002 | ping                | Heartbeat keep-alive; responds with server time.     |
 | 0x0003 | setClientData       | Client reporting hardware info, locale, and version. |
-| 0x0007 | userSettingsSave    | Persists user controller & camera profiles to cloud. |
-| 0x0008 | userSettingsLoad    | Retrieves persisted user settings.                   |
-| 0x000B | preAuth             | Handshake returning Blaze cluster feature flags.     |
-| 0x000C | postAuth            | Finalizes client initialization sequence.            |
+| 0x0007 | preAuth             | Handshake returning Blaze cluster feature flags.     |
+| 0x0008 | postAuth            | Finalizes client initialization sequence.            |
+| 0x000A | userSettingsLoad    | Retrieves persisted user settings.                   |
+| 0x000B | userSettingsSave    | Persists user controller & camera profiles to cloud. |
+| 0x000C | userSettingsLoadAll | Retrieves every persisted user setting.              |
 +------------------------------------------------------------------------------------+
 
 +------------------------------------------------------------------------------------+

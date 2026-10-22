@@ -65,6 +65,22 @@ impl BlazeRouter {
                 let resp = handle_set_client_data(req)?;
                 Ok((resp, None))
             }
+            (COMPONENT_UTIL, CMD_SET_CLIENT_METRICS) => {
+                let resp = handle_set_client_metrics(req)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_UTIL, CMD_GET_TELEMETRY_SERVER) => {
+                let resp = handle_get_telemetry_server(req)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_UTIL, CMD_GET_TICKER_SERVER) => {
+                let resp = handle_get_ticker_server(req)?;
+                Ok((resp, None))
+            }
+            (COMPONENT_UTIL, CMD_FILTER_FOR_PROFANITY) => {
+                let resp = handle_filter_for_profanity(req)?;
+                Ok((resp, None))
+            }
             (COMPONENT_UTIL, CMD_USER_SETTINGS_LOAD) => {
                 let resp = handle_user_settings_load(req)?;
                 Ok((resp, None))

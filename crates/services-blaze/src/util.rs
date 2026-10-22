@@ -7,14 +7,37 @@ use blaze_tdf::{TdfMap, TdfStruct, TdfType, TdfValue};
 
 pub const COMPONENT_UTIL: u16 = 0x0009;
 
+// The `Util` component's command IDs, from EA's own `UtilMessage` enum
+// (`references/Skate3BlazeServer/.../Blaze/MessageLists/UtilMessages.cs`).
+//
+// These were wrong here, and the failure was silent. A Blaze server
+// dispatches on the numeric command ID alone, so a command ID that is off by
+// a few does not raise an error -- it answers the wrong request with the
+// wrong reply. A live capture of FIFA 22 shows the client opening the
+// session with `Comp=0x0009, Cmd=0x0007` and a 230-byte client-identity
+// payload, which this build answered as `userSettingsSave` with an empty
+// payload. The client never received its `preAuth` response and fell into a
+// three-second reconnect loop.
+//
+// EA's own `PreAuthHandler` builds its response with the literal header
+// bytes `0, 0, 0, 9, 0, 7, 0, 0, 0, 0, 0, 0` -- component `0x0009`, command
+// `0x0007` -- which is `preAuth`.
 pub const CMD_FETCH_CLIENT_CONFIG: u16 = 0x0001;
 pub const CMD_PING: u16 = 0x0002;
 pub const CMD_SET_CLIENT_DATA: u16 = 0x0003;
-pub const CMD_USER_SETTINGS_SAVE: u16 = 0x0007;
-pub const CMD_USER_SETTINGS_LOAD: u16 = 0x0008;
-pub const CMD_USER_SETTINGS_LOAD_ALL: u16 = 0x000A;
-pub const CMD_PRE_AUTH: u16 = 0x000B;
-pub const CMD_POST_AUTH: u16 = 0x000C;
+pub const CMD_LOCALIZE_STRINGS: u16 = 0x0004;
+pub const CMD_GET_TELEMETRY_SERVER: u16 = 0x0005;
+pub const CMD_GET_TICKER_SERVER: u16 = 0x0006;
+pub const CMD_PRE_AUTH: u16 = 0x0007;
+pub const CMD_POST_AUTH: u16 = 0x0008;
+pub const CMD_USER_SETTINGS_LOAD: u16 = 0x000A;
+pub const CMD_USER_SETTINGS_SAVE: u16 = 0x000B;
+pub const CMD_USER_SETTINGS_LOAD_ALL: u16 = 0x000C;
+pub const CMD_USER_SETTINGS_LOAD_ALL_FOR_USER_ID: u16 = 0x000D;
+pub const CMD_FILTER_FOR_PROFANITY: u16 = 0x0014;
+pub const CMD_FETCH_QOS_CONFIG: u16 = 0x0015;
+pub const CMD_SET_CLIENT_METRICS: u16 = 0x0016;
+pub const CMD_SET_CONNECTION_STATE: u16 = 0x0017;
 
 pub const COMPONENT_STATS: u16 = 0x0007;
 pub const COMPONENT_CENSUS_DATA: u16 = 0x000A;
@@ -37,11 +60,119 @@ fn qos_ping_site(address: &str, port: u16, site_name: &str) -> TdfStruct {
     site
 }
 
-/// Handles preAuth (0x000B).
+/// Builds a `FetchConfigResponse`.
+///
+/// EA's schema (`references/Skate3BlazeServer/.../Util/Commands/
+/// FetchConfigResponse.cs`) is a struct with a *single* member, `CONF`,
+/// which is the configuration map itself:
+///
+/// ```text
+/// FetchConfigResponse
+///   CONF : map<string, string>
+/// ```
+///
+/// So on the wire the configuration is a struct *wrapping* a map, not a bare
+/// map. The two authentic EA `preAuth` replies confirm it -- each carries
+/// `CONF (struct)` whose only member is `CONF (map)`.
+fn fetch_config_response(entries: Vec<(TdfValue, TdfValue)>) -> TdfStruct {
+    let mut conf = TdfStruct::new();
+    conf.set(
+        "CONF",
+        TdfValue::Map(TdfMap::new(TdfType::String, TdfType::String, entries)),
+    );
+    conf
+}
+
+/// The client configuration map EA's server ships in the `preAuth` reply.
+///
+/// The keys and their values are taken from the two authentic EA `preAuth`
+/// replies (Blaze 15.1.1.4.6 and 18.3.0), with two changes:
+///
+///  * every host is rewritten to `127.0.0.1`, so the client can never reach
+///    a real EA service, and
+///  * the keys that carry third-party credentials or third-party endpoints
+///    (`voipSTT*`, `voipTTS*`, `xbl*`, `xboxOne*`) are dropped entirely --
+///    the emulator speaks no Watson and no Live services.
+fn client_config_entries() -> Vec<(TdfValue, TdfValue)> {
+    let entry = |k: &str, v: &str| (TdfValue::String(k.to_string()), TdfValue::String(v.to_string()));
+
+    vec![
+        entry("associationListSkipInitialSet", "1"),
+        entry("autoReconnectEnabled", "0"),
+        entry("cachedUserRefreshInterval", "1s"),
+        entry("clientUserMetricsUpdateRate", "60000"),
+        entry("connIdleTimeout", "40s"),
+        entry("defaultRequestTimeout", "20s"),
+        entry("maxReconnectAttempts", "30"),
+        entry("nonResumableTimeoutScale", "2.0"),
+        entry("pingPeriod", "20s"),
+        entry("userManagerMaxCachedUsers", "0"),
+        entry("voipHeadsetUpdateRate", "1000"),
+        // The Nucleus and Bytevault services are served locally by the
+        // emulator's own HTTP sink, which already answers the synthetic
+        // Nucleus auth-token request.
+        entry("nucleusConnect", "https://127.0.0.1"),
+        entry("nucleusConnectTrusted", "https://127.0.0.1"),
+        entry("nucleusPortal", "https://127.0.0.1"),
+        entry("nucleusProxy", "https://127.0.0.1"),
+        entry("bytevaultHostname", "127.0.0.1"),
+        entry("bytevaultPort", "42127"),
+        entry("bytevaultSecure", "true"),
+    ]
+}
+
+/// Handles preAuth (0x0007).
+///
+/// `Util` command `0x0007` is `preAuth`. Three independent sources agree:
+///
+///  * EA's own `UtilMessage` enum
+///    (`references/Skate3BlazeServer/.../Blaze/MessageLists/UtilMessages.cs`)
+///    puts `preAuth` at 7;
+///  * EA's own `PreAuthHandler`
+///    (`references/Skate3BlazeServer/.../Util/Handlers/PreAuthHandler.cs`)
+///    builds its response with the literal header bytes
+///    `0, 0, 0, 9, 0, 7, 0, 0, 0, 0, 0, 0` -- component `0x0009`, command
+///    `0x0007`; and
+///  * the two authentic EA `preAuth` replies, whose payloads decode to
+///    exactly the struct below.
+///
+/// The reply's members are the ones the authentic EA replies carry:
+///
+/// ```text
+/// ASRC : string   asset source id
+/// CIDS : list<uint>  component ids the server implements
+/// CLID : string   server id
+/// CONF : FetchConfigResponse { CONF : map<string, string> }
+/// ESRC : string
+/// INST : string   product id
+/// MAID : uint     master account id
+/// MINR : uint
+/// NASP : string   authentication namespace
+/// PILD : string
+/// PLAT : string   platform
+/// QOSS : QosConfigInfo { BWPS, LNP, LTPS, SVID }
+/// RSRC : string
+/// SVER : string   server version
+/// ```
+///
+/// Note that `ANAM` and a root-level `TIME` are *not* members: the emulator
+/// used to send both, and neither exists in the schema.
 pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::Result<BlazePacket> {
     let mut resp = TdfStruct::new();
 
-    resp.set("ANAM", TdfValue::String("fifa-2022-pc".to_string()));
+    // The context members. Their values are the client identity the FIFA 22
+    // client reported in its own `preAuth` request (build 5091917, product
+    // `fifa-2022-pc`, platform `pc`), so the server and the client agree.
+    resp.set("ASRC", TdfValue::String("5091917".to_string()));
+    resp.set("CLID", TdfValue::String("FIFA22-PC-EMULATOR-BLAZE".to_string()));
+    resp.set("ESRC", TdfValue::String("5091917".to_string()));
+    resp.set("INST", TdfValue::String("fifa-2022-pc".to_string()));
+    resp.set("MAID", TdfValue::Integer(0));
+    resp.set("MINR", TdfValue::Integer(0));
+    resp.set("NASP", TdfValue::String("cem_ea_id".to_string()));
+    resp.set("PILD", TdfValue::String(String::new()));
+    resp.set("PLAT", TdfValue::String("pc".to_string()));
+    resp.set("RSRC", TdfValue::String("5091917".to_string()));
 
     // CIDS: List of supported component IDs
     let components = vec![
@@ -53,13 +184,17 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
         TdfValue::Integer(0x000F), // Clubs
         TdfValue::Integer(0x0010), // Cards
         TdfValue::Integer(0x0018), // Stats/Achievements
-        TdfValue::Integer(0x0019), // Users
+        TdfValue::Integer(0x0019), // Users / AssociationLists
         TdfValue::Integer(0x001C), // GameReporting
         TdfValue::Integer(0x0021), // Store/Catalog
         TdfValue::Integer(0x08BA), // PerfComponent
         TdfValue::Integer(0x7802), // UserSessions
     ];
     resp.set("CIDS", TdfValue::List(blaze_tdf::TdfList::new(TdfType::Integer, components)));
+
+    // CONF: the server's client configuration. A struct wrapping a map --
+    // see `fetch_config_response`.
+    resp.set("CONF", TdfValue::Struct(fetch_config_response(client_config_entries())));
 
     // QOSS: QoS server configuration pointing at the emulator's QoS
     // responder.
@@ -90,48 +225,107 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
     qos_struct.set("SVID", TdfValue::Integer(1));
     resp.set("QOSS", TdfValue::Struct(qos_struct));
 
-    resp.set("SVER", TdfValue::String("Blaze 15.1.1.2.0 (F22-Emulator)".to_string()));
-
-    let epoch_sec = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    resp.set("TIME", TdfValue::Integer(epoch_sec));
+    // SVER: the server version, in EA's own format
+    // ("Blaze <sdk> (CL# <build>)").
+    resp.set(
+        "SVER",
+        TdfValue::String("Blaze 15.1.1.10.3 (CL# 5091917)".to_string()),
+    );
 
     tracing::info!("[Blaze Util] Handled preAuth -> QoS directed to {}:{}", qos_host, qos_port);
     BlazePacket::response(&req.header, resp)
 }
 
-/// Handles postAuth (0x000C).
+/// Handles postAuth (0x0008).
+///
+/// `PostAuthResponse` carries two nested structs, per EA's own model
+/// (`references/Skate3BlazeServer/.../Util/Commands/PostAuthResponse.cs`):
+/// `TELE` is a `GetTelemetryServerResponse` and `TICK` is a
+/// `GetTickerServerResponse`. Both point at the emulator's own HTTP sink on
+/// port 443, so the client's telemetry never leaves the machine.
 pub fn handle_post_auth(req: &BlazePacket) -> io::Result<BlazePacket> {
     let mut resp = TdfStruct::new();
 
-    // Telemetry server info (:443)
-    let mut tele = TdfStruct::new();
-    tele.set("ADRS", TdfValue::String("127.0.0.1".to_string()));
-    tele.set("PORT", TdfValue::Integer(443));
-    tele.set("SKEY", TdfValue::String("TELE_KEY".to_string()));
-    resp.set("TELE", TdfValue::Struct(tele));
-
-    // Ticker server info (:443)
-    let mut tick = TdfStruct::new();
-    tick.set("ADRS", TdfValue::String("127.0.0.1".to_string()));
-    tick.set("PORT", TdfValue::Integer(443));
-    tick.set("SKEY", TdfValue::String("TICK_KEY".to_string()));
-    resp.set("TICK", TdfValue::Struct(tick));
+    resp.set("TELE", TdfValue::Struct(telemetry_server()));
+    resp.set("TICK", TdfValue::Struct(ticker_server()));
 
     tracing::info!("[Blaze Util] Handled postAuth");
     BlazePacket::response(&req.header, resp)
 }
 
+/// The `GetTelemetryServerResponse` struct, per EA's own model
+/// (`references/Skate3BlazeServer/.../Util/Commands/GetTelemetryServerResponse.cs`).
+///
+/// Every member EA declares is present, even the ones the emulator has no
+/// opinion about: a decoder that fills defaults for absent members is fine,
+/// but one that requires them is not, and there is no cost to sending them.
+fn telemetry_server() -> TdfStruct {
+    let mut tele = TdfStruct::new();
+    tele.set("ADRS", TdfValue::String("127.0.0.1".to_string()));
+    tele.set("ANON", TdfValue::Integer(1));
+    tele.set("DISA", TdfValue::String(String::new()));
+    tele.set("FILT", TdfValue::String(String::new()));
+    tele.set("LOC", TdfValue::Integer(0));
+    tele.set("NOOK", TdfValue::String(String::new()));
+    tele.set("PORT", TdfValue::Integer(443));
+    tele.set("SDLY", TdfValue::Integer(0));
+    tele.set("SKEY", TdfValue::String(String::new()));
+    tele.set("SPCT", TdfValue::Integer(100));
+    tele
+}
+
+/// The `GetTickerServerResponse` struct, per EA's own model
+/// (`references/Skate3BlazeServer/.../Util/Commands/GetTickerServerResponse.cs`).
+fn ticker_server() -> TdfStruct {
+    let mut tick = TdfStruct::new();
+    tick.set("ADRS", TdfValue::String("127.0.0.1".to_string()));
+    tick.set("PORT", TdfValue::Integer(443));
+    tick.set("SKEY", TdfValue::String(String::new()));
+    tick
+}
+
+/// Handles getTelemetryServer (0x0005).
+pub fn handle_get_telemetry_server(req: &BlazePacket) -> io::Result<BlazePacket> {
+    let mut resp = TdfStruct::new();
+    resp.set("TELE", TdfValue::Struct(telemetry_server()));
+    tracing::info!("[Blaze Util] Handled getTelemetryServer");
+    BlazePacket::response(&req.header, resp)
+}
+
+/// Handles getTickerServer (0x0006).
+pub fn handle_get_ticker_server(req: &BlazePacket) -> io::Result<BlazePacket> {
+    let mut resp = TdfStruct::new();
+    resp.set("TICK", TdfValue::Struct(ticker_server()));
+    tracing::info!("[Blaze Util] Handled getTickerServer");
+    BlazePacket::response(&req.header, resp)
+}
+
+/// Handles filterForProfanity (0x0014).
+///
+/// `FilterForProfanityResponse` carries `TLST`, a list of `FilteredUserText`
+/// (`DIRT` : int, `UTXT` : string). The emulator filters nothing, so the list
+/// is empty -- which is exactly the answer for an unfiltered text.
+pub fn handle_filter_for_profanity(req: &BlazePacket) -> io::Result<BlazePacket> {
+    let mut resp = TdfStruct::new();
+    resp.set(
+        "TLST",
+        TdfValue::List(blaze_tdf::TdfList::new(TdfType::Struct, Vec::new())),
+    );
+    tracing::info!("[Blaze Util] Handled filterForProfanity");
+    BlazePacket::response(&req.header, resp)
+}
+
 /// Handles fetchClientConfig (0x0001).
+///
+/// The reply is a `FetchConfigResponse`, which is a struct wrapping the
+/// configuration map -- the same shape the `preAuth` reply's `CONF` member
+/// uses. See `fetch_config_response`.
 pub fn handle_fetch_client_config(req: &BlazePacket) -> io::Result<BlazePacket> {
     let section = match req.payload.get("CFG") {
         Some(TdfValue::String(s)) => s.as_str(),
         _ => "FIFA_ONLINE",
     };
 
-    let mut resp = TdfStruct::new();
     let mut entries = Vec::new();
 
     match section {
@@ -148,7 +342,7 @@ pub fn handle_fetch_client_config(req: &BlazePacket) -> io::Result<BlazePacket> 
         }
     }
 
-    resp.set("CONF", TdfValue::Map(TdfMap::new(TdfType::String, TdfType::String, entries)));
+    let resp = fetch_config_response(entries);
 
     tracing::info!("[Blaze Util] Handled fetchClientConfig for section '{}'", section);
     BlazePacket::response(&req.header, resp)
@@ -181,19 +375,28 @@ pub fn handle_set_client_data(req: &BlazePacket) -> io::Result<BlazePacket> {
     BlazePacket::response(&req.header, TdfStruct::new())
 }
 
-/// Handles userSettingsLoad (0x0008).
+/// Handles setClientMetrics (0x0016).
+///
+/// EA's own router answers this with an empty response
+/// (`case UtilMessage.setClientMetrics: await ServerUtils.SendEmptyResponse(...)`).
+pub fn handle_set_client_metrics(req: &BlazePacket) -> io::Result<BlazePacket> {
+    tracing::debug!("[Blaze Util] setClientMetrics acknowledged");
+    BlazePacket::response(&req.header, TdfStruct::new())
+}
+
+/// Handles userSettingsLoad (0x000A).
 pub fn handle_user_settings_load(req: &BlazePacket) -> io::Result<BlazePacket> {
     let mut resp = TdfStruct::new();
     resp.set("DATA", TdfValue::String(String::new()));
     BlazePacket::response(&req.header, resp)
 }
 
-/// Handles userSettingsSave (0x0007).
+/// Handles userSettingsSave (0x000B).
 pub fn handle_user_settings_save(req: &BlazePacket) -> io::Result<BlazePacket> {
     BlazePacket::response(&req.header, TdfStruct::new())
 }
 
-/// Handles userSettingsLoadAll (0x000A).
+/// Handles userSettingsLoadAll (0x000C).
 pub fn handle_user_settings_load_all(req: &BlazePacket) -> io::Result<BlazePacket> {
     let mut resp = TdfStruct::new();
     let entries: Vec<(TdfValue, TdfValue)> = Vec::new();
@@ -272,11 +475,21 @@ mod tests {
         assert_eq!(resp.header.msg_type, MessageType::RecordResponse);
         assert_eq!(resp.header.seq_no, 1);
 
-        assert!(resp.payload.get("ANAM").is_some());
-        assert!(resp.payload.get("CIDS").is_some());
-        assert!(resp.payload.get("QOSS").is_some());
-        assert!(resp.payload.get("SVER").is_some());
-        assert!(resp.payload.get("TIME").is_some());
+        // The members the two authentic EA preAuth replies carry.
+        for member in [
+            "ASRC", "CIDS", "CLID", "CONF", "ESRC", "INST", "MAID", "MINR", "NASP", "PILD",
+            "PLAT", "QOSS", "RSRC", "SVER",
+        ] {
+            assert!(
+                resp.payload.get(member).is_some(),
+                "the preAuth reply must carry the `{}` member",
+                member
+            );
+        }
+
+        // `ANAM` and a root-level `TIME` are not members of the schema.
+        assert!(resp.payload.get("ANAM").is_none(), "ANAM is not a PreAuthResponse member");
+        assert!(resp.payload.get("TIME").is_none(), "TIME is not a PreAuthResponse member");
 
         let encoded_16 = resp.encode_16().expect("encode_16 must succeed");
         // Fire2 packs the message type into byte 13 as `type << 5 | userIndex`.
@@ -286,6 +499,89 @@ mod tests {
             "byte 13 must carry RecordResponse (0x01) shifted left 5"
         );
         println!("preAuth 16-byte frame ({} bytes):\n{}", encoded_16.len(), blaze_core::hex_dump(&encoded_16));
+    }
+
+    /// The `CONF` member is a `FetchConfigResponse` -- a *struct* whose only
+    /// member is the `CONF` map -- not a bare map.
+    ///
+    /// EA's schema says so (`FetchConfigResponse` has a single `CONF` member
+    /// of type `map<string, string>`), and the two authentic EA preAuth
+    /// replies both decode as `CONF (struct)` containing `CONF (map)`.
+    #[test]
+    fn test_pre_auth_conf_is_a_struct_wrapping_the_map() {
+        let req = BlazePacket::new(
+            COMPONENT_UTIL,
+            CMD_PRE_AUTH,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            1,
+            TdfStruct::new(),
+        )
+        .unwrap();
+        let resp = handle_pre_auth(&req, "127.0.0.1", 17498).expect("preAuth handler must not error");
+
+        let conf = match resp.payload.get("CONF") {
+            Some(TdfValue::Struct(s)) => s,
+            other => panic!("CONF must be a struct, got {:?}", other),
+        };
+        let map = match conf.get("CONF") {
+            Some(TdfValue::Map(m)) => m,
+            other => panic!("the CONF struct's member must be a map, got {:?}", other),
+        };
+        assert!(
+            !map.entries.is_empty(),
+            "the configuration map must carry at least one entry"
+        );
+    }
+
+    /// Nothing in the configuration map may point at a real EA service.
+    ///
+    /// The emulator is a private server: the client must never be sent to
+    /// `accounts.ea.com`, `gateway.ea.com`, `signin.ea.com`, a Bytevault
+    /// host, a Live service, or a Watson speech endpoint.
+    #[test]
+    fn test_no_config_entry_points_at_a_real_ea_service() {
+        let req = BlazePacket::new(
+            COMPONENT_UTIL,
+            CMD_PRE_AUTH,
+            0,
+            MessageType::SubmitRequest,
+            0,
+            1,
+            TdfStruct::new(),
+        )
+        .unwrap();
+        let resp = handle_pre_auth(&req, "127.0.0.1", 17498).expect("preAuth handler must not error");
+
+        let conf = match resp.payload.get("CONF") {
+            Some(TdfValue::Struct(s)) => s,
+            other => panic!("CONF must be a struct, got {:?}", other),
+        };
+        let map = match conf.get("CONF") {
+            Some(TdfValue::Map(m)) => m,
+            other => panic!("the CONF struct's member must be a map, got {:?}", other),
+        };
+
+        for (key, value) in &map.entries {
+            let (TdfValue::String(key), TdfValue::String(value)) = (key, value) else {
+                panic!("configuration entries must be string -> string");
+            };
+            for forbidden in [
+                "ea.com",
+                "eac.ea.com",
+                "gos.ea.com",
+                "xboxlive.com",
+                "watson.cloud.ibm.com",
+            ] {
+                assert!(
+                    !value.contains(forbidden),
+                    "configuration entry `{}` points at a real EA service: {}",
+                    key,
+                    value
+                );
+            }
+        }
     }
 
     /// The `QOSS` struct must use EA's own member names.

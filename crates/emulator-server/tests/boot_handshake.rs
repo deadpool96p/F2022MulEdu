@@ -129,10 +129,10 @@ async fn test_full_boot_handshake_flow() {
         }
     }
 
-    // 2a. preAuth (Util 0x0009 :: 0x000B)
-    let (pre_hdr, pre_tdf) = send_recv(&mut blaze_stream, 0x0009, 0x000B, 10, TdfStruct::new()).await;
+    // 2a. preAuth (Util 0x0009 :: 0x0007)
+    let (pre_hdr, pre_tdf) = send_recv(&mut blaze_stream, 0x0009, 0x0007, 10, TdfStruct::new()).await;
     assert_eq!(pre_hdr.component, 0x0009);
-    assert_eq!(pre_hdr.command, 0x000B);
+    assert_eq!(pre_hdr.command, 0x0007);
     assert_eq!(pre_hdr.seq_no, 10);
     assert!(pre_tdf.get("QOSS").is_some());
     assert!(pre_tdf.get("CIDS").is_some());
@@ -150,10 +150,10 @@ async fn test_full_boot_handshake_flow() {
     );
     assert!(login_tdf.get("SKEY").is_some());
 
-    // 2c. postAuth (Util 0x0009 :: 0x000C)
-    let (post_hdr, post_tdf) = send_recv(&mut blaze_stream, 0x0009, 0x000C, 12, TdfStruct::new()).await;
+    // 2c. postAuth (Util 0x0009 :: 0x0008)
+    let (post_hdr, post_tdf) = send_recv(&mut blaze_stream, 0x0009, 0x0008, 12, TdfStruct::new()).await;
     assert_eq!(post_hdr.component, 0x0009);
-    assert_eq!(post_hdr.command, 0x000C);
+    assert_eq!(post_hdr.command, 0x0008);
     assert!(post_tdf.get("TELE").is_some());
 
     // 2d. ping (Util 0x0009 :: 0x0002)

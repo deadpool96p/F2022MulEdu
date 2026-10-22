@@ -161,8 +161,8 @@ async fn test_full_online_hub_two_player_flow() {
 
     // preAuth
     let (c1_pre_auth, _) =
-        send_and_recv_blaze(&mut c1_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await;
-    assert_eq!(c1_pre_auth.header.command, 0x000B);
+        send_and_recv_blaze(&mut c1_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
+    assert_eq!(c1_pre_auth.header.command, 0x0007);
 
     // expressLogin
     let mut c1_login_tdf = TdfStruct::new();
@@ -200,7 +200,7 @@ async fn test_full_online_hub_two_player_flow() {
         .unwrap();
 
     // preAuth
-    send_and_recv_blaze(&mut c2_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await;
+    send_and_recv_blaze(&mut c2_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
 
     // login
     let mut c2_login_tdf = TdfStruct::new();

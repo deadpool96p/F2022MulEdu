@@ -419,7 +419,10 @@ mod tests {
     use super::*;
     use crate::frame::MessageType;
 
-    /// The header of an authentic EA `Util::fetchClientConfig` reply.
+    /// The header of an authentic EA `Util::preAuth` reply.
+    ///
+    /// The full frames are kept as fixtures in
+    /// `crates/services-blaze/tests/fixtures/`.
     const AUTHENTIC_EA_REPLY_HEADER: [u8; 16] = [
         0x00, 0x00, 0x05, 0x6E, 0x00, 0x00, 0x00, 0x09, 0x00, 0x07, 0x00, 0x00, 0x01, 0x20, 0x00, 0x00,
     ];
@@ -481,7 +484,7 @@ mod tests {
         for (component, command) in [
             (0x0005u16, 0x0001u16), // redirector getServerInstance
             (0x0009, 0x0002),       // util ping
-            (0x0009, 0x000B),       // util preAuth
+            (0x0009, 0x0007),       // util preAuth
             (0x0001, 0x001C),       // auth expressLogin
             (0x7802, 0x0008),       // usersessions updateNetworkInfo
             (0x00FE, 0x0022),       // wildcard unknown RPC

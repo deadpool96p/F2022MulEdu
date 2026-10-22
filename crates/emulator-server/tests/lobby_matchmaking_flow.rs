@@ -64,7 +64,7 @@ async fn test_flow_a_native_menu_matchmaking() {
     let mut p1_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
         .await
         .unwrap();
-    send_blaze_req(&mut p1_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await;
+    send_blaze_req(&mut p1_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut p1_stream).await;
 
     let mut p1_login = TdfStruct::new();
@@ -77,7 +77,7 @@ async fn test_flow_a_native_menu_matchmaking() {
     let mut p2_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
         .await
         .unwrap();
-    send_blaze_req(&mut p2_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await;
+    send_blaze_req(&mut p2_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut p2_stream).await;
 
     let mut p2_login = TdfStruct::new();
@@ -269,7 +269,7 @@ async fn test_flow_c_steam_identity_and_invite_sync() {
     let mut p1_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
         .await
         .unwrap();
-    send_blaze_req(&mut p1_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await;
+    send_blaze_req(&mut p1_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut p1_stream).await;
 
     send_blaze_req(&mut p1_stream, 0x0001, 0x001C, 2, TdfStruct::new()).await;
@@ -337,7 +337,7 @@ async fn test_flow_c_steam_identity_and_invite_sync() {
     let mut p2_stream = TcpStream::connect(format!("127.0.0.1:{}", blaze_port))
         .await
         .unwrap();
-    send_blaze_req(&mut p2_stream, 0x0009, 0x000B, 1, TdfStruct::new()).await;
+    send_blaze_req(&mut p2_stream, 0x0009, 0x0007, 1, TdfStruct::new()).await;
     let _ = read_blaze_packet(&mut p2_stream).await;
 
     let mut p2_login = TdfStruct::new();
