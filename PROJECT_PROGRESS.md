@@ -1,7 +1,7 @@
 # FIFA 22 Frostbite 3 Clean-Room Multiplayer: Project Progress Report
 
-**Document Version:** 2.0.0  
-**Last Updated:** October 21, 2026  
+**Document Version:** 2.1.0  
+**Last Updated:** October 22, 2026  
 **Status:** In Active Development — Phase 1 (Authentication Unblock) in progress  
 **Repository:** `deadpool96p/F2022MulEdu`  
 **Target:** EA Sports FIFA 22 (Frostbite 3 Engine, PC)
@@ -317,12 +317,20 @@ marked as such in `docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md` §1.
    * [x] Root-cause the 10-second post-`ping` stall → Fire2 framing + Heat2 codec mismatch (`docs/POST_PING_STALL_ROOT_CAUSE.md`).
    * [x] Implement the Heat2 varsize integer encoding in `blaze-tdf` (Defect A).
    * [x] Pin the Heat2 codec with conformance tests (`crates/blaze-tdf/tests/tdf_fire2_wire.rs`).
-   * [ ] Correct the Heat2 type IDs (Defect C).
-   * [ ] Correct the union / variable / object wire forms (Defect D).
-   * [ ] Rewrite the 16-byte header to Fire2 in `blaze-core` (Defect B) — the 12-byte legacy path must stay byte-identical so the eight integration test files remain green.
-   * [ ] Replace the 12-vs-16 detection heuristic in `blaze_server.rs` and `redirector_server.rs` (Defect E).
-   * [ ] Update the `services-blaze/src/util.rs` unit tests for the new layout.
+   * [x] Correct the Heat2 type IDs (Defect C).
+   * [x] Correct the union / variable / object wire forms (Defect D).
+   * [x] Rewrite the 16-byte header to Fire2 in `blaze-core` (Defect B) — the 12-byte legacy path must stay byte-identical so the eight integration test files remain green.
+   * [x] Replace the 12-vs-16 detection heuristic in `blaze_server.rs` and `redirector_server.rs` (Defect E).
+   * [x] Update the `services-blaze/src/util.rs` unit tests for the new layout.
+   * [x] **Correct the `Util` command IDs** to EA's own `UtilMessage` enum. `0x0007` is `preAuth`, `0x0008` is `postAuth`. The shipped IDs made the server answer one command's reply to another command's request, which the client discards as unsolicited — a silent stall.
+   * [x] **Correct the `preAuth` reply shape.** EA's open-source model names four members, but the retail server sends fourteen (`ASRC CIDS CLID CONF ESRC INST MAID MINR NASP PILD PLAT QOSS RSRC SVER`). `CONF` is a *struct wrapping* the map, not a bare map. `ANAM` and a root-level `TIME` are not members and are no longer sent. Verified byte-exactly against two authentic EA frames, now kept as fixtures in `crates/services-blaze/tests/fixtures/`.
+   * [x] **Answer a Fire2 transport `PING` with a `PING_REPLY`.** A `PING` (message type 4) is a keepalive, not an RPC request; answering it with an ordinary `REPLY` left the keepalive unsatisfied and the client tore the connection down and reconnected.
+   * [x] Rewrite the Wireshark dissector against the real Fire2/Heat2 layout, with a 79-check self-test (`tools/dissector/blaze.lua`).
+   * [x] Add a decoder example for Blaze frames and bare TDF payloads (`cargo run -p blaze-tdf --example decode -- ...`), which reports how many bytes were consumed — the test that tells a root struct from a nested one.
    * [ ] Re-run the real client and confirm `Util::preAuth` (0x0009 / 0x0007) arrives.
+   * [ ] Serve the ProtoHttp User-Agent (`ProtoHttp 1.3/DS 15.1.7.0.3 (Windows)`) from `services-http-content`.
+   * [ ] Stand up the QoS STUN responder so the `QOSS` site in `preAuth` resolves.
+   * [ ] Investigate the TLS handshake failure at 04:15:33 (`InvalidMessage(IllegalEmptyValue)`) on connection 61803.
 5. **Phase 2 — Matchmaking & GameManager (PENDING):**
    * [ ] Port `ReserveLobbyRelayServer` (relay port 17000 + gameId) into the Rust GameManager.
    * [ ] Correct the lobby create/join notifications.
