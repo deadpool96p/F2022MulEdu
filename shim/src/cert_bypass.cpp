@@ -8,11 +8,22 @@
 #include <sstream>
 #include <vector>
 #include <wincrypt.h>
+#include <windows.h>
 #include <atomic>
 #include <thread>
+#include <algorithm>
+#include <cctype>
+
+// LoadLibrary hook type declarations (must precede any use)
+typedef HMODULE (WINAPI *PFN_LoadLibraryW)(LPCWSTR lpLibFileName);
+typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags);
 #include <cstring>
 
-    namespace f22 {
+
+  static PFN_LoadLibraryW g_orig_LoadLibraryW = nullptr;
+  static PFN_LoadLibraryExW g_orig_LoadLibraryExW = nullptr;
+
+  namespace f22 {
 
   // CryptoAPI Hooks
   using PFN_CertVerifyCertificateChainPolicy =
@@ -340,15 +351,6 @@
   // patched are skipped, and a module whose table was not initialised yet is
   // retried on the next call.
   bool EnsureCaTablePatched() {
-    // ... (existing scan) ...
-    return found_total > 0;
-  }
-
-  // If EAWebKit.dll is detected loading, force an immediate re-scan so
-  // the web-stack's trust-anchor table is patched before any TLS handshake.
-  static bool HookLoadLibraryWForWebKit() {
-    return true; // Already handled by the background thread + DLL_PROCESS_ATTACH retry
-  }
     if (!LoadCaModulus()) {
       return false;
     }
@@ -396,6 +398,13 @@
     }
 
     return found_total > 0;
+  }
+
+  // If EAWebKit.dll is detected loading, the background thread will patch it; the
+  // synchronous LoadLibraryW hook (installed below) also triggers a scan.
+  static bool HookLoadLibraryWForWebKit() {
+    // No-op: synchronous hook handles the trigger.
+    return true;
   }
 
   static bool PatchDirtySdkCaTable() {
@@ -448,6 +457,33 @@
     g_ca_patch_stop.store(true, std::memory_order_relaxed);
   }
 
+
+  static HMODULE WINAPI Hooked_LoadLibraryW(LPCWSTR lpLibFileName) {
+    HMODULE h = g_orig_LoadLibraryW ? g_orig_LoadLibraryW(lpLibFileName) : LoadLibraryW(lpLibFileName);
+    if (h && lpLibFileName) {
+      wchar_t name[MAX_PATH] = {0};
+      if (GetModuleFileNameW(h, name, MAX_PATH) > 0) {
+        if (wcsstr(name, L"EAWebKit.dll") != nullptr) {
+          LogInfo("[SSL Bypass] LoadLibraryW loaded EAWebKit.dll — triggering CA patch");
+          EnsureCaTablePatched();
+        }
+      }
+    }
+    return h;
+  }
+
+  static HMODULE WINAPI Hooked_LoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
+    HMODULE h = g_orig_LoadLibraryExW ? g_orig_LoadLibraryExW(lpLibFileName, hFile, dwFlags) : LoadLibraryExW(lpLibFileName, hFile, dwFlags);
+    if (h && lpLibFileName) {
+      wchar_t name[MAX_PATH] = {0};
+      if (GetModuleFileNameW(h, name, MAX_PATH) > 0) {
+        if (wcsstr(name, L"EAWebKit.dll") != nullptr) {
+          LogInfo("[SSL Bypass] LoadLibraryExW loaded EAWebKit.dll — triggering CA patch");
+          EnsureCaTablePatched();
+        }
+      }
+    }
+    return h;
   bool InstallCertBypassHooks() {
     static std::vector<std::unique_ptr<HookGuard>> s_cert_guards;
     s_cert_guards.clear();
@@ -485,8 +521,7 @@
 
     // 2. Hook CNG BCrypt (bcrypt.dll)
     HMODULE bcrypt = GetModuleHandleW(L"bcrypt.dll");
-    if (!bcrypt)
-      bcrypt = LoadLibraryW(L"bcrypt.dll");
+    if (!bcrypt) bcrypt = LoadLibraryW(L"bcrypt.dll");
     if (bcrypt) {
       void *p_bcrypt_verify = reinterpret_cast<void *>(
           GetProcAddress(bcrypt, "BCryptVerifySignature"));
@@ -503,6 +538,22 @@
     //    before the client needs them.
     PatchDirtySdkCaTable();
     StartCaPatchThread();
+
+    // 4. Synchronous LoadLibraryW hook â€” PRIMARY mechanism for EAWebKit.dll.
+    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    if (kernel32) {
+      void *p_load = GetProcAddress(kernel32, "LoadLibraryW");
+      if (p_load) {
+        create_hook_checked(p_load, reinterpret_cast<void*>(Hooked_LoadLibraryW),
+                            reinterpret_cast<void**>(&g_orig_LoadLibraryW), "LoadLibraryW");
+      }
+      void *p_loadex = GetProcAddress(kernel32, "LoadLibraryExW");
+      if (p_loadex) {
+        create_hook_checked(p_loadex, reinterpret_cast<void*>(Hooked_LoadLibraryExW),
+                            reinterpret_cast<void**>(&g_orig_LoadLibraryExW), "LoadLibraryExW");
+      }
+    }
+    LogInfo("[SSL Bypass] Synchronous LoadLibraryW/ExW hooks installed â€” EAWebKit.dll will be patched on load");
 
     return true;
   }
