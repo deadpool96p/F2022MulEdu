@@ -78,6 +78,8 @@ bool verify_peer(const uint8_t* cert_bytes, size_t cert_len);
 // `certificate_unknown`.  Safe to call repeatedly: modules are only rescanned
 // when they appear or when their table was not initialised yet.
 bool EnsureCaTablePatched();
+bool StartCaPatchThread();
+void StopCaPatchThread();
 bool InstallDXGIHooks();
 void RemoveDXGIHooks();
 

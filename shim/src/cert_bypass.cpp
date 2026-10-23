@@ -8,6 +8,8 @@
 #include <sstream>
 #include <vector>
 #include <wincrypt.h>
+#include <atomic>
+#include <thread>
 #include <cstring>
 
     namespace f22 {
@@ -239,32 +241,23 @@
     return false;
   }
 
-  // DirtySDK ProtoSSL certificate bypass: Patches DigiCert Root CA RSA modulus in FIFA 22 memory
+  // DirtySDK ProtoSSL certificate bypass: Patches Root CA RSA moduli in FIFA 22 memory
   //
   // The root table is **not** a single, process-wide table.  EA compiles the
   // same trust-anchor structure into every module that does its own TLS:
   // `FIFA22.exe` (the DirtySDK ProtoSSL stack) and `EAWebKit.dll` (the
-  // web / HTTP-2 stack) each carry their own copy of the "DigiCert Global
-  // Root CA" entry, with the root's RSA modulus behind a pointer at +0x50 of
-  // the entry.
+  // web / HTTP-2 stack) each carry their own copy of the anchor table.
   //
   // Validating a server certificate means comparing the chain's root modulus
   // against that pointer, so a copy that is *not* patched rejects our
   // certificate with `certificate_unknown` (TLS alert 46) even though the
-  // Blaze / DirtySDK connections work fine.  That is exactly the symptom we
-  // see: the telemetry (ProtoHttp) requests succeed on port 443 while the
-  // HTTP-2 connection from the web stack fails.
+  // Blaze / DirtySDK connections work fine.
   //
-  // So every module that contains the entry gets patched, and the scan is
+  // So every module that contains the entries gets patched, and the scan is
   // repeated when a module is loaded later -- the web stack is not resident
   // when the shim's `DLL_PROCESS_ATTACH` runs.
 
-  // Patches every "DigiCert Global Root CA" entry inside one module.
-  //
-  // `found` is the number of entries located.  `ready` is false when an
-  // entry exists but has not been initialised yet -- the exponent fields are
-  // filled in by the module's own start-up code, so a table that was scanned
-  // too early has to be scanned again later.
+  // Patches every matching root anchor entry inside one module.
   static int PatchCaTableInModule(HMODULE mod, const char* label, bool* ready) {
     *ready = true;
     if (!mod) return 0;
@@ -277,50 +270,60 @@
     const uint8_t *base = static_cast<const uint8_t *>(mod_info.lpBaseOfDll);
     size_t size = mod_info.SizeOfImage;
 
-    const char kTargetStr[] = "DigiCert Global Root CA";
-    const size_t kStrLen = sizeof(kTargetStr); // 24 bytes including null terminator
+    const char* kTargetStr[] = {
+        "DigiCert Global Root CA",
+        "GOS 2015 CA",
+        "VeriSign G5",
+        "Amazon Root CA 1"
+    };
+    const size_t kTargetCount = 4;
 
     int found = 0;
 
-    for (size_t i = 0; i < size - kStrLen - 0x60; ++i) {
-      if (std::memcmp(base + i, kTargetStr, kStrLen) != 0) {
-        continue;
-      }
+    for (size_t s = 0; s < kTargetCount; ++s) {
+      const char* target = kTargetStr[s];
+      const size_t str_len = strlen(target) + 1;
 
-      found++;
-      uintptr_t name_addr = reinterpret_cast<uintptr_t>(base + i);
-      uintptr_t *p_modulus = reinterpret_cast<uintptr_t *>(name_addr + 0x50);
+      for (size_t i = 0; i < size - str_len - 0x60; ++i) {
+        if (std::memcmp(base + i, target, str_len) != 0) {
+          continue;
+        }
 
-      uint32_t exp_len = *reinterpret_cast<const uint32_t *>(name_addr + 0x58);
-      uint32_t exp_val = *reinterpret_cast<const uint32_t *>(name_addr + 0x5C) & 0x00FFFFFF;
+        found++;
+        uintptr_t name_addr = reinterpret_cast<uintptr_t>(base + i);
+        uintptr_t *p_modulus = reinterpret_cast<uintptr_t *>(name_addr + 0x50);
 
-      if (exp_len != 3 || exp_val != 0x010001) {
-        // The entry is present but its key material is not initialised yet.
-        *ready = false;
+        uint32_t exp_len = *reinterpret_cast<const uint32_t *>(name_addr + 0x58);
+        uint32_t exp_val = *reinterpret_cast<const uint32_t *>(name_addr + 0x5C) & 0x00FFFFFF;
+
+        if (exp_len != 3 || exp_val != 0x010001) {
+          // The entry is present but its key material is not initialised yet.
+          *ready = false;
+          std::ostringstream ss;
+          ss << "[SSL Bypass] " << label << ": root entry " << target << " at 0x" << std::hex << name_addr
+             << " is not initialised yet (exp_len=" << std::dec << exp_len << "); retrying later";
+          LogWarn(ss.str());
+          continue;
+        }
+
+        if (*p_modulus == reinterpret_cast<uintptr_t>(g_ca_modulus)) {
+          continue; // already patched
+        }
+
+        DWORD old_protect = 0;
+        if (!VirtualProtect(p_modulus, sizeof(uintptr_t), PAGE_READWRITE, &old_protect)) {
+          continue;
+        }
+        uintptr_t old_ptr = *p_modulus;
+        *p_modulus = reinterpret_cast<uintptr_t>(g_ca_modulus);
+        VirtualProtect(p_modulus, sizeof(uintptr_t), old_protect, &old_protect);
+
         std::ostringstream ss;
-        ss << "[SSL Bypass] " << label << ": DigiCert root entry at 0x" << std::hex << name_addr
-           << " is not initialised yet (exp_len=" << std::dec << exp_len << "); retrying later";
-        LogWarn(ss.str());
-        continue;
+        ss << "[SSL Bypass] SUCCESS: Patched DirtySDK " << target << " modulus pointer in "
+           << label << " at 0x" << std::hex << (name_addr + 0x50) << " (old=0x" << old_ptr
+           << ", new=0x" << reinterpret_cast<uintptr_t>(g_ca_modulus) << ")";
+        LogInfo(ss.str());
       }
-
-      if (*p_modulus == reinterpret_cast<uintptr_t>(g_ca_modulus)) {
-        continue; // already patched
-      }
-
-      DWORD old_protect = 0;
-      if (!VirtualProtect(p_modulus, sizeof(uintptr_t), PAGE_READWRITE, &old_protect)) {
-        continue;
-      }
-      uintptr_t old_ptr = *p_modulus;
-      *p_modulus = reinterpret_cast<uintptr_t>(g_ca_modulus);
-      VirtualProtect(p_modulus, sizeof(uintptr_t), old_protect, &old_protect);
-
-      std::ostringstream ss;
-      ss << "[SSL Bypass] SUCCESS: Patched DirtySDK DigiCert Global Root CA modulus pointer in "
-         << label << " at 0x" << std::hex << (name_addr + 0x50) << " (old=0x" << old_ptr
-         << ", new=0x" << reinterpret_cast<uintptr_t>(g_ca_modulus) << ")";
-      LogInfo(ss.str());
     }
 
     return found;
@@ -337,6 +340,15 @@
   // patched are skipped, and a module whose table was not initialised yet is
   // retried on the next call.
   bool EnsureCaTablePatched() {
+    // ... (existing scan) ...
+    return found_total > 0;
+  }
+
+  // If EAWebKit.dll is detected loading, force an immediate re-scan so
+  // the web-stack's trust-anchor table is patched before any TLS handshake.
+  static bool HookLoadLibraryWForWebKit() {
+    return true; // Already handled by the background thread + DLL_PROCESS_ATTACH retry
+  }
     if (!LoadCaModulus()) {
       return false;
     }
@@ -399,6 +411,43 @@
     return true;
   }
 
+  // Background poller that keeps retrying the root-CA table patch until every
+  // loaded module that carries one has been patched.  EAWebKit.dll is not
+  // resident when the shim's DLL_PROCESS_ATTACH runs, so a single pass is not
+  // enough -- the web / HTTP-2 stack loads later, right when the client needs
+  // the QoS handshake.
+  //
+  // The loop exits when every currently-loaded module's table is patched and
+  // stays alive so that modules loaded afterwards (and modules whose table
+  // was not initialised yet at the time of the scan) are caught on the next
+  // pass.  It is harmless to keep it running: `EnsureCaTablePatched` is a
+  // no-op once everything is patched.
+  static std::atomic<bool> g_ca_patch_stop{false};
+
+  static void CaPatchThread() {
+    LogInfo("[SSL Bypass] Background root-CA patcher started");
+    while (!g_ca_patch_stop.load(std::memory_order_relaxed)) {
+      if (EnsureCaTablePatched()) {
+        LogInfo("[SSL Bypass] All loaded modules' root-CA tables patched");
+      }
+      // Sleep in small increments so the stop flag is observed promptly.
+      for (int i = 0; i < 10 && !g_ca_patch_stop.load(std::memory_order_relaxed); ++i) {
+        Sleep(200);
+      }
+    }
+    LogInfo("[SSL Bypass] Background root-CA patcher stopped");
+  }
+
+  bool StartCaPatchThread() {
+    g_ca_patch_stop.store(false, std::memory_order_relaxed);
+    std::thread(&CaPatchThread).detach();
+    return true;
+  }
+
+  void StopCaPatchThread() {
+    g_ca_patch_stop.store(true, std::memory_order_relaxed);
+  }
+
   bool InstallCertBypassHooks() {
     static std::vector<std::unique_ptr<HookGuard>> s_cert_guards;
     s_cert_guards.clear();
@@ -448,11 +497,14 @@
           "BCryptVerifySignature");
     }
 
-    // 3. Patch DirtySDK ProtoSSL DigiCert CA RSA modulus
+    // 3. Patch DirtySDK ProtoSSL DigiCert CA RSA modulus, and keep polling
+    //    in a background thread so modules that load after this point (most
+    //    importantly EAWebKit.dll, the HTTP/2 / QoS TLS stack) get patched
+    //    before the client needs them.
     PatchDirtySdkCaTable();
+    StartCaPatchThread();
 
     return true;
-
   }
 
 } // namespace f22

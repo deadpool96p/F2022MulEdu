@@ -1,0 +1,213 @@
+<h1 id="ghidra-nsa-reverse-engineering-software" style="border-bottom: solid 1px; border-bottom-color: #cccccc; padding-bottom: 8px;">Ghidra: NSA Reverse Engineering Software</h1>
+<p>Ghidra is a software reverse engineering (SRE) framework developed by NSA's Research Directorate.
+This framework includes a suite of full-featured, high-end software analysis tools that enable users
+to analyze compiled code on a variety of platforms including Windows, MacOS, and Linux. Capabilities
+include disassembly, assembly, decompilation, debugging, emulation, graphing, and scripting, along
+with hundreds of other features.  Ghidra supports a wide variety of processor instruction sets and
+executable formats and can be run in both user-interactive and automated modes.  Users may also
+develop their own Ghidra plug-in components and/or scripts using the exposed API.  In addition, there
+are numerous ways to extend Ghidra such as new processors, loaders/exporters, automated analyzers,
+and new visualizations.</p>
+<p>In support of NSA's Cybersecurity mission, Ghidra was built to solve scaling and teaming problems on
+complex SRE efforts and to provide a customizable and extensible SRE research platform.  NSA has
+applied Ghidra SRE capabilities to a variety of problems that involve analyzing malicious code and
+generating deep insights for NSA analysts who seek a better understanding of potential
+vulnerabilities in networks and systems.</p>
+<h1 id="whats-new-in-ghidra-122" style="border-bottom: solid 1px; border-bottom-color: #cccccc; padding-bottom: 8px;">What's New in Ghidra 12.2</h1>
+<p>This release includes new features, enhancements, performance improvements, quite a few bug fixes,
+and many pull-request contributions. Thanks to all those who have contributed their time, thoughts,
+and code. The Ghidra user community thanks you too!</p>
+<h3 id="the-not-so-fine-print-please-read">The not-so-fine print: Please Read!</h3>
+<p>Ghidra 12.2 is fully backward compatible with project data from previous releases. However, programs
+and data type archives which are created or modified in 12.2 may not be usable by an earlier Ghidra
+version.</p>
+<p><strong>IMPORTANT:</strong> Ghidra 12.2 requires, at minimum, JDK 25 to run.</p>
+<p><strong>IMPORTANT:</strong> Major changes have been made to Ghidra Server and BSim PostgreSQL Server deployment
+and TLS/SSL certificate requirements.  TLS/SSL server authentication is now enforced for all
+client/server connections.  See <strong>TLS/SSL Client/Server Changes</strong> below.</p>
+<p><strong>IMPORTANT:</strong> To use the Debugger or do a full source distribution build, you will need Python3
+(3.9 to 3.14 supported) installed on your system.</p>
+<p><strong>NOTE:</strong> There have been reports of certain features causing the XWindows server to crash. A fix
+for <code style="background: #f4f4f4;font-family: monospace;">CVE-2024-31083</code> in X.org software in April 2024 introduced a regression, which has been fixed
+in xwayland 23.2.6 and xorg-server 21.1.13.  If you experience any crashing of Ghidra, most likely
+causing a full logout, check if your xorg-server has been updated to at least the noted version.</p>
+<p><strong>NOTE:</strong> Each build distribution will include native components (e.g., Decompiler) for at least one
+platform (e.g., Windows x86-64). If you have another platform that is not included in the build
+distribution, you can build native components for your platform directly from the distribution.
+See the <em>Getting Started</em> document for additional information. Users running with older shared
+libraries and operating systems (e.g., CentOS 7.x) may also run into compatibility errors when
+launching native executables such as the Decompiler and GNU Demangler which may necessitate a
+rebuild of native components.</p>
+<p><strong>NOTE:</strong> Programs imported with a Ghidra Beta version or code built directly from source code
+outside of a release tag may not be compatible, and may have flaws that won't be corrected by using
+this new release.  Any programs analyzed from a beta or other local master source build should be
+considered experimental and re-imported and analyzed with a release version.</p>
+<p>Programs imported with previous release versions should upgrade correctly through various automatic
+upgrade mechanisms.  However, there may be improvements or bug fixes in the import and analysis
+process that will provide better results than prior Ghidra versions.  You might consider comparing a
+fresh import of any program you will continue to reverse engineer to see if the latest Ghidra
+provides better results.</p>
+<p><strong>NOTE:</strong> Ghidra Server: The Ghidra 12.2 server is compatible with older Ghidra 11.3.2 clients and
+later, although the presence of any newer link-files within a repository may not be handled properly
+by client versions prior to 12.0, which lack support for the newer storage format.  Ghidra 12.1
+clients require Ghidra Server version 12.1/12.0.5 or newer compatible version.</p>
+<p><strong>NOTE:</strong> Ghidra Server: Due to security fixes made to Ghidra and the Ghidra Server it is highly
+recommended that older installation versions be updated to this latest release.  To ensure
+compatibility, older client version of Ghidra should also be upgraded.</p>
+<h2 id="security-related-fixes" style="border-bottom: solid 1px; border-bottom-color: #cccccc; padding-bottom: 8px;">Security Related Fixes</h2>
+<h3 id="tlsssl-clientserver-changes">TLS/SSL Client/Server Changes</h3>
+<p>Ghidra Server and BSim PostgreSQL Server deployments now highly encourage the use of a CA-signed
+server certificate.  In addition, Ghidra clients will now enforce server-authentication
+for all SSL/TLS connections.  This was previously not the case with earlier versions of Ghidra.<br />
+This server-authentication also applies to accessing servers accessed via the loopback/localhost
+interface, although the property <code style="background: #f4f4f4;font-family: monospace;">ghidra.disable.loopback.server.authentication</code> can be set <code style="background: #f4f4f4;font-family: monospace;">true</code>
+in <code style="background: #f4f4f4;font-family: monospace;">support/launch.properties</code> file to disable such local server authentication for testing.</p>
+<p>A suitable keystore must be obtained from a CA signing-authority or a self-signed certificate file
+may be generated but is not preferred.  If needed, the new <code style="background: #f4f4f4;font-family: monospace;">server/certTool</code> command provided with
+Ghidra may be used to assist with the keystore request and generation.</p>
+<p>Each client must ensure that trusted certificates are added to an appropriate trust store.
+Ghidra clients now support the use of OS managed certificate trust stores as well as default trust
+stores supplied with the Java installation.  For Windows and macOS, the system provided
+<code style="background: #f4f4f4;font-family: monospace;">User Certificate Manager</code> may be launched from the Ghidra projct window
+(Edit -&gt; Manage Certificates...).  For Unix/Linux the property <code style="background: #f4f4f4;font-family: monospace;">ghidra.unix.default.cacerts</code> may be
+optionally specified in <code style="background: #f4f4f4;font-family: monospace;">support/launch.properties</code> to identify a directory path where unencrypted
+PEM or DER trusted certificate files may be added.  In the case of a server which uses a self-signed
+certificate, that certificate would need to be added by each client as a trusted certificate.
+Otherwise, all the CA certificates in the server's CA-chain should be added if not already present.</p>
+<h4 id="ghidra-server">Ghidra Server</h4>
+<p>If the <code style="background: #f4f4f4;font-family: monospace;">server/server.conf</code> file does not specify a <code style="background: #f4f4f4;font-family: monospace;">ghidra.keystore</code> the server will continue to
+auto-generate a temporary self-signed server certificate. However, when this occurs the server will
+now only listen for loopback connections on the localhost interface.  If remote connections are
+required, a proper keystore must be specified.  If local access only is acceptable, a Ghidra client
+may set the <code style="background: #f4f4f4;font-family: monospace;">ghidra.disable.loopback.server.authentication=true</code> property in the
+<code style="background: #f4f4f4;font-family: monospace;">support/launch.properties</code> file with caution.  Otherwise, a keystore must be generated.</p>
+<p>See <code style="background: #f4f4f4;font-family: monospace;">server/svrREADME.md</code> or <code style="background: #f4f4f4;font-family: monospace;">server/svrREADME.html</code> for more details.</p>
+<h4 id="bsim-postgresql-server">BSim PostgreSQL Server</h4>
+<p>A BSim PostgreSQL data directory that was configured with a previous version of Ghidra will not have
+any new constraints other than client connections now performing server authentication.  If using a
+self-signed certificate it will need to be added to client trust stores or a properly signed server
+certificate/keystore obtained.</p>
+<p>New BSim PostgreSQL deployments should specify a server keystore when initialized.  If a keystore
+is not specified, the server will use an auto-generated self-signed certificate which will need to
+be added to client trust stores.  When either a keystore is not specified, or the <code style="background: #f4f4f4;font-family: monospace;">trust</code>
+authentication mode is used (<code style="background: #f4f4f4;font-family: monospace;">--auth=trust</code>), the server will be configured to listen to loopback
+connections on the localhost interface only.</p>
+<p>See Ghidra GUI Help Content related to BSim Database Configuration and <code style="background: #f4f4f4;font-family: monospace;">bsim_ctl</code> for more details.</p>
+<h3 id="ghidra-client---server-allow-list">Ghidra Client - Server Allow List</h3>
+<p>Ghidra client-side applications will now impose the use of a <strong>Server Allow List</strong> mechanism to
+help mitigate unintended server access.  This mechanism is currently used to restrict:</p>
+<ul>
+<li>Ghidra Server URL connections to unknown servers.  Explicit repository access via a shared project
+will cause that server to be implicitly added to the <strong>Server Allow List</strong>, and</li>
+<li>Clicking on URL links (e.g., http/https) within Ghidra listing comment annotations.</li>
+</ul>
+<p>See <code style="background: #f4f4f4;font-family: monospace;">analyzeHeadlessREADME.md</code> for information related to use of <strong>analyzeHeadless</strong> and the new
+<strong>support/updateServerAllowList</strong> command which can be used to manage the <strong>Server Allow List</strong>
+entries.</p>
+<h2 id="bsim-postgresql-deployment-and-control-bsim_ctl" style="border-bottom: solid 1px; border-bottom-color: #cccccc; padding-bottom: 8px;">BSim PostgreSQL Deployment and Control (bsim_ctl)</h2>
+<p>Extensive changes have been made to the BSim PostgreSQL control script.  New <code style="background: #f4f4f4;font-family: monospace;">bsim_ctl</code> commands
+have been added for initializing and reconfiguring a server deployment (<code style="background: #f4f4f4;font-family: monospace;">init</code>, <code style="background: #f4f4f4;font-family: monospace;">configure</code>).  Once
+a deployment is configured, the following commands are used to manage its state: <code style="background: #f4f4f4;font-family: monospace;">start</code>, <code style="background: #f4f4f4;font-family: monospace;">stop</code>,
+and <code style="background: #f4f4f4;font-family: monospace;">restart</code>.  In addition, the ability to install as a Linux Service has been added using the
+commands <code style="background: #f4f4f4;font-family: monospace;">install-service</code> and <code style="background: #f4f4f4;font-family: monospace;">uninstall-service</code>. A new command <code style="background: #f4f4f4;font-family: monospace;">listusers</code> has also been added to
+aid with user management.</p>
+<p>When initializing or configuring a PostgreSQL server, <code style="background: #f4f4f4;font-family: monospace;">password</code> authentication mode is now the
+default if the <code style="background: #f4f4f4;font-family: monospace;">--auth</code> option is not specified.  This differs from previous releases which
+defaulted to <code style="background: #f4f4f4;font-family: monospace;">trust</code> authentication.  In general, use of <code style="background: #f4f4f4;font-family: monospace;">trust</code> authentication should be avoided.</p>
+<h2 id="jdk-25" style="border-bottom: solid 1px; border-bottom-color: #cccccc; padding-bottom: 8px;">JDK 25</h2>
+<p>Ghidra now requires JDK 25 or later to run. Developing against JDK 25 has enabled the use of several
+new language features. Some of the new features that Ghidra script and extension developers may now
+use are outlined below:</p>
+<ul>
+<li><a href="https://openjdk.org/jeps/454">Foreign Function &amp; Memory API</a></li>
+<li><a href="https://openjdk.org/jeps/456">Unnamed Variables &amp; Patterns</a></li>
+<li><a href="https://openjdk.org/jeps/467">Markdown Documentation Comments</a></li>
+<li><a href="https://openjdk.org/jeps/484">Class-File API</a></li>
+<li><a href="https://openjdk.org/jeps/485">Stream Gatherers</a></li>
+<li><a href="https://openjdk.org/jeps/506">Scoped Values</a></li>
+<li><a href="https://openjdk.org/jeps/513">Flexible Constructor Bodies</a></li>
+</ul>
+<h2 id="processor-module-changes-since-121" style="border-bottom: solid 1px; border-bottom-color: #cccccc; padding-bottom: 8px;">Processor Module changes since 12.1</h2>
+<p>There have been numerous processor extensions and fixes added. These may cause an opened program to
+upgrade and re-disassemble.</p>
+<ul>
+<li>8051/CIP-51: Added CIP-51 processor support and later corrected its language definition.</li>
+<li>AArch64: Corrected <code style="background: #f4f4f4;font-family: monospace;">stlrb</code>/<code style="background: #f4f4f4;font-family: monospace;">stlrh</code> operand sizes, load/store operand formatting, NEON scalar
+zero-extension, and interrupt-mask sizing for <code style="background: #f4f4f4;font-family: monospace;">mrs IPSR</code>.</li>
+<li>ARM/Thumb/NEON: Added missing ARM v8-M instructions; corrected <code style="background: #f4f4f4;font-family: monospace;">branchWritePC</code>, <code style="background: #f4f4f4;font-family: monospace;">ldrsh.w</code>,
+<code style="background: #f4f4f4;font-family: monospace;">ldrsb.w</code>, <code style="background: #f4f4f4;font-family: monospace;">msr apsr</code>, <code style="background: #f4f4f4;font-family: monospace;">sev.w</code>, and several NEON <code style="background: #f4f4f4;font-family: monospace;">vmov</code>/<code style="background: #f4f4f4;font-family: monospace;">vmvn</code> behaviors.</li>
+<li>AVR32: Corrected <code style="background: #f4f4f4;font-family: monospace;">ICALL</code> behavior when <code style="background: #f4f4f4;font-family: monospace;">rd0</code> is the link register.</li>
+<li>HCS12: Corrected disassembly of the <code style="background: #f4f4f4;font-family: monospace;">BRN</code> instruction.</li>
+<li>Hexagon: Added the processor module with Sleigh crossbuild support, then substantially revised it
+to fix reserved bits, paired-vector swap mode, missing p-code, and instructions through V79;
+quad-vector instructions remain unsupported.</li>
+<li>M68000/CPU32: Added a CPU32 variant and fixed <code style="background: #f4f4f4;font-family: monospace;">movem.w</code> incrementing by four bytes instead of two.</li>
+<li>MCS-96: Corrected the carry-flag calculation for <code style="background: #f4f4f4;font-family: monospace;">CMPL</code>.</li>
+<li>MIPS/MIPS16e: Corrected signed-offset handling, <code style="background: #f4f4f4;font-family: monospace;">movn</code>/<code style="background: #f4f4f4;font-family: monospace;">movz</code> operand order, and MIPS16e language
+variant tags.</li>
+<li>NDS32: Corrected disassembly of <code style="background: #f4f4f4;font-family: monospace;">fdiv</code> and <code style="background: #f4f4f4;font-family: monospace;">fmul</code>.</li>
+<li>PIC-18: Corrected disassembly of addressing modes whose destination is a banked register.</li>
+<li>PowerPC/e500mc: Added PowerPC 3.0B/3.0C instructions, corrected the signed offset for <code style="background: #f4f4f4;font-family: monospace;">LQ</code>, and
+fixed the e500mc stack-parameter offset.</li>
+<li>RISC-V: Corrected writes to constants, 16-bit operand handling, and divide/remainder emulation
+when the divisor is zero.</li>
+<li>RH850/V850: Added <code style="background: #f4f4f4;font-family: monospace;">RH850G3</code> instruction support to the V850 language module.</li>
+<li>SPARC V9: Made register display formatting more consistent.</li>
+<li>SuperH: Added an instruction index and corrected the missing return address for the SuperH4 <code style="background: #f4f4f4;font-family: monospace;">bsr</code>
+instruction.</li>
+<li>TriCore: Reworded the processor description and corrected subc carry-flag handling.</li>
+<li>x86: Added missing standard and <code style="background: #f4f4f4;font-family: monospace;">GFNI</code> instructions and <code style="background: #f4f4f4;font-family: monospace;">AVX</code> semantics; corrected instruction
+semantics, overflow-flag calculations, <code style="background: #f4f4f4;font-family: monospace;">REX</code>/<code style="background: #f4f4f4;font-family: monospace;">AVX-512</code> handling, 32-bit partial-register zeroing,
+segment-register moves, RIP-relative addressing, immediate masking, shift counts, and several
+instruction decodings.</li>
+</ul>
+<h2 id="data-types" style="border-bottom: solid 1px; border-bottom-color: #cccccc; padding-bottom: 8px;">Data Types</h2>
+<p>Support has been added for integer datatypes in the C99 standard: <code style="background: #f4f4f4;font-family: monospace;">int8_t</code>, <code style="background: #f4f4f4;font-family: monospace;">uint8_t</code>,
+<code style="background: #f4f4f4;font-family: monospace;">int16_t</code>, <code style="background: #f4f4f4;font-family: monospace;">uint16_t</code>, <code style="background: #f4f4f4;font-family: monospace;">int64_t</code>, <code style="background: #f4f4f4;font-family: monospace;">uint64_t</code>, <code style="background: #f4f4f4;font-family: monospace;">intptr_t</code>, <code style="background: #f4f4f4;font-family: monospace;">uintptr_t</code>. The CParser, PDB and DWARF
+now leverage these new BuiltIn datatypes as well as related typedefs for improved portability across
+target architectures.</p>
+<p>Additionally, a new interactive Structure/Union/Enum merger has been created. Previously, when users
+discovered that two partially recovered structures/unions/enums actually represented the same
+datatype, their only option was to pick one or the other and manually edit it to include information
+from the other datatype. Now, users can see them side by side and pick and choose each element in
+either datatype to include in the resulting combined datatype.</p>
+<h2 id="beta-support-for-timeless-debugging" style="border-bottom: solid 1px; border-bottom-color: #cccccc; padding-bottom: 8px;">Beta support for &quot;Timeless Debugging&quot;</h2>
+<p>We've completed several enhancements to the Debugger to better support &quot;timeless&quot; or &quot;time-travel&quot;
+debugging. This includes a native tool, based on Intel PIN, to capture execution traces in a format
+based on TENET. This format has a corresponding importer to load it into Ghidra's Debugger for
+further analysis. Three new UI components are included to aide in that analysis:</p>
+<ol>
+<li>A breakpoint timeline, which displays hits for each breakpoint, color coded by kind (Execute,
+Read, Write). Clicking a colored box navigates to the snapshot of the hit.</li>
+<li>A dynamic call tree, which displays the execution history as a series of function calls, each
+subroutine displayed as a child of its run-time parent. Call, Returns, and Tail Calls are
+displayed, as observed. Clicking an item navigates to the snapshot of the observed call or
+return.</li>
+<li>A variable viewer, which tabulates all local variables known to the Listing and Decompiler along
+with their storage, values, types, and typed-values.</li>
+</ol>
+<p>These views can also be used with live Debugger targets, but with some caveats.</p>
+<ul>
+<li>To record a trace using PIN, see <code style="background: #f4f4f4;font-family: monospace;">Ghidra/Debug/Debugger-importers/data/TenetPlusPlus_PinTool</code></li>
+<li>To enable the UI components, use <strong>File → Configure</strong> from the Debugger tool and open the
+Experimental category.</li>
+<li>To import the Trace, use <strong>File → Import</strong> from the Debugger tool. You must first import the
+program image in the usual fashion, if you have not already. When importing the Trace, click
+Options and associate it with the image.</li>
+</ul>
+<h2 id="accessibility" style="border-bottom: solid 1px; border-bottom-color: #cccccc; padding-bottom: 8px;">Accessibility</h2>
+<p>We've enhanced overall accessibility by optimizing focus and navigation across key interfaces. These
+updates include smarter default focus behaviors in the New Project Wizard and the help viewer, along
+with resolved accessibility issues in plugin configuration dialogs and the action chooser. Screen
+reader support has been improved for both the Listing and Byte Viewers, and a new keyboard shortcut
+(Ctrl-E) has been introduced to allow users to easily toggle focus between the options tree and the
+active editor panel.</p>
+<h2 id="speed-and-memory-use-improvements" style="border-bottom: solid 1px; border-bottom-color: #cccccc; padding-bottom: 8px;">Speed and memory use improvements</h2>
+<p>Read/Write locks have been added to program database access, including the data base cache. These
+changes, in theory, have improved the overall performance of multi-threaded access to the
+database-backed Program API.</p>
+<p>In addition, Ghidra now runs Java with <a href="https://openjdk.org/jeps/519">Compact Object Headers</a> to
+reduce memory usage.</p>
+<h2 id="additional-bug-fixes-and-enhancements" style="border-bottom: solid 1px; border-bottom-color: #cccccc; padding-bottom: 8px;">Additional Bug Fixes and Enhancements</h2>
+<p>Numerous other new features, improvements, and bug fixes are fully listed in the
+<a href="ChangeHistory.html">Change History</a> file.</p>

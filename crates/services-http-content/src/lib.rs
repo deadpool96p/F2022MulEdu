@@ -596,6 +596,31 @@ fn firewall_response_body(qos: &QosRequest) -> String {
     )
 }
 
+    /// Builds the /redirector/getServerInstance response body.
+    ///
+    /// This is the critical path for QoS service discovery. The client
+    /// parses the response as a DOM and expects the qosapi service
+    /// to be advertised using the lowercased TDF field names.
+    fn redirector_get_server_instance_body(_req: &HttpRequest) -> String {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<serverinstanceinfo>
+    <service name="qosapi">
+        <entry>
+            <hostname>spring18.gosredirector.ea.com</hostname>
+            <dstport>17498</dstport>
+            <srcport>17498</srcport>
+            <srcip>spring18.gosredirector.ea.com</srcip>
+            <qosip>spring18.gosredirector.ea.com</qosip>
+            <qosport>17498</qosport>
+            <probesize>1000</probesize>
+            <numprobes>10</numprobes>
+        </entry>
+    </service>
+</serverinstanceinfo>"#
+        )
+    }
+
 /// Builds the `/qos/firetype` response body.
 ///
 /// The client reads the root element `firetype` and then its `.firetype`
@@ -721,6 +746,10 @@ pub fn route_http_request(req: &HttpRequest) -> HttpResponse {
         "/pinEvents" | "/river" | "/telemetry" | "/" => {
             tracing::info!("[Telemetry Sink] Absorbed {} telemetry ping", req.method);
             HttpResponse::ok_json(r#"{"status":"ok"}"#)
+        }
+        "/redirector/getServerInstance" => {
+            tracing::info!("[Redirector] Serving QoS service discovery for {}", path);
+            HttpResponse::ok_xml(&redirector_get_server_instance_body(req))
         }
         // DirtySDK HTTP QoS metadata discovery probes.
         //

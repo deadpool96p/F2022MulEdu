@@ -3,6 +3,7 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
+use crate::listener::DualStream;
 use services_http_content::{
     is_http2_preface, parse_http_request, route_http_request, HttpResponse,
 };
@@ -10,6 +11,7 @@ use services_redirector::{handle_redirector_packet, RedirectorConfig};
 use blaze_core::frame::BlazeHeader;
 use blaze_core::BlazePacket;
 use blaze_tdf::deserialize_tdf;
+use crate::http2_server::{serve_http2, is_http2_alpn};
 use crate::listener::accept_telemetry_stream;
 
 /// Runs the HTTP/HTTPS Telemetry and dual-port redirector server loop (:443).
@@ -28,6 +30,21 @@ pub async fn run_telemetry_server(listener: TcpListener, tls_acceptor: TlsAccept
         tokio::spawn(async move {
             match accept_telemetry_stream(tcp_stream, &acceptor).await {
                 Ok(mut stream) => {
+                    // ALPN Dispatch: Check if the client negotiated HTTP/2
+                    let is_h2 = if let DualStream::Tls(ref tls_stream) = stream {
+                        is_http2_alpn(tls_stream.get_ref().1.alpn_protocol())
+                    } else {
+                        false
+                    };
+
+                    if is_h2 {
+                        if let DualStream::Tls(tls_stream) = stream {
+                            let peer = peer_addr.to_string();
+                            serve_http2(tls_stream, &peer).await;
+                            return;
+                        }
+                    }
+
                     let mut buffer = vec![0u8; 8192];
                     if let Ok(n) = stream.read(&mut buffer).await {
                         if n >= BlazeHeader::HEADER_SIZE && buffer[0] == 0x00 && buffer[1] < 0x80 {
