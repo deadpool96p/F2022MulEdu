@@ -323,45 +323,13 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
     resp.set("CONF", TdfValue::Struct(fetch_config_response(client_config_entries())));
 
     // QOSS: QoS server configuration pointing at the emulator's QoS
-    // responder.
-    //
-    // The member set is the one the authentic Blaze 15 reply carries
-    // (`crates/services-blaze/tests/fixtures/ea_preauth_blaze_15_1_1_4_6.bin`):
-    //
-    //   BWPS : QosPingSiteInfo          (the default ping site)
-    //   LNP  : ushort                   (number of latency probes)
-    //   LTPS : map<string, QosPingSiteInfo>
-    //   TIME : uint                     (the QoS time budget, in microseconds)
-    //
-    // and `QosPingSiteInfo` carries `PSA` (address) and `PSP` (port).
-    //
-    // The open-source reconstruction of the older Blaze 2/3 schema
-    // (`references/Skate3BlazeServer/.../Util/Models/QosConfigInfo.cs`)
-    // declares `SVID` (service id) instead of `TIME`, and its
-    // `QosPingSiteInfo` also declares `SNA` (site name). Neither retail
-    // Blaze 15 nor retail Blaze 18 sends either tag, and EA's TDF decoder
-    // rejects a member tag that is not in the struct's schema
-    // (`BLAZE_ERR_TDF_TAG_NOT_FOUND`), so sending them would break the
-    // session rather than help it.
-    //
-    // The `LTPS` map advertises the same six sites EA's own Blaze 15 server
-    // advertises, by EA's own host names. The client resolves the name to
-    // probe the site, and the shim reroutes every `.ea.com` name to the
-    // emulator, so the probe still lands on the emulator's UDP responder.
-    // QOSS with all 6 EA ping sites (full schema match)
-    let site = qos_ping_site("spring18.gosredirector.ea.com", 17498);
+    // responder. Reverted to empty bypass (port 0, no LTPS sites) to stop
+    // the client's Logout loop caused by the 6-site array.
     let mut qos_struct = TdfStruct::new();
-    qos_struct.set("BWPS", TdfValue::Struct(site));
-    qos_struct.set("LNP", TdfValue::Integer(1));
-    let sites = ["bio-dub", "bio-iad", "bio-sjc", "bio-syd", "i3d-gru", "i3d-nrt"];
-    qos_struct.set("LTPS", TdfValue::Map(TdfMap::new(
-        TdfType::String, TdfType::Struct,
-        sites.iter().map(|a| (
-            TdfValue::String(a.to_string()),
-            TdfValue::Struct(qos_ping_site("spring18.gosredirector.ea.com", 17498)),
-        )).collect(),
-    )));
-    qos_struct.set("TIME", TdfValue::Integer(100000));
+    qos_struct.set("BWPS", TdfValue::Struct(qos_ping_site("127.0.0.1", 0)));
+    qos_struct.set("LNP", TdfValue::Integer(0));
+    // LTPS removed — empty QOSS bypass prevents QoS handshake loop
+    qos_struct.set("TIME", TdfValue::Integer(0));
     resp.set("QOSS", TdfValue::Struct(qos_struct));
 
 
