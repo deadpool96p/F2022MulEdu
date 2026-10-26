@@ -389,6 +389,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
         char name[MAX_PATH] = {0};
         GetModuleFileNameA(m, name, MAX_PATH);
 
+        LogInfo("[SSL Bypass] EnumScan: module=" + std::string(name, name + strlen(name)));
         bool ready = true;
         int found = PatchCaTableInModule(m, name[0] ? name : "<module>", &ready);
         if (found > 0 && ready) {
@@ -463,6 +464,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
     if (h && lpLibFileName) {
       wchar_t name[MAX_PATH] = {0};
       if (GetModuleFileNameW(h, name, MAX_PATH) > 0) {
+        LogInfo("[SSL Bypass] LoadLibraryW loaded module (W): check path");
         if (wcsstr(name, L"EAWebKit.dll") != nullptr) {
           LogInfo("[SSL Bypass] LoadLibraryW loaded EAWebKit.dll — triggering CA patch");
           EnsureCaTablePatched();
@@ -477,6 +479,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
     if (h && lpLibFileName) {
       wchar_t name[MAX_PATH] = {0};
       if (GetModuleFileNameW(h, name, MAX_PATH) > 0) {
+        LogInfo("[SSL Bypass] LoadLibraryExW loaded module (ExW): check path");
         if (wcsstr(name, L"EAWebKit.dll") != nullptr) {
           LogInfo("[SSL Bypass] LoadLibraryExW loaded EAWebKit.dll — triggering CA patch");
           EnsureCaTablePatched();
@@ -484,6 +487,8 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
       }
     }
     return h;
+  }
+
   bool InstallCertBypassHooks() {
     static std::vector<std::unique_ptr<HookGuard>> s_cert_guards;
     s_cert_guards.clear();
@@ -542,12 +547,12 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
     // 4. Synchronous LoadLibraryW hook â€” PRIMARY mechanism for EAWebKit.dll.
     HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
     if (kernel32) {
-      void *p_load = GetProcAddress(kernel32, "LoadLibraryW");
+      void *p_load = reinterpret_cast<void *>(GetProcAddress(kernel32, "LoadLibraryW"));
       if (p_load) {
         create_hook_checked(p_load, reinterpret_cast<void*>(Hooked_LoadLibraryW),
                             reinterpret_cast<void**>(&g_orig_LoadLibraryW), "LoadLibraryW");
       }
-      void *p_loadex = GetProcAddress(kernel32, "LoadLibraryExW");
+      void *p_loadex = reinterpret_cast<void *>(GetProcAddress(kernel32, "LoadLibraryExW"));
       if (p_loadex) {
         create_hook_checked(p_loadex, reinterpret_cast<void*>(Hooked_LoadLibraryExW),
                             reinterpret_cast<void**>(&g_orig_LoadLibraryExW), "LoadLibraryExW");
