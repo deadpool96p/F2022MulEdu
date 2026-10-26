@@ -323,12 +323,16 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
     resp.set("CONF", TdfValue::Struct(fetch_config_response(client_config_entries())));
 
     // QOSS: QoS server configuration pointing at the emulator's QoS
-    // responder. Reverted to empty bypass (port 0, no LTPS sites) to stop
-    // the client's Logout loop caused by the 6-site array.
+    // responder. Single fake site (port 0, localhost) to prevent schema
+    // mismatch — the client never actually probes it.
     let mut qos_struct = TdfStruct::new();
-    qos_struct.set("BWPS", TdfValue::Struct(qos_ping_site("127.0.0.1", 0)));
+    qos_struct.set("BWPS", TdfValue::Struct(qos_ping_site("localhost", 0)));
     qos_struct.set("LNP", TdfValue::Integer(0));
-    // LTPS removed — empty QOSS bypass prevents QoS handshake loop
+    let site_single = qos_ping_site("localhost", 0);
+    qos_struct.set("LTPS", TdfValue::Map(TdfMap::new(
+        TdfType::String, TdfType::Struct,
+        vec![(TdfValue::String("fake".to_string()), TdfValue::Struct(site_single))].into_iter().collect(),
+    )));
     qos_struct.set("TIME", TdfValue::Integer(0));
     resp.set("QOSS", TdfValue::Struct(qos_struct));
 

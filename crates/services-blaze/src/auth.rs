@@ -44,7 +44,7 @@
 
 use std::io;
 use blaze_core::BlazePacket;
-use blaze_tdf::{TdfStruct, TdfValue};
+use blaze_tdf::{TdfList, TdfStruct, TdfType, TdfValue};
 use crate::session::SessionState;
 use crate::session_store::SessionStore;
 
@@ -155,8 +155,22 @@ pub fn handle_accept_tos(req: &BlazePacket) -> io::Result<BlazePacket> {
 /// member tag the client's schema does not know is fatal to EA's TDF
 /// decoder, so the list is not sent.
 pub fn handle_get_entitlements(req: &BlazePacket) -> io::Result<BlazePacket> {
-    tracing::debug!("[Blaze Auth] Handled getEntitlements");
-    BlazePacket::response(&req.header, TdfStruct::new())
+    tracing::debug!("[Blaze Auth] Handled getEntitlements -> granting ONLINE_ACCESS");
+    let mut resp = TdfStruct::new();
+    // The client's schema expects an entitlement list; an empty reply causes
+    // "EA servers not available". Grant the minimum required entitlement.
+    resp.set("ENTL", TdfValue::List(blaze_tdf::TdfList::new(
+        TdfType::Struct,
+        vec![
+            {
+                let mut e = TdfStruct::new();
+                e.set("NAME", TdfValue::String("ONLINE_ACCESS".to_string()));
+                e.set("VAL", TdfValue::Integer(1));
+                TdfValue::Struct(e)
+            },
+        ],
+    )));
+    BlazePacket::response(&req.header, resp)
 }
 
 /// Handles `createWalUserSession` (230).
