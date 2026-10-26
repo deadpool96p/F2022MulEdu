@@ -348,11 +348,20 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
     // advertises, by EA's own host names. The client resolves the name to
     // probe the site, and the shim reroutes every `.ea.com` name to the
     // emulator, so the probe still lands on the emulator's UDP responder.
+    // QOSS with all 6 EA ping sites (full schema match)
     let site = qos_ping_site("spring18.gosredirector.ea.com", 17498);
     let mut qos_struct = TdfStruct::new();
     qos_struct.set("BWPS", TdfValue::Struct(site));
-    qos_struct.set("LNP", TdfValue::Integer(0));
-    qos_struct.set("TIME", TdfValue::Integer(0));
+    qos_struct.set("LNP", TdfValue::Integer(1));
+    let sites = ["bio-dub", "bio-iad", "bio-sjc", "bio-syd", "i3d-gru", "i3d-nrt"];
+    qos_struct.set("LTPS", TdfValue::Map(TdfMap::new(
+        TdfType::String, TdfType::Struct,
+        sites.iter().map(|a| (
+            TdfValue::String(a.to_string()),
+            TdfValue::Struct(qos_ping_site("spring18.gosredirector.ea.com", 17498)),
+        )).collect(),
+    )));
+    qos_struct.set("TIME", TdfValue::Integer(100000));
     resp.set("QOSS", TdfValue::Struct(qos_struct));
 
 
