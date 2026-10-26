@@ -348,9 +348,13 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
     // advertises, by EA's own host names. The client resolves the name to
     // probe the site, and the shim reroutes every `.ea.com` name to the
     // emulator, so the probe still lands on the emulator's UDP responder.
-    // QOSS omitted per owner override -- protocol-level bypass to skip QoS probe
-    // (preAuth response has ANAM, CIDS, CONF, SVER, TIME intact; QOSS array omitted)
-    resp.set("ANAM", TdfValue::String("FIFA22-PC-EMULATOR-BLAZE".to_string()));
+    let site = qos_ping_site("spring18.gosredirector.ea.com", 17498);
+    let mut qos_struct = TdfStruct::new();
+    qos_struct.set("BWPS", TdfValue::Struct(site));
+    qos_struct.set("LNP", TdfValue::Integer(0));
+    qos_struct.set("TIME", TdfValue::Integer(0));
+    resp.set("QOSS", TdfValue::Struct(qos_struct));
+
 
     // SVER: the server version, in EA's own format
     // ("Blaze <sdk> (CL# <build>)"). The retail replies carry a trailing
