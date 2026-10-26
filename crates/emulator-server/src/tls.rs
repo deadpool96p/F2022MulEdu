@@ -388,6 +388,16 @@ pub fn regenerate_certificates(
     Ok((server_fp, ca_fp))
 }
 
+/// Fallback certificate resolver accepting empty SNI.
+struct FallbackCertResolver {
+    default_cert: std::sync::Arc<tokio_rustls::rustls::pki_types::CertifiedKey>,
+}
+impl tokio_rustls::rustls::server::ResolvesServerCert for FallbackCertResolver {
+    fn resolve(&self, _client_hello: tokio_rustls::rustls::ClientHello) -> std::option::Option<std::sync::Arc<tokio_rustls::rustls::pki_types::CertifiedKey>> {
+        Some(self.default_cert.clone())
+    }
+}
+
 /// Generates or loads a persistent RSA-2048 Certificate Authority and Server certificate covering EA domains,
 /// returning an active tokio-rustls TlsAcceptor.
 pub fn create_self_signed_tls_acceptor() -> Result<TlsAcceptor, Box<dyn std::error::Error + Send + Sync>> {
@@ -438,7 +448,7 @@ pub fn create_self_signed_tls_acceptor() -> Result<TlsAcceptor, Box<dyn std::err
 
     let mut server_config = ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(cert_chain, key_der)?;
+        .with_cert_resolver(Arc::new(FallbackCertResolver { default_cert: Arc::new(CertifiedKey::new(cert_chain.clone(), key_der.clone())) }))?;
     server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(TlsAcceptor::from(Arc::new(server_config)))
