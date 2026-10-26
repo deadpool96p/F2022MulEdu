@@ -464,8 +464,8 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
     if (h && lpLibFileName) {
       wchar_t name[MAX_PATH] = {0};
       if (GetModuleFileNameW(h, name, MAX_PATH) > 0) {
-        LogInfo("[SSL Bypass] LoadLibraryW loaded module (W): check path");
-        if (wcsstr(name, L"EAWebKit.dll") != nullptr) {
+        LogInfo("[SSL Bypass] LoadLibraryW module path: "+ std::string(name, name+wcslen(name)));
+        if (_wcsicmp(name, L"EAWebKit.dll") == 0) {
           LogInfo("[SSL Bypass] LoadLibraryW loaded EAWebKit.dll — triggering CA patch");
           EnsureCaTablePatched();
         }
@@ -479,8 +479,8 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
     if (h && lpLibFileName) {
       wchar_t name[MAX_PATH] = {0};
       if (GetModuleFileNameW(h, name, MAX_PATH) > 0) {
-        LogInfo("[SSL Bypass] LoadLibraryExW loaded module (ExW): check path");
-        if (wcsstr(name, L"EAWebKit.dll") != nullptr) {
+        LogInfo("[SSL Bypass] LoadLibraryExW module path: "+ std::string(name, name+wcslen(name)));
+        if (_wcsicmp(name, L"EAWebKit.dll") == 0) {
           LogInfo("[SSL Bypass] LoadLibraryExW loaded EAWebKit.dll — triggering CA patch");
           EnsureCaTablePatched();
         }
@@ -489,9 +489,22 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
     return h;
   }
 
+  static void ForceLoadEAWebKit() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    HMODULE h_web = LoadLibraryExW(L"EAWebKit.dll", NULL, 0);
+    if (h_web) {
+      LogInfo("[SSL Bypass] Force-loaded EAWebKit.dll handle=" + std::to_string(reinterpret_cast<uintptr_t>(h_web)));
+      EnsureCaTablePatched();
+      LogInfo("[SSL Bypass] Force-patched EAWebKit BoringSSL CA");
+    } else { LogWarn("[SSL Bypass] Force-load EAWebKit.dll FAILED"); }
+  }
+
   bool InstallCertBypassHooks() {
     static std::vector<std::unique_ptr<HookGuard>> s_cert_guards;
     s_cert_guards.clear();
+    ForceLoadEAWebKit();
 
     auto create_hook_checked = [](void *target, void *detour, void **original,
                                   const char *name) {
@@ -536,6 +549,13 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
           reinterpret_cast<void **>(&g_orig_BCryptVerifySignature),
           "BCryptVerifySignature");
     }
+
+    // 2b. LoadLibraryA (ANSI) detected.
+    if (GetModuleHandleW(L"kernel32.dll")) LogInfo("[SSL Bypass] LoadLibraryA available");
+    // 2c. LdrLoadDll detected globally.
+    HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    if (!ntdll) ntdll = LoadLibraryW(L"ntdll.dll");
+    if (ntdll) { void *p = reinterpret_cast<void*>(GetProcAddress(ntdll,"LdrLoadDll")); LogInfo(p ? "[SSL Bypass] LdrLoadDll present" : "[SSL Bypass] LdrLoadDll absent"); }
 
     // 3. Patch DirtySDK ProtoSSL DigiCert CA RSA modulus, and keep polling
     //    in a background thread so modules that load after this point (most
