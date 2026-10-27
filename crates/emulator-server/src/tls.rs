@@ -389,11 +389,12 @@ pub fn regenerate_certificates(
 }
 
 /// Fallback certificate resolver accepting empty SNI.
+#[derive(Debug)]
 struct FallbackCertResolver {
-    default_cert: std::sync::Arc<tokio_rustls::rustls::pki_types::CertifiedKey>,
+    default_cert: Arc<tokio_rustls::rustls::sign::CertifiedKey>,
 }
 impl tokio_rustls::rustls::server::ResolvesServerCert for FallbackCertResolver {
-    fn resolve(&self, _client_hello: tokio_rustls::rustls::ClientHello) -> std::option::Option<std::sync::Arc<tokio_rustls::rustls::pki_types::CertifiedKey>> {
+    fn resolve(&self, _client_hello: tokio_rustls::rustls::server::ClientHello) -> Option<Arc<tokio_rustls::rustls::sign::CertifiedKey>> {
         Some(self.default_cert.clone())
     }
 }
@@ -446,9 +447,11 @@ pub fn create_self_signed_tls_acceptor() -> Result<TlsAcceptor, Box<dyn std::err
     ];
     let key_der = PrivateKeyDer::Pkcs8(leaf_key_bytes.into());
 
+    let signing_key = tokio_rustls::rustls::crypto::ring::sign::any_supported_type(&key_der)
+        .expect("Failed to load private key");
     let mut server_config = ServerConfig::builder()
         .with_no_client_auth()
-        .with_cert_resolver(Arc::new(FallbackCertResolver { default_cert: Arc::new(CertifiedKey::new(cert_chain.clone(), key_der.clone())) }))?;
+        .with_cert_resolver(Arc::new(FallbackCertResolver { default_cert: Arc::new(tokio_rustls::rustls::sign::CertifiedKey::new(cert_chain.clone(), signing_key)) }));
     server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(TlsAcceptor::from(Arc::new(server_config)))

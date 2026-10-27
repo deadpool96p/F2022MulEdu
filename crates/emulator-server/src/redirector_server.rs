@@ -49,7 +49,7 @@ fn render_service_instance_xml(svc: &ServiceInstance) -> String {
 
     let mut out = String::new();
     out.push_str("  <instance>\n");
-    out.push_str(&format!("    <type>{}</type>\n", svc.instance_type));
+    out.push_str(&format!("    <instancetype>{}</instancetype>\n", svc.instance_type));
     out.push_str(&format!(
         "    <servicename>{}</servicename>\n",
         xml_escape(&svc.service_name)
@@ -75,22 +75,20 @@ fn render_service_instance_xml(svc: &ServiceInstance) -> String {
     out.push_str("    <addresses>\n");
     out.push_str("      <address member=\"0\">\n");
     out.push_str("        <valu>\n");
-    out.push_str("          <ipaddress>\n");
     out.push_str(&format!(
-        "            <hostname>{}</hostname>\n",
+        "          <hostname>{}</hostname>\n",
         xml_escape(&svc.hostname)
     ));
-    out.push_str(&format!("            <ip>{}</ip>\n", svc.ip));
-    out.push_str(&format!("            <port>{}</port>\n", svc.port));
-    out.push_str(&format!("            <srcip>{}</srcip>\n", svc.ip));
-    out.push_str(&format!("            <netmask>{}</netmask>\n", svc.netmask));
-    out.push_str(&format!("            <srcport>{}</srcport>\n", svc.src_port));
-    out.push_str(&format!("            <dstport>{}</dstport>\n", svc.dst_port));
+    out.push_str(&format!("          <ip>{}</ip>\n", svc.ip));
+    out.push_str(&format!("          <port>{}</port>\n", svc.port));
+    out.push_str(&format!("          <srcip>{}</srcip>\n", svc.ip));
+    out.push_str(&format!("          <netmask>{}</netmask>\n", svc.netmask));
+    out.push_str(&format!("          <srcport>{}</srcport>\n", svc.src_port));
+    out.push_str(&format!("          <dstport>{}</dstport>\n", svc.dst_port));
     out.push_str(&format!(
-        "            <serviceid>{}</serviceid>\n",
+        "          <serviceid>{}</serviceid>\n",
         svc.service_id
     ));
-    out.push_str("          </ipaddress>\n");
     out.push_str("        </valu>\n");
     out.push_str("      </address>\n");
     out.push_str("    </addresses>\n");
@@ -101,8 +99,8 @@ fn render_service_instance_xml(svc: &ServiceInstance) -> String {
 /// Renders the redirector reply body as XML.
 ///
 /// The body keeps the legacy `ServerInstanceInfo` elements that already make
-/// the client reach the Blaze port (`address` / `valu` / `ipaddress`,
-/// `secure`, `msiz`, `trialService`, `defaultDnsAddress`) and adds the
+/// the client reach the Blaze port (`address` / `valu`,
+/// `secure`, `msiz`, `trialservice`, `defaultdnsaddress`) and adds the
 /// registered members plus one `<instance>` record per advertised service,
 /// so that FIFA 22 finds the `qosapi` service instead of falling back to a
 /// hard-coded EA address.
@@ -115,29 +113,29 @@ pub fn render_redirector_xml(config: &RedirectorConfig, services: &[ServiceInsta
     out.push_str("<serverinstanceinfo>\n");
     // The legacy address block always points at the Blaze service: that is
     // the address the client uses to reach the Blaze port.
+    // If the server host is loopback (127.0.0.1), advertise a DNS hostname
+    // covered by the certificate ("spring18.gosredirector.ea.com") so DirtySDK's
+    // ProtoSSL does not fail SNI and hostname verification with CertificateUnknown.
+    let blaze_host = if config.host == "127.0.0.1" {
+        "spring18.gosredirector.ea.com"
+    } else {
+        &config.host
+    };
     out.push_str("  <address member=\"0\">\n");
     out.push_str("    <valu>\n");
     out.push_str(&format!(
         "      <hostname>{}</hostname>\n",
-        xml_escape(&config.host)
+        xml_escape(blaze_host)
     ));
     out.push_str(&format!("      <ip>{}</ip>\n", config.ip));
     out.push_str(&format!("      <port>{}</port>\n", config.port));
     out.push_str("    </valu>\n");
-    out.push_str("    <ipaddress>\n");
-    out.push_str(&format!(
-        "      <hostname>{}</hostname>\n",
-        xml_escape(&config.host)
-    ));
-    out.push_str(&format!("      <ip>{}</ip>\n", config.ip));
-    out.push_str(&format!("      <port>{}</port>\n", config.port));
-    out.push_str("    </ipaddress>\n");
     out.push_str("  </address>\n");
     out.push_str(&format!("  <secure>{}</secure>\n", secure_val));
     out.push_str("  <msiz>131072</msiz>\n");
-    out.push_str("  <trialService>0</trialService>\n");
-    out.push_str("  <defaultDnsAddress>0</defaultDnsAddress>\n");
-    out.push_str(&format!("  <type>{}</type>\n", primary.instance_type));
+    out.push_str("  <trialservice>0</trialservice>\n");
+    out.push_str("  <defaultdnsaddress>0</defaultdnsaddress>\n");
+    out.push_str(&format!("  <instancetype>{}</instancetype>\n", primary.instance_type));
     out.push_str(&format!(
         "  <servicename>{}</servicename>\n",
         xml_escape(&primary.service_name)
@@ -151,6 +149,13 @@ pub fn render_redirector_xml(config: &RedirectorConfig, services: &[ServiceInsta
             .collect::<Vec<_>>()
             .join(",")
     ));
+    out.push_str("  <servers>\n");
+    for svc in services {
+        out.push_str("    <entry>\n");
+        out.push_str(&render_service_instance_xml(svc));
+        out.push_str("    </entry>\n");
+    }
+    out.push_str("  </servers>\n");
     for svc in services {
         out.push_str(&render_service_instance_xml(svc));
     }
@@ -483,6 +488,23 @@ async fn handle_http_redirector(
     let req_str = String::from_utf8_lossy(&req_bytes);
     tracing::info!("[Redirector HTTP] Request received:\n{}", req_str);
 
+    // GOSCA CA certificate fetch (GET /redirector/getCACertificates)
+    if req_str.contains("getCACertificates") {
+        let body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<cacertificates>\n</cacertificates>";
+        let http_response = format!(
+            "HTTP/1.1 200 OK\r\n\
+Content-Type: application/xml; charset=utf-8\r\n\
+Content-Length: {}\r\n\
+Connection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(http_response.as_bytes()).await?;
+        stream.flush().await?;
+        tracing::info!("[Redirector HTTP] Responded 200 OK to getCACertificates");
+        return Ok(());
+    }
+
     let is_json = req_str.to_ascii_lowercase().contains("application/json");
 
     // When config.secure is false, downgrade to Plain TCP (0) to allow clean certificate-free socket flow
@@ -587,12 +609,11 @@ mod tests {
         // The legacy ServerInstanceInfo elements.
         assert!(body.contains("<address member=\"0\">"), "{}", body);
         assert!(body.contains("<valu>"), "{}", body);
-        assert!(body.contains("<ipaddress>"), "{}", body);
         assert!(body.contains("<secure>1</secure>"), "{}", body);
         assert!(body.contains("<msiz>131072</msiz>"), "{}", body);
-        assert!(body.contains("<trialService>0</trialService>"), "{}", body);
+        assert!(body.contains("<trialservice>0</trialservice>"), "{}", body);
         assert!(
-            body.contains("<defaultDnsAddress>0</defaultDnsAddress>"),
+            body.contains("<defaultdnsaddress>0</defaultdnsaddress>"),
             "{}",
             body
         );

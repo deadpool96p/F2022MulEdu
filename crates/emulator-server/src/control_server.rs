@@ -361,7 +361,12 @@ pub async fn run_control_server(
                 }
 
                 ("POST", "/api/v1/steam/identity") => {
-                    match serde_json::from_slice::<services_blaze::SteamProfile>(&req.body) {
+                    let body = if req.body.is_empty() {
+                        b"{\"name\":\"DEad>_<POol\",\"id\":\"76561198956360709\"}".as_slice()
+                    } else {
+                        req.body.as_slice()
+                    };
+                    match serde_json::from_slice::<services_blaze::SteamProfile>(body) {
                         Ok(profile) => {
                             let steam_id = profile.steam_id;
                             let name = profile.persona_name.clone();

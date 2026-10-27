@@ -19,6 +19,8 @@ using PFN_GetAddrInfoW = int(WSAAPI*)(const PCWSTR pNodeName, const PCWSTR pServ
 using PFN_connect = int(WSAAPI*)(SOCKET s, const struct sockaddr *name, int namelen);
 using PFN_WSAConnect = int(WSAAPI*)(SOCKET s, const struct sockaddr *name, int namelen, LPWSABUF lpCallerData, LPWSABUF lpCalleeData, LPQOS lpSQOS, LPQOS lpGQOS);
 using PFN_WSAIoctl = int(WSAAPI*)(SOCKET s, DWORD dwIoControlCode, LPVOID lpvInBuffer, DWORD cbInBuffer, LPVOID lpvOutBuffer, DWORD cbOutBuffer, LPDWORD lpcbBytesReturned, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
+using PFN_send = int(WSAAPI*)(SOCKET s, const char *buf, int len, int flags);
+using PFN_WSASend = int(WSAAPI*)(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesSent, DWORD dwFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 
 // UDP Function pointers
 using PFN_bind = int(WSAAPI*)(SOCKET s, const struct sockaddr *name, int namelen);
@@ -33,6 +35,8 @@ static PFN_connect g_orig_connect = nullptr;
 static PFN_WSAConnect g_orig_WSAConnect = nullptr;
 static PFN_WSAIoctl g_orig_WSAIoctl = nullptr;
 static LPFN_CONNECTEX g_real_ConnectEx = nullptr;
+static PFN_send g_orig_send = nullptr;
+static PFN_WSASend g_orig_WSASend = nullptr;
 
 static PFN_bind g_orig_bind = nullptr;
 static PFN_sendto g_orig_sendto = nullptr;
@@ -275,7 +279,7 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
             out_sin->sin_family = AF_INET;
             inet_pton(AF_INET, cfg.emulator_host.c_str(), &(out_sin->sin_addr));
             if (port == 44325) {
-                out_sin->sin_port = htons(cfg.blaze_port);
+                out_sin->sin_port = htons(cfg.redirector_port);
             } else if (port == 443 && cfg.telemetry_port != 443) {
                 out_sin->sin_port = htons(cfg.telemetry_port);
             }
@@ -310,7 +314,7 @@ static bool CheckAndRewriteSockAddr(const struct sockaddr *name, struct sockaddr
             auto *out_sin6 = reinterpret_cast<struct sockaddr_in6*>(out_addr);
             std::memset(out_addr, 0, sizeof(struct sockaddr_storage));
             out_sin6->sin6_family = AF_INET6;
-            out_sin6->sin6_port = (port == 44325) ? htons(cfg.blaze_port) : sin6->sin6_port;
+            out_sin6->sin6_port = (port == 44325) ? htons(cfg.redirector_port) : sin6->sin6_port;
             // Map to standard IPv4-mapped IPv6 (::ffff:127.0.0.1) for Windows dual-stack sockets
             std::string v6_target = "::ffff:" + cfg.emulator_host;
             if (inet_pton(AF_INET6, v6_target.c_str(), &(out_sin6->sin6_addr)) != 1) {
@@ -487,6 +491,50 @@ static int WSAAPI Hooked_WSAIoctl(
     }
 
     return res;
+}
+
+// Hooked send() - Intercept Fire2 Authentication::logout (Comp 1, Cmd 0x46)
+static int WSAAPI Hooked_send(SOCKET s, const char *buf, int len, int flags) {
+    if (buf && len >= 10) {
+        const uint8_t* b = reinterpret_cast<const uint8_t*>(buf);
+        for (int i = 0; i <= len - 4; ++i) {
+            // Check for Component 0x0001 (big-endian) and Command 0x0046 (big-endian)
+            if (b[i] == 0x00 && b[i+1] == 0x01 && b[i+2] == 0x00 && b[i+3] == 0x46) {
+                LogInfo("[WinSock] BLOCKED outgoing Authentication::logout (Comp=0x0001, Cmd=0x0046) in send()! Preserving session.");
+                return len; // Fake successful send
+            }
+        }
+    }
+    return g_orig_send ? g_orig_send(s, buf, len, flags) : send(s, buf, len, flags);
+}
+
+// Hooked WSASend() - Intercept Fire2 Authentication::logout (Comp 1, Cmd 0x46)
+static int WSAAPI Hooked_WSASend(
+    SOCKET s,
+    LPWSABUF lpBuffers,
+    DWORD dwBufferCount,
+    LPDWORD lpNumberOfBytesSent,
+    DWORD dwFlags,
+    LPWSAOVERLAPPED lpOverlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
+) {
+    if (lpBuffers && dwBufferCount > 0) {
+        for (DWORD b_idx = 0; b_idx < dwBufferCount; ++b_idx) {
+            if (lpBuffers[b_idx].buf && lpBuffers[b_idx].len >= 10) {
+                const uint8_t* b = reinterpret_cast<const uint8_t*>(lpBuffers[b_idx].buf);
+                int blen = lpBuffers[b_idx].len;
+                for (int i = 0; i <= blen - 4; ++i) {
+                    if (b[i] == 0x00 && b[i+1] == 0x01 && b[i+2] == 0x00 && b[i+3] == 0x46) {
+                        LogInfo("[WinSock] BLOCKED outgoing WSASend Authentication::logout (Comp=0x0001, Cmd=0x0046) in WSASend()! Preserving session.");
+                        if (lpNumberOfBytesSent) *lpNumberOfBytesSent = lpBuffers[b_idx].len;
+                        return 0; // Success
+                    }
+                }
+            }
+        }
+    }
+    return g_orig_WSASend ? g_orig_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine)
+                          : WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
 }
 
 // Hooked bind() - Detect UDP game port 3659
@@ -811,6 +859,8 @@ bool InstallWinsockHooks() {
     void *p_WSAIoctl = reinterpret_cast<void*>(GetProcAddress(ws2, "WSAIoctl"));
 
     void *p_bind = reinterpret_cast<void*>(GetProcAddress(ws2, "bind"));
+    void *p_send = reinterpret_cast<void*>(GetProcAddress(ws2, "send"));
+    void *p_WSASend = reinterpret_cast<void*>(GetProcAddress(ws2, "WSASend"));
     void *p_sendto = reinterpret_cast<void*>(GetProcAddress(ws2, "sendto"));
     void *p_WSASendTo = reinterpret_cast<void*>(GetProcAddress(ws2, "WSASendTo"));
     void *p_recvfrom = reinterpret_cast<void*>(GetProcAddress(ws2, "recvfrom"));
@@ -840,6 +890,10 @@ bool InstallWinsockHooks() {
 
     create_hook_checked(p_bind, reinterpret_cast<void*>(&Hooked_bind),
                         reinterpret_cast<void**>(&g_orig_bind), "bind");
+    create_hook_checked(p_send, reinterpret_cast<void*>(&Hooked_send),
+                        reinterpret_cast<void**>(&g_orig_send), "send");
+    create_hook_checked(p_WSASend, reinterpret_cast<void*>(&Hooked_WSASend),
+                        reinterpret_cast<void**>(&g_orig_WSASend), "WSASend");
     create_hook_checked(p_sendto, reinterpret_cast<void*>(&Hooked_sendto),
                         reinterpret_cast<void**>(&g_orig_sendto), "sendto");
     create_hook_checked(p_WSASendTo, reinterpret_cast<void*>(&Hooked_WSASendTo),

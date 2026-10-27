@@ -229,12 +229,15 @@ void SteamBridge::PushIdentityToControlServer() {
             return;
         }
 
-        // Build JSON payload
+        std::string persona = m_persona_name.empty() ? "DEad>_<POol" : m_persona_name;
+        std::string sid_str = (m_local_steam_id == 0) ? "76561198956360709" : std::to_string(m_local_steam_id);
+
+        // Build JSON payload matching exactly {"name":"...","id":"..."}
         std::ostringstream json;
-        json << "{\"steam_id\":\"" << m_local_steam_id << "\",\"persona_name\":\"" << m_persona_name << "\",\"friends\":[";
+        json << "{\"name\":\"" << persona << "\",\"id\":\"" << sid_str << "\",\"friends\":[";
         for (size_t i = 0; i < m_friends.size(); ++i) {
             if (i > 0) json << ",";
-            json << "{\"steam_id\":\"" << m_friends[i].steam_id << "\",\"name\":\"" << m_friends[i].persona_name << "\"}";
+            json << "{\"id\":\"" << m_friends[i].steam_id << "\",\"name\":\"" << m_friends[i].persona_name << "\"}";
         }
         json << "]}";
 

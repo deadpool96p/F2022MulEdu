@@ -221,6 +221,20 @@ async fn handle_blaze_session(
                         );
                         rx_buf.extend_from_slice(&read_chunk[..n]);
 
+                        // Safety check: if an HTTP client connected to the Blaze port by mistake
+                        if rx_buf.starts_with(b"GET ") || rx_buf.starts_with(b"POST ") {
+                            tracing::info!("[Blaze Server] Intercepted HTTP request on Blaze port, responding 200 OK");
+                            let body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<cacertificates>\n</cacertificates>";
+                            let resp = format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: application/xml; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                body.len(),
+                                body
+                            );
+                            stream.write_all(resp.as_bytes()).await?;
+                            stream.flush().await?;
+                            break;
+                        }
+
                         // Drain and process all packets available in rx_buf
                         while let Some(req_packet) = try_parse_packet(&mut rx_buf, &mut framing) {
                             let f = framing.expect("framing is latched once a frame parses");

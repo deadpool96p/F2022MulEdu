@@ -1,19 +1,17 @@
 @echo off
-REM FIFA 22 Multiplayer — Start Backend + Companion UI (Alternative C)
-REM No dxgi.dll hook needed. Game untouched.
-
-echo [*] Auto-synchronizing active Steam Persona...
-python tools\sync_steam_profile.py
-
-echo [*] Checking emulator server ports...
-
-REM Start server (reuse existing start_emulator.ps1 logic in .bat form)
-start powershell -ExecutionPolicy Bypass -File start_emulator.ps1
-
-REM Wait briefly for listeners (42127, 42128, 42129, 443, 17498, 3659)
-timeout /t 3 /nobreak >nul
-
-echo [*] Starting Companion UI (Alternative C — no injection)...
-python tools\companion_ui.py
-
-echo [*] Done. Server and UI running. Game (FIFA22.exe) untouched.
+taskkill /F /IM FIFA22.exe /T >nul 2>&1
+taskkill /F /IM emulator-server.exe /T >nul 2>&1
+ping 127.0.0.1 -n 2 >nul
+del /Q "F:\Fifa22Multiplayer\emulator_server.log" >nul 2>&1
+del /Q "G:\Games\FIFA 22\f22_shim.log" >nul 2>&1
+copy /Y "F:\Fifa22Multiplayer\shim\build\dxgi.dll" "G:\Games\FIFA 22\dxgi.dll" >nul 2>&1
+echo Starting Emulator Server...
+:: cmd /k keeps the window open if the server crashes, so the error is
+:: readable instead of the window vanishing instantly.
+start "Emulator Server" cmd /k "F:\Fifa22Multiplayer\target\release\emulator-server.exe"
+echo Waiting for server to bind ports...
+ping 127.0.0.1 -n 6 > nul
+echo Launching FIFA 22...
+cd /D "G:\Games\FIFA 22"
+start "" "FIFA22.exe"
+exit

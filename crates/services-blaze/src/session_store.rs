@@ -40,8 +40,9 @@ pub struct SteamFriend {
 /// Synced local Steam profile from the in-game shim.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SteamProfile {
-    #[serde(deserialize_with = "deserialize_u64_lenient")]
+    #[serde(deserialize_with = "deserialize_u64_lenient", alias = "id")]
     pub steam_id: u64,
+    #[serde(alias = "name")]
     pub persona_name: String,
     #[serde(default)]
     pub friends: Vec<SteamFriend>,

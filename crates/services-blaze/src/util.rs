@@ -326,9 +326,9 @@ pub fn handle_pre_auth(req: &BlazePacket, qos_host: &str, qos_port: u16) -> io::
     // responder. Single fake site (port 0, localhost) to prevent schema
     // mismatch — the client never actually probes it.
     let mut qos_struct = TdfStruct::new();
-    qos_struct.set("BWPS", TdfValue::Struct(qos_ping_site("localhost", 0)));
+    qos_struct.set("BWPS", TdfValue::Struct(qos_ping_site("qos.ea.com", 17498)));
     qos_struct.set("LNP", TdfValue::Integer(0));
-    let site_single = qos_ping_site("localhost", 0);
+    let site_single = qos_ping_site("qos.ea.com", 17498);
     qos_struct.set("LTPS", TdfValue::Map(TdfMap::new(
         TdfType::String, TdfType::Struct,
         vec![(TdfValue::String("fake".to_string()), TdfValue::Struct(site_single))].into_iter().collect(),

@@ -205,28 +205,22 @@ pub async fn start_services_full_with_qos(
         ));
     }
 
-    // Secondary Blaze listener on port 44325 (EA standard production Blaze cluster port)
-    if blaze_port != 44325 {
+    // GOSCA HTTP listener on port 44325 (EA standard CA certificate distribution port)
+    if redirector_port != 44325 {
         if let Ok(l) = TcpListener::bind("0.0.0.0:44325").await {
-            tracing::info!("  * Secondary Blaze Listener          : Port 44325");
-            tokio::spawn(run_blaze_server(
+            tracing::info!("  * GOSCA HTTP Listener (getCACertificates) : Port 44325");
+            tokio::spawn(run_redirector_server(
                 l,
                 tls_acceptor.clone(),
-                "127.0.0.1".to_string(),
-                qos_port,
-                session_store.clone(),
-                game_registry.clone(),
+                redir_cfg.clone(),
             ));
         }
         if let Ok(l) = TcpListener::bind("[::]:44325").await {
-            tracing::info!("  * Secondary IPv6 Blaze Listener     : Port 44325");
-            tokio::spawn(run_blaze_server(
+            tracing::info!("  * IPv6 GOSCA HTTP Listener                : Port 44325");
+            tokio::spawn(run_redirector_server(
                 l,
                 tls_acceptor.clone(),
-                "127.0.0.1".to_string(),
-                qos_port,
-                session_store.clone(),
-                game_registry.clone(),
+                redir_cfg.clone(),
             ));
         }
     }

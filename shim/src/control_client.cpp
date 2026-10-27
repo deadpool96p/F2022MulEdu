@@ -285,8 +285,12 @@ bool ControlClient::PostHostRoomSync(std::string& out_code) {
         ? SteamBridge::Instance().GetLocalSteamID()
         : 0;
 
+    // The Control Server expects the SteamProfile as a JSON object with
+    // "name" and "id" fields. The previous payload used "persona_name"/"steam_id",
+    // which the server rejected with "Invalid SteamProfile JSON: EOF while parsing
+    // a value" because it tried to parse the body as a SteamProfile object.
     std::ostringstream ss;
-    ss << "{\"persona_name\":\"" << persona << "\",\"steam_id\":\"" << steam_id << "\"}";
+    ss << "{\"name\":\"" << persona << "\",\"id\":\"" << steam_id << "\"}";
     std::string body = ss.str();
 
     LPCWSTR headers = L"Content-Type: application/json\r\n";
@@ -397,6 +401,8 @@ bool ControlClient::PostJoinRoomSync(const std::string& room_code, std::string& 
     WinHttpCloseHandle(hSession);
     return success;
 }
+
+
 
 void ControlClient::RequestHostRoom(std::function<void(bool success, const std::string& room_code)> on_complete) {
     std::thread([this, on_complete]() {
