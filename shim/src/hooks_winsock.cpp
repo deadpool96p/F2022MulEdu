@@ -21,6 +21,8 @@ using PFN_WSAConnect = int(WSAAPI*)(SOCKET s, const struct sockaddr *name, int n
 using PFN_WSAIoctl = int(WSAAPI*)(SOCKET s, DWORD dwIoControlCode, LPVOID lpvInBuffer, DWORD cbInBuffer, LPVOID lpvOutBuffer, DWORD cbOutBuffer, LPDWORD lpcbBytesReturned, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 using PFN_send = int(WSAAPI*)(SOCKET s, const char *buf, int len, int flags);
 using PFN_WSASend = int(WSAAPI*)(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesSent, DWORD dwFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
+using PFN_recv = int(WSAAPI*)(SOCKET s, char *buf, int len, int flags);
+using PFN_WSARecv = int(WSAAPI*)(SOCKET s, LPWSABUF lpBuffers, DWORD dwBufferCount, LPDWORD lpNumberOfBytesRecvd, LPDWORD lpFlags, LPWSAOVERLAPPED lpOverlapped, LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine);
 
 // UDP Function pointers
 using PFN_bind = int(WSAAPI*)(SOCKET s, const struct sockaddr *name, int namelen);
@@ -37,6 +39,21 @@ static PFN_WSAIoctl g_orig_WSAIoctl = nullptr;
 static LPFN_CONNECTEX g_real_ConnectEx = nullptr;
 static PFN_send g_orig_send = nullptr;
 static PFN_WSASend g_orig_WSASend = nullptr;
+static PFN_recv g_orig_recv = nullptr;
+static PFN_WSARecv g_orig_WSARecv = nullptr;
+
+static uint16_t GetSocketPeerPort(SOCKET s) {
+    struct sockaddr_storage addr{};
+    int addrlen = sizeof(addr);
+    if (getpeername(s, reinterpret_cast<struct sockaddr*>(&addr), &addrlen) == 0) {
+        if (addr.ss_family == AF_INET) {
+            return ntohs(reinterpret_cast<struct sockaddr_in*>(&addr)->sin_port);
+        } else if (addr.ss_family == AF_INET6) {
+            return ntohs(reinterpret_cast<struct sockaddr_in6*>(&addr)->sin6_port);
+        }
+    }
+    return 0;
+}
 
 static PFN_bind g_orig_bind = nullptr;
 static PFN_sendto g_orig_sendto = nullptr;
@@ -400,16 +417,34 @@ void TransmitNetcodeGamepadPacket(const struct _XINPUT_GAMEPAD& pad) {
 
 // Hooked connect()
 static int WSAAPI Hooked_connect(SOCKET s, const struct sockaddr *name, int namelen) {
-    // Disable Nagle's algorithm for instant TCP packet dispatch
     int nodelay = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
 
+    if (name && name->sa_family == AF_INET6) {
+        DWORD v6only = 0;
+        setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only), sizeof(v6only));
+    }
+
     struct sockaddr_storage rewritten{};
     int rewritten_len = 0;
+    int res = 0;
     if (CheckAndRewriteSockAddr(name, &rewritten, &rewritten_len)) {
-        return g_orig_connect(s, reinterpret_cast<const struct sockaddr*>(&rewritten), rewritten_len);
+        res = g_orig_connect(s, reinterpret_cast<const struct sockaddr*>(&rewritten), rewritten_len);
+    } else {
+        res = g_orig_connect(s, name, namelen);
     }
-    return g_orig_connect(s, name, namelen);
+
+    int err = (res == SOCKET_ERROR) ? WSAGetLastError() : 0;
+    uint16_t port = GetSocketPeerPort(s);
+    if (port == 443 || port == 42128 || port == 42230 || port == 42127) {
+        std::ostringstream ss;
+        ss << "[WinSock] connect(sock=" << s << ", port=" << port << ") -> res=" << res;
+        if (res == SOCKET_ERROR) {
+            ss << " (WSAGetLastError=" << err << ")";
+        }
+        LogInfo(ss.str());
+    }
+    return res;
 }
 
 // Hooked WSAConnect()
@@ -425,13 +460,32 @@ static int WSAAPI Hooked_WSAConnect(
     int nodelay = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
 
+    if (name && name->sa_family == AF_INET6) {
+        DWORD v6only = 0;
+        setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only), sizeof(v6only));
+    }
+
     struct sockaddr_storage rewritten{};
     int rewritten_len = 0;
+    int res = 0;
     if (CheckAndRewriteSockAddr(name, &rewritten, &rewritten_len)) {
-        return g_orig_WSAConnect(s, reinterpret_cast<const struct sockaddr*>(&rewritten), rewritten_len,
+        res = g_orig_WSAConnect(s, reinterpret_cast<const struct sockaddr*>(&rewritten), rewritten_len,
                                  lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
+    } else {
+        res = g_orig_WSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
     }
-    return g_orig_WSAConnect(s, name, namelen, lpCallerData, lpCalleeData, lpSQOS, lpGQOS);
+
+    int err = (res == SOCKET_ERROR) ? WSAGetLastError() : 0;
+    uint16_t port = GetSocketPeerPort(s);
+    if (port == 443 || port == 42128 || port == 42230 || port == 42127) {
+        std::ostringstream ss;
+        ss << "[WinSock] WSAConnect(sock=" << s << ", port=" << port << ") -> res=" << res;
+        if (res == SOCKET_ERROR) {
+            ss << " (WSAGetLastError=" << err << ")";
+        }
+        LogInfo(ss.str());
+    }
+    return res;
 }
 
 // Hooked ConnectEx (obtained dynamically via WSAIoctl SIO_GET_EXTENSION_FUNCTION_POINTER)
@@ -446,6 +500,11 @@ static BOOL PASCAL FAR Hooked_ConnectEx(
 ) {
     int nodelay = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&nodelay), sizeof(nodelay));
+
+    if (name && name->sa_family == AF_INET6) {
+        DWORD v6only = 0;
+        setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only), sizeof(v6only));
+    }
 
     struct sockaddr_storage rewritten{};
     int rewritten_len = 0;
@@ -506,8 +565,24 @@ static bool IsFire2LogoutPacket(const uint8_t* b, int len) {
     return false;
 }
 
-// Hooked send() - Intercept Fire2 Authentication::logout (Comp 1, Cmd 0x46)
+// Hooked send()
 static int WSAAPI Hooked_send(SOCKET s, const char *buf, int len, int flags) {
+    uint16_t port = GetSocketPeerPort(s);
+    if (port == 443 || port == 42128 || port == 42230) {
+        std::ostringstream ss;
+        ss << "[WinSock] send(sock=" << s << ", peer_port=" << port << ", len=" << len << ")";
+        if (buf && len > 0) {
+            ss << " [data: ";
+            for (int i = 0; i < std::min(len, 16); ++i) {
+                char hex[4];
+                snprintf(hex, sizeof(hex), "%02X ", static_cast<uint8_t>(buf[i]));
+                ss << hex;
+            }
+            ss << "]";
+        }
+        LogInfo(ss.str());
+    }
+
     if (buf && len >= 10) {
         const uint8_t* b = reinterpret_cast<const uint8_t*>(buf);
         if (IsFire2LogoutPacket(b, len)) {
@@ -518,7 +593,7 @@ static int WSAAPI Hooked_send(SOCKET s, const char *buf, int len, int flags) {
     return g_orig_send ? g_orig_send(s, buf, len, flags) : send(s, buf, len, flags);
 }
 
-// Hooked WSASend() - Intercept Fire2 Authentication::logout (Comp 1, Cmd 0x46)
+// Hooked WSASend()
 static int WSAAPI Hooked_WSASend(
     SOCKET s,
     LPWSABUF lpBuffers,
@@ -528,6 +603,26 @@ static int WSAAPI Hooked_WSASend(
     LPWSAOVERLAPPED lpOverlapped,
     LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
 ) {
+    uint16_t port = GetSocketPeerPort(s);
+    if (port == 443 || port == 42128 || port == 42230) {
+        DWORD total_len = 0;
+        if (lpBuffers && dwBufferCount > 0) {
+            for (DWORD i = 0; i < dwBufferCount; ++i) total_len += lpBuffers[i].len;
+        }
+        std::ostringstream ss;
+        ss << "[WinSock] WSASend(sock=" << s << ", peer_port=" << port << ", bufs=" << dwBufferCount << ", total_len=" << total_len << ")";
+        if (lpBuffers && dwBufferCount > 0 && lpBuffers[0].buf && lpBuffers[0].len > 0) {
+            ss << " [data: ";
+            for (DWORD i = 0; i < std::min<DWORD>(lpBuffers[0].len, 16); ++i) {
+                char hex[4];
+                snprintf(hex, sizeof(hex), "%02X ", static_cast<uint8_t>(lpBuffers[0].buf[i]));
+                ss << hex;
+            }
+            ss << "]";
+        }
+        LogInfo(ss.str());
+    }
+
     if (lpBuffers && dwBufferCount > 0) {
         for (DWORD b_idx = 0; b_idx < dwBufferCount; ++b_idx) {
             if (lpBuffers[b_idx].buf && lpBuffers[b_idx].len >= 10) {
@@ -543,6 +638,64 @@ static int WSAAPI Hooked_WSASend(
     }
     return g_orig_WSASend ? g_orig_WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine)
                           : WSASend(s, lpBuffers, dwBufferCount, lpNumberOfBytesSent, dwFlags, lpOverlapped, lpCompletionRoutine);
+}
+
+// Hooked recv()
+static int WSAAPI Hooked_recv(SOCKET s, char *buf, int len, int flags) {
+    int res = g_orig_recv ? g_orig_recv(s, buf, len, flags) : recv(s, buf, len, flags);
+    uint16_t port = GetSocketPeerPort(s);
+    if (port == 443 || port == 42128 || port == 42230) {
+        std::ostringstream ss;
+        ss << "[WinSock] recv(sock=" << s << ", peer_port=" << port << ", len=" << len << ") -> res=" << res;
+        if (res > 0 && buf) {
+            ss << " [data: ";
+            for (int i = 0; i < std::min(res, 16); ++i) {
+                char hex[4];
+                snprintf(hex, sizeof(hex), "%02X ", static_cast<uint8_t>(buf[i]));
+                ss << hex;
+            }
+            ss << "]";
+        } else if (res == 0) {
+            ss << " [PEER CLOSED CONNECTION / EOF]";
+        } else if (res == SOCKET_ERROR) {
+            ss << " [ERROR: " << WSAGetLastError() << "]";
+        }
+        LogInfo(ss.str());
+    }
+    return res;
+}
+
+// Hooked WSARecv()
+static int WSAAPI Hooked_WSARecv(
+    SOCKET s,
+    LPWSABUF lpBuffers,
+    DWORD dwBufferCount,
+    LPDWORD lpNumberOfBytesRecvd,
+    LPDWORD lpFlags,
+    LPWSAOVERLAPPED lpOverlapped,
+    LPWSAOVERLAPPED_COMPLETION_ROUTINE lpCompletionRoutine
+) {
+    int res = g_orig_WSARecv ? g_orig_WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine)
+                             : WSARecv(s, lpBuffers, dwBufferCount, lpNumberOfBytesRecvd, lpFlags, lpOverlapped, lpCompletionRoutine);
+    uint16_t port = GetSocketPeerPort(s);
+    if (port == 443 || port == 42128 || port == 42230) {
+        DWORD bytes = (lpNumberOfBytesRecvd ? *lpNumberOfBytesRecvd : 0);
+        std::ostringstream ss;
+        ss << "[WinSock] WSARecv(sock=" << s << ", peer_port=" << port << ") -> res=" << res << ", bytes=" << bytes;
+        if (res == 0 && bytes > 0 && lpBuffers && lpBuffers[0].buf) {
+            ss << " [data: ";
+            for (DWORD i = 0; i < std::min<DWORD>(bytes, 16); ++i) {
+                char hex[4];
+                snprintf(hex, sizeof(hex), "%02X ", static_cast<uint8_t>(lpBuffers[0].buf[i]));
+                ss << hex;
+            }
+            ss << "]";
+        } else if (res != 0) {
+            ss << " [ERROR: " << WSAGetLastError() << "]";
+        }
+        LogInfo(ss.str());
+    }
+    return res;
 }
 
 // Hooked bind() - Detect UDP game port 3659
@@ -871,6 +1024,8 @@ bool InstallWinsockHooks() {
     void *p_WSASend = reinterpret_cast<void*>(GetProcAddress(ws2, "WSASend"));
     void *p_sendto = reinterpret_cast<void*>(GetProcAddress(ws2, "sendto"));
     void *p_WSASendTo = reinterpret_cast<void*>(GetProcAddress(ws2, "WSASendTo"));
+    void *p_recv = reinterpret_cast<void*>(GetProcAddress(ws2, "recv"));
+    void *p_WSARecv = reinterpret_cast<void*>(GetProcAddress(ws2, "WSARecv"));
     void *p_recvfrom = reinterpret_cast<void*>(GetProcAddress(ws2, "recvfrom"));
     void *p_WSARecvFrom = reinterpret_cast<void*>(GetProcAddress(ws2, "WSARecvFrom"));
 
@@ -902,6 +1057,10 @@ bool InstallWinsockHooks() {
                         reinterpret_cast<void**>(&g_orig_send), "send");
     create_hook_checked(p_WSASend, reinterpret_cast<void*>(&Hooked_WSASend),
                         reinterpret_cast<void**>(&g_orig_WSASend), "WSASend");
+    create_hook_checked(p_recv, reinterpret_cast<void*>(&Hooked_recv),
+                        reinterpret_cast<void**>(&g_orig_recv), "recv");
+    create_hook_checked(p_WSARecv, reinterpret_cast<void*>(&Hooked_WSARecv),
+                        reinterpret_cast<void**>(&g_orig_WSARecv), "WSARecv");
     create_hook_checked(p_sendto, reinterpret_cast<void*>(&Hooked_sendto),
                         reinterpret_cast<void**>(&g_orig_sendto), "sendto");
     create_hook_checked(p_WSASendTo, reinterpret_cast<void*>(&Hooked_WSASendTo),

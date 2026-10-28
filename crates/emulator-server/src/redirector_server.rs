@@ -96,7 +96,7 @@ fn render_service_instance_xml(svc: &ServiceInstance) -> String {
     ));
     out.push_str(&format!(
         "          <qosip>{}</qosip>\n",
-        xml_escape(&svc.hostname)
+        svc.ip
     ));
     out.push_str(&format!("          <qosport>{}</qosport>\n", svc.port));
     out.push_str("        </valu>\n");
@@ -139,11 +139,11 @@ pub fn render_redirector_xml(config: &RedirectorConfig, services: &[ServiceInsta
     ));
     out.push_str(&format!("      <ip>{}</ip>\n", config.ip));
     out.push_str(&format!("      <port>{}</port>\n", config.port));
-    out.push_str(&format!("      <qosip>{}</qosip>\n", xml_escape(&config.qos_hostname)));
+    out.push_str(&format!("      <qosip>{}</qosip>\n", config.ip));
     out.push_str(&format!("      <qosport>{}</qosport>\n", config.qos_port));
     out.push_str("    </valu>\n");
     out.push_str("  </address>\n");
-    out.push_str(&format!("  <qosip>{}</qosip>\n", xml_escape(&config.qos_hostname)));
+    out.push_str(&format!("  <qosip>{}</qosip>\n", config.ip));
     out.push_str(&format!("  <qosport>{}</qosport>\n", config.qos_port));
     out.push_str(&format!("  <secure>{}</secure>\n", secure_val));
     out.push_str("  <msiz>131072</msiz>\n");
@@ -567,6 +567,7 @@ X-BLAZE-SEQNO: 0\r\n\r\n{}",
             .collect::<Vec<_>>()
             .join(", ")
     );
+    tracing::info!("[Redirector HTTP] Full Response Payload:\n{}", response_body);
 
     stream.write_all(http_response.as_bytes()).await?;
     stream.flush().await?;
