@@ -601,6 +601,14 @@ fn firewall_response_body(qos: &QosRequest) -> String {
     /// This is the critical path for QoS service discovery. The client
     /// parses the response as a DOM and expects the qosapi service
     /// to be advertised using the lowercased TDF field names.
+    ///
+    /// `qosip` and `srcip` are read by the same *decimal* u32 parser as the
+    /// `/qos/qos` response's `qosip` (see [`QOS_IP_DECIMAL`] and
+    /// `qos_response_body`'s docs) -- serving the hostname string there
+    /// instead of the numeric address makes the client's parse fail
+    /// (effectively 0), which it rejects, so the client stalls instead of
+    /// dialing Blaze. `hostname` is the one field that stays a string,
+    /// since it is only used for the TLS SNI / logging.
     fn redirector_get_server_instance_body(_req: &HttpRequest) -> String {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -610,8 +618,8 @@ fn firewall_response_body(qos: &QosRequest) -> String {
             <hostname>spring18.gosredirector.ea.com</hostname>
             <dstport>17498</dstport>
             <srcport>17498</srcport>
-            <srcip>spring18.gosredirector.ea.com</srcip>
-            <qosip>spring18.gosredirector.ea.com</qosip>
+            <srcip>{QOS_IP_DECIMAL}</srcip>
+            <qosip>{QOS_IP_DECIMAL}</qosip>
             <qosport>17498</qosport>
             <probesize>1000</probesize>
             <numprobes>10</numprobes>
@@ -749,7 +757,9 @@ pub fn route_http_request(req: &HttpRequest) -> HttpResponse {
         }
         "/redirector/getServerInstance" => {
             tracing::info!("[Redirector] Serving QoS service discovery for {}", path);
-            HttpResponse::ok_xml(&redirector_get_server_instance_body(req))
+            let body = redirector_get_server_instance_body(req);
+            tracing::info!("[Redirector HTTP Sink] Generated XML:\n{}", body);
+            HttpResponse::ok_xml(&body)
         }
         // DirtySDK HTTP QoS metadata discovery probes.
         //
