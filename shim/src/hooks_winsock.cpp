@@ -493,16 +493,26 @@ static int WSAAPI Hooked_WSAIoctl(
     return res;
 }
 
+static bool IsFire2LogoutPacket(const uint8_t* b, int len) {
+    if (!b || len < 10) return false;
+    // In Fire2 16-byte framing: Component is at byte 6..7, Command is at byte 8..9
+    if (len >= 16 && b[6] == 0x00 && b[7] == 0x01 && b[8] == 0x00 && b[9] == 0x46) {
+        return true;
+    }
+    // In legacy 12-byte framing: Component is at byte 2..3, Command is at byte 4..5
+    if (len >= 12 && b[2] == 0x00 && b[3] == 0x01 && b[4] == 0x00 && b[5] == 0x46) {
+        return true;
+    }
+    return false;
+}
+
 // Hooked send() - Intercept Fire2 Authentication::logout (Comp 1, Cmd 0x46)
 static int WSAAPI Hooked_send(SOCKET s, const char *buf, int len, int flags) {
     if (buf && len >= 10) {
         const uint8_t* b = reinterpret_cast<const uint8_t*>(buf);
-        for (int i = 0; i <= len - 4; ++i) {
-            // Check for Component 0x0001 (big-endian) and Command 0x0046 (big-endian)
-            if (b[i] == 0x00 && b[i+1] == 0x01 && b[i+2] == 0x00 && b[i+3] == 0x46) {
-                LogInfo("[WinSock] BLOCKED outgoing Authentication::logout (Comp=0x0001, Cmd=0x0046) in send()! Preserving session.");
-                return len; // Fake successful send
-            }
+        if (IsFire2LogoutPacket(b, len)) {
+            LogInfo("[WinSock] BLOCKED outgoing Authentication::logout (Comp=0x0001, Cmd=0x0046) in send()! Preserving session.");
+            return len; // Fake successful send
         }
     }
     return g_orig_send ? g_orig_send(s, buf, len, flags) : send(s, buf, len, flags);
@@ -523,12 +533,10 @@ static int WSAAPI Hooked_WSASend(
             if (lpBuffers[b_idx].buf && lpBuffers[b_idx].len >= 10) {
                 const uint8_t* b = reinterpret_cast<const uint8_t*>(lpBuffers[b_idx].buf);
                 int blen = lpBuffers[b_idx].len;
-                for (int i = 0; i <= blen - 4; ++i) {
-                    if (b[i] == 0x00 && b[i+1] == 0x01 && b[i+2] == 0x00 && b[i+3] == 0x46) {
-                        LogInfo("[WinSock] BLOCKED outgoing WSASend Authentication::logout (Comp=0x0001, Cmd=0x0046) in WSASend()! Preserving session.");
-                        if (lpNumberOfBytesSent) *lpNumberOfBytesSent = lpBuffers[b_idx].len;
-                        return 0; // Success
-                    }
+                if (IsFire2LogoutPacket(b, blen)) {
+                    LogInfo("[WinSock] BLOCKED outgoing WSASend Authentication::logout (Comp=0x0001, Cmd=0x0046) in WSASend()! Preserving session.");
+                    if (lpNumberOfBytesSent) *lpNumberOfBytesSent = lpBuffers[b_idx].len;
+                    return 0; // Success
                 }
             }
         }

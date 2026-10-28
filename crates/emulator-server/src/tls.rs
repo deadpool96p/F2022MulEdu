@@ -245,6 +245,7 @@ pub fn generate_chain(
         SanType::DnsName("*.gosredirector.ea.com".try_into()?),
         SanType::DnsName("gosredirector.ea.com".try_into()?),
         SanType::DnsName("*.ea.com".try_into()?),
+        SanType::DnsName("qos.ea.com".try_into()?),
         SanType::DnsName("*.ea.net".try_into()?),
         SanType::DnsName("fifa22.pc.ea.com".try_into()?),
         SanType::DnsName("river.data.ea.com".try_into()?),

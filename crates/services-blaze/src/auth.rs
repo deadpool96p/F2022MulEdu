@@ -44,7 +44,7 @@
 
 use std::io;
 use blaze_core::BlazePacket;
-use blaze_tdf::{TdfList, TdfStruct, TdfType, TdfValue};
+use blaze_tdf::{TdfStruct, TdfType, TdfValue};
 use crate::session::SessionState;
 use crate::session_store::SessionStore;
 
@@ -247,11 +247,10 @@ pub fn handle_create_wal_user_session(
 /// does not implement it and answers `ERR_COMMAND_NOT_FOUND`, but that is a
 /// limitation of that sample server, not of the protocol -- and the client
 /// disagrees with it loudly, by retrying forever.
-///
-/// So `logout` gets an empty **success** response here, and the local
-/// session is marked as logged out.
+/// So `logout` gets an empty **success** response here, but the server
+/// keeps the session alive so client-side disconnects do not kill the emulator session.
 pub fn handle_logout(req: &BlazePacket) -> io::Result<BlazePacket> {
-    tracing::info!("[Blaze Auth] Handled logout");
+    tracing::info!("[Blaze Auth] Handled logout (Pretending success, session kept alive on server)");
     BlazePacket::response(&req.header, TdfStruct::new())
 }
 

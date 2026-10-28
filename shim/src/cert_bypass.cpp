@@ -17,11 +17,14 @@
 // LoadLibrary hook type declarations (must precede any use)
 typedef HMODULE (WINAPI *PFN_LoadLibraryW)(LPCWSTR lpLibFileName);
 typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile, DWORD dwFlags);
+typedef HMODULE (WINAPI *PFN_LoadLibraryA)(LPCSTR lpLibFileName);
+typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags);
 #include <cstring>
-
 
   static PFN_LoadLibraryW g_orig_LoadLibraryW = nullptr;
   static PFN_LoadLibraryExW g_orig_LoadLibraryExW = nullptr;
+  static PFN_LoadLibraryA g_orig_LoadLibraryA = nullptr;
+  static PFN_LoadLibraryExA g_orig_LoadLibraryExA = nullptr;
 
   namespace f22 {
 
@@ -442,11 +445,27 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
 
   static void CaPatchThread() {
     LogInfo("[SSL Bypass] Background root-CA patcher started");
+    int ticks = 0;
     while (!g_ca_patch_stop.load(std::memory_order_relaxed)) {
+      ticks++;
       BinaryPatchBoringSSLVerify();
       PatchNetworkStateAndErrorHandler();
       if (EnsureCaTablePatched()) {
         LogInfo("[SSL Bypass] All loaded modules' root-CA tables patched");
+      }
+      // After ~4 seconds (20 ticks), the engine has fully initialized graphics and main menu.
+      // If CardsDLL has not loaded yet, safely load it in this background worker thread.
+      if (ticks == 20) {
+        HMODULE hCards = GetModuleHandleW(L"CardsDLL_Win64_retail.dll");
+        if (!hCards) hCards = GetModuleHandleA("CardsDLL_Win64_retail.dll");
+        if (!hCards) {
+          LogInfo("[Memory Patch] Background worker triggering deferred LoadLibrary for CardsDLL_Win64_retail.dll");
+          hCards = LoadLibraryW(L"CardsDLL_Win64_retail.dll");
+          if (hCards) {
+            LogInfo("[Memory Patch] CardsDLL_Win64_retail.dll successfully loaded in background worker!");
+            PatchNetworkStateAndErrorHandler();
+          }
+        }
       }
       // Sleep in small increments so the stop flag is observed promptly.
       for (int i = 0; i < 10 && !g_ca_patch_stop.load(std::memory_order_relaxed); ++i) {
@@ -466,6 +485,35 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
     g_ca_patch_stop.store(true, std::memory_order_relaxed);
   }
 
+  static HMODULE WINAPI Hooked_LoadLibraryA(LPCSTR lpLibFileName) {
+    HMODULE h = g_orig_LoadLibraryA ? g_orig_LoadLibraryA(lpLibFileName) : LoadLibraryA(lpLibFileName);
+    if (h && lpLibFileName) {
+      if (strstr(lpLibFileName, "CardsDLL")) {
+        LogInfo("[SSL Bypass] Hooked_LoadLibraryA loaded CardsDLL -> patching network error handler immediately!");
+        PatchNetworkStateAndErrorHandler();
+      } else if (strstr(lpLibFileName, "EAWebKit")) {
+        LogInfo("[SSL Bypass] Hooked_LoadLibraryA loaded EAWebKit -> patching BoringSSL CA");
+        BinaryPatchBoringSSLVerify();
+        EnsureCaTablePatched();
+      }
+    }
+    return h;
+  }
+
+  static HMODULE WINAPI Hooked_LoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile, DWORD dwFlags) {
+    HMODULE h = g_orig_LoadLibraryExA ? g_orig_LoadLibraryExA(lpLibFileName, hFile, dwFlags) : LoadLibraryExA(lpLibFileName, hFile, dwFlags);
+    if (h && lpLibFileName) {
+      if (strstr(lpLibFileName, "CardsDLL")) {
+        LogInfo("[SSL Bypass] Hooked_LoadLibraryExA loaded CardsDLL -> patching network error handler immediately!");
+        PatchNetworkStateAndErrorHandler();
+      } else if (strstr(lpLibFileName, "EAWebKit")) {
+        LogInfo("[SSL Bypass] Hooked_LoadLibraryExA loaded EAWebKit -> patching BoringSSL CA");
+        BinaryPatchBoringSSLVerify();
+        EnsureCaTablePatched();
+      }
+    }
+    return h;
+  }
 
   static HMODULE WINAPI Hooked_LoadLibraryW(LPCWSTR lpLibFileName) {
     HMODULE h = g_orig_LoadLibraryW ? g_orig_LoadLibraryW(lpLibFileName) : LoadLibraryW(lpLibFileName);
@@ -518,22 +566,6 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
     } else { LogWarn("[SSL Bypass] Force-load EAWebKit.dll FAILED"); }
   }
 
-  static void ForceLoadCardsDLL() {
-    static bool done = false;
-    if (done) return;
-    done = true;
-    HMODULE h = GetModuleHandleW(L"CardsDLL_Win64_retail.dll");
-    if (!h) h = LoadLibraryW(L"CardsDLL_Win64_retail.dll");
-    if (h) {
-      LogInfo("[Memory Patch] Force-loaded CardsDLL_Win64_retail.dll -> applying error & state patches");
-      PatchNetworkStateAndErrorHandler();
-    } else {
-      LogWarn("[Memory Patch] Force-load CardsDLL_Win64_retail.dll FAILED (will retry in CaPatchThread)");
-    }
-  }
-
-
-
   // Binary patch BoringSSL verification: overwrite first 6 bytes of function
   // referencing "certificate unknown" to force return 1 (success)
   static bool BinaryPatchBoringSSLVerify() {
@@ -579,7 +611,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
     return true;
   }
 
-  // Dynamic memory patches for CardsDLL error handling & Frostbite network state
+  // Dynamic surgical memory patches for CardsDLL error handling & Frostbite network state
   static bool PatchNetworkStateAndErrorHandler() {
     static std::atomic<bool> s_cards_patched{false};
     static std::atomic<bool> s_fifa_patched{false};
@@ -633,37 +665,61 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
       }
     }
 
-    // 2. Patch FIFA22.exe Frostbite network status & QoS handler
+    // 2. Patch FIFA22.exe Frostbite network status & QoS handler SURGICALLY
+    // (Preserve prologues, epilogues, stack frames, and cookie checks!)
     if (!s_fifa_patched.load(std::memory_order_relaxed)) {
       HMODULE hExe = GetModuleHandleW(NULL);
       if (hExe) {
         const uint8_t* base = reinterpret_cast<const uint8_t*>(hExe);
 
-        // Target 4: RVA 0x27E2AC0 - NetworkMatchReadyStatusChangedMessage handler entry
-        // Overwrite prologue with "mov eax, 0; ret" (B8 00 00 00 00 C3) -> forces Frostbite SUCCESS
-        uintptr_t p4 = reinterpret_cast<uintptr_t>(base + 0x27E2AC0);
+        // Target 4: RVA 0x27E2C72 - Coerce failure return (mov eax, 1) -> (mov eax, 0)
+        uintptr_t p4 = reinterpret_cast<uintptr_t>(base + 0x27E2C72);
         DWORD old4 = 0;
-        if (VirtualProtect(reinterpret_cast<LPVOID>(p4), 6, PAGE_EXECUTE_READWRITE, &old4)) {
-          uint8_t ret_ok[6] = {0xB8, 0x00, 0x00, 0x00, 0x00, 0xC3};
-          std::memcpy(reinterpret_cast<void*>(p4), ret_ok, 6);
-          VirtualProtect(reinterpret_cast<LPVOID>(p4), 6, old4, &old4);
+        if (VirtualProtect(reinterpret_cast<LPVOID>(p4), 5, PAGE_EXECUTE_READWRITE, &old4)) {
+          uint8_t mov_zero[5] = {0xB8, 0x00, 0x00, 0x00, 0x00};
+          std::memcpy(reinterpret_cast<void*>(p4), mov_zero, 5);
+          VirtualProtect(reinterpret_cast<LPVOID>(p4), 5, old4, &old4);
           std::ostringstream ss;
-          ss << "[Memory Patch] Overrode FIFA22.exe NetworkMatchReadyStatus handler at 0x" << std::hex << p4
-             << " with mov eax, 0; ret (forcing Frostbite Network Ready = SUCCESS)";
+          ss << "[Memory Patch] Surgically coerced FIFA22.exe failure return at 0x" << std::hex << p4
+             << " to mov eax, 0 (Success)";
           LogInfo(ss.str());
         }
 
-        // Target 5: RVA 0x21187D0 - Authentication::logout entry point in FIFA22.exe
-        // Overwrite prologue with "mov eax, 0; ret" (B8 00 00 00 00 C3) -> prevents client session teardown
-        uintptr_t p5 = reinterpret_cast<uintptr_t>(base + 0x21187D0);
+        // Target 5: RVA 0x27E2C79 - Coerce failure return (mov eax, -1) -> (mov eax, 0)
+        uintptr_t p5 = reinterpret_cast<uintptr_t>(base + 0x27E2C79);
         DWORD old5 = 0;
-        if (VirtualProtect(reinterpret_cast<LPVOID>(p5), 6, PAGE_EXECUTE_READWRITE, &old5)) {
-          uint8_t ret_ok[6] = {0xB8, 0x00, 0x00, 0x00, 0x00, 0xC3};
-          std::memcpy(reinterpret_cast<void*>(p5), ret_ok, 6);
-          VirtualProtect(reinterpret_cast<LPVOID>(p5), 6, old5, &old5);
+        if (VirtualProtect(reinterpret_cast<LPVOID>(p5), 5, PAGE_EXECUTE_READWRITE, &old5)) {
+          uint8_t mov_zero[5] = {0xB8, 0x00, 0x00, 0x00, 0x00};
+          std::memcpy(reinterpret_cast<void*>(p5), mov_zero, 5);
+          VirtualProtect(reinterpret_cast<LPVOID>(p5), 5, old5, &old5);
           std::ostringstream ss;
-          ss << "[Memory Patch] Overrode FIFA22.exe Authentication::logout at 0x" << std::hex << p5
-             << " with mov eax, 0; ret (BLOCKING client session reset/logout)";
+          ss << "[Memory Patch] Surgically coerced FIFA22.exe failure return at 0x" << std::hex << p5
+             << " to mov eax, 0 (Success)";
+          LogInfo(ss.str());
+        }
+
+        // Target 6: RVA 0x27E2CC3 - Coerce error cleanup return (mov eax, esi) -> (xor eax, eax)
+        uintptr_t p6 = reinterpret_cast<uintptr_t>(base + 0x27E2CC3);
+        DWORD old6 = 0;
+        if (VirtualProtect(reinterpret_cast<LPVOID>(p6), 2, PAGE_EXECUTE_READWRITE, &old6)) {
+          uint8_t xor_eax[2] = {0x31, 0xC0};
+          std::memcpy(reinterpret_cast<void*>(p6), xor_eax, 2);
+          VirtualProtect(reinterpret_cast<LPVOID>(p6), 2, old6, &old6);
+          std::ostringstream ss;
+          ss << "[Memory Patch] Surgically coerced FIFA22.exe error exit at 0x" << std::hex << p6
+             << " to xor eax, eax (Success)";
+          LogInfo(ss.str());
+        }
+
+        // Target 7: RVA 0x27E2B90 - NOP out conditional jump on sub-call error (0F 85 B1 00 00 00 -> 6x NOP)
+        uintptr_t p7 = reinterpret_cast<uintptr_t>(base + 0x27E2B90);
+        DWORD old7 = 0;
+        if (VirtualProtect(reinterpret_cast<LPVOID>(p7), 6, PAGE_EXECUTE_READWRITE, &old7)) {
+          uint8_t nop6[6] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
+          std::memcpy(reinterpret_cast<void*>(p7), nop6, 6);
+          VirtualProtect(reinterpret_cast<LPVOID>(p7), 6, old7, &old7);
+          std::ostringstream ss;
+          ss << "[Memory Patch] Surgically NOPped FIFA22.exe sub-call error branch at 0x" << std::hex << p7;
           LogInfo(ss.str());
         }
 
@@ -698,7 +754,6 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
     static std::vector<std::unique_ptr<HookGuard>> s_cert_guards;
     s_cert_guards.clear();
     ForceLoadEAWebKit();
-    ForceLoadCardsDLL();
     BinaryPatchBoringSSLVerify();
     PatchNetworkStateAndErrorHandler();
 
@@ -771,6 +826,16 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
     // 4. Synchronous LoadLibraryW hook — PRIMARY mechanism for EAWebKit.dll.
     HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
     if (kernel32) {
+      void *p_loada = reinterpret_cast<void *>(GetProcAddress(kernel32, "LoadLibraryA"));
+      if (p_loada) {
+        create_hook_checked(p_loada, reinterpret_cast<void*>(Hooked_LoadLibraryA),
+                            reinterpret_cast<void**>(&g_orig_LoadLibraryA), "LoadLibraryA");
+      }
+      void *p_loadexa = reinterpret_cast<void *>(GetProcAddress(kernel32, "LoadLibraryExA"));
+      if (p_loadexa) {
+        create_hook_checked(p_loadexa, reinterpret_cast<void*>(Hooked_LoadLibraryExA),
+                            reinterpret_cast<void**>(&g_orig_LoadLibraryExA), "LoadLibraryExA");
+      }
       void *p_load = reinterpret_cast<void *>(GetProcAddress(kernel32, "LoadLibraryW"));
       if (p_load) {
         create_hook_checked(p_load, reinterpret_cast<void*>(Hooked_LoadLibraryW),
@@ -782,7 +847,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExW)(LPCWSTR lpLibFileName, HANDLE hFile
                             reinterpret_cast<void**>(&g_orig_LoadLibraryExW), "LoadLibraryExW");
       }
     }
-    LogInfo("[SSL Bypass] Synchronous LoadLibraryW/ExW hooks installed — EAWebKit.dll will be patched on load");
+    LogInfo("[SSL Bypass] Synchronous LoadLibraryA/ExA/W/ExW hooks installed — CardsDLL and EAWebKit will be patched on load");
 
     return true;
   }

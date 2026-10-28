@@ -1,18 +1,28 @@
 # FIFA 22 Frostbite 3 Clean-Room Multiplayer: Project Progress Report
 
-**Document Version:** 2.2.0  
-**Last Updated:** October 22, 2026 (evening session)  
-**Status:** In Active Development — Phase 1 (Authentication Unblock) — **blocked on the redirector reply format and the HTTP/2 transport**  
+**Document Version:** 2.3.0  
+**Last Updated:** October 28, 2026  
+**Status:** In Active Development — Phase 1 (Online Enforcement & Session Preservation)  
 **Repository:** `deadpool96p/F2022MulEdu`  
 **Target:** EA Sports FIFA 22 (Frostbite 3 Engine, PC)
 
-> **Read first:** [`docs/SESSION_LOG_2026-10-22.md`](docs/SESSION_LOG_2026-10-22.md)
-> is the authoritative record of the current blocker, the live evidence behind
-> it, and the priority order for the next session. §11 below summarises it.
-
 ---
 
-## 0. Current Status & Active Workstream
+## 0. Current Status & Active Workstream (October 28, 2026)
+
+**Tasks Completed:**
+1. **Server-Side Session Preservation (Cmd=0x0046 Ignore):**
+   - Modified `crates/services-blaze/src/auth.rs` and `crates/services-blaze/src/router.rs`.
+   - When client sends `Authentication::logout` (`Cmd=0x0046`), server responds with 200 OK (`ERR_OK`), preserves `is_logged_in = true`, and keeps the Blaze TCP session fully open without teardown.
+2. **QoS Hostname & SNI Enforcement:**
+   - Modified `crates/services-redirector/src/lib.rs` and `crates/emulator-server/src/redirector_server.rs` to advertise `qosapi` with `<hostname>qos.ea.com</hostname>` and `<qosip>qos.ea.com</qosip>`.
+   - Added `qos.ea.com` to TLS SAN certificate generation in `crates/emulator-server/src/tls.rs`.
+3. **Surgical UI & Online Hooking:**
+   - Hooked `LoadLibraryA` / `LoadLibraryExA` and added safe deferred thread loading in `shim/src/cert_bypass.cpp` to patch `CardsDLL_Win64_retail.dll` and Frostbite online state flags without loader locks or crashing `ret` prologues.
+4. **Rebuild & Deployment:**
+   - Compiled `emulator-server` (release) and `dxgi.dll` (release).
+   - Cleaned stale cert cache, deployed `dxgi.dll` and `f22_ca_modulus.bin` to `G:\Games\FIFA 22\`.
+   - `emulator-server.exe` running in background.
 
 **The Blaze protocol work is done and verified.** `Util::ping` → `Util::preAuth`
 → a `PreAuthResponse` whose `QOSS` block is byte-identical to the authentic EA

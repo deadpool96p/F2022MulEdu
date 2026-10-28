@@ -129,11 +129,13 @@ impl BlazeRouter {
             }
             (COMPONENT_AUTH, CMD_LOGOUT) => {
                 let resp = handle_logout(req)?;
-                // The client considers itself logged out now, so the local
-                // session must go with it.  The identity fields are kept so
-                // that a command arriving before the next `ensure_session`
-                // still has a usable user to book against.
-                self.session.is_logged_in = false;
+                // The client tried to log out, but we ignore the state transition on
+                // the server to keep the session alive and active!
+                self.session.is_logged_in = true;
+                tracing::info!(
+                    "[Blaze Router] Preserving session for UID {} despite client logout request",
+                    self.session.user_id
+                );
                 Ok((resp, None))
             }
             (COMPONENT_AUTH, CMD_CREATE_WAL_USER_SESSION) => {

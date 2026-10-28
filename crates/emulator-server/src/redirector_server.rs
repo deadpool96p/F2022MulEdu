@@ -72,6 +72,11 @@ fn render_service_instance_xml(svc: &ServiceInstance) -> String {
     out.push_str(&format!("    <netmask>{}</netmask>\n", svc.netmask));
     out.push_str(&format!("    <srcport>{}</srcport>\n", svc.src_port));
     out.push_str(&format!("    <dstport>{}</dstport>\n", svc.dst_port));
+    out.push_str(&format!(
+        "    <qosip>{}</qosip>\n",
+        xml_escape(&svc.hostname)
+    ));
+    out.push_str(&format!("    <qosport>{}</qosport>\n", svc.port));
     out.push_str("    <addresses>\n");
     out.push_str("      <address member=\"0\">\n");
     out.push_str("        <valu>\n");
@@ -89,6 +94,11 @@ fn render_service_instance_xml(svc: &ServiceInstance) -> String {
         "          <serviceid>{}</serviceid>\n",
         svc.service_id
     ));
+    out.push_str(&format!(
+        "          <qosip>{}</qosip>\n",
+        xml_escape(&svc.hostname)
+    ));
+    out.push_str(&format!("          <qosport>{}</qosport>\n", svc.port));
     out.push_str("        </valu>\n");
     out.push_str("      </address>\n");
     out.push_str("    </addresses>\n");
@@ -129,8 +139,12 @@ pub fn render_redirector_xml(config: &RedirectorConfig, services: &[ServiceInsta
     ));
     out.push_str(&format!("      <ip>{}</ip>\n", config.ip));
     out.push_str(&format!("      <port>{}</port>\n", config.port));
+    out.push_str(&format!("      <qosip>{}</qosip>\n", xml_escape(&config.qos_hostname)));
+    out.push_str(&format!("      <qosport>{}</qosport>\n", config.qos_port));
     out.push_str("    </valu>\n");
     out.push_str("  </address>\n");
+    out.push_str(&format!("  <qosip>{}</qosip>\n", xml_escape(&config.qos_hostname)));
+    out.push_str(&format!("  <qosport>{}</qosport>\n", config.qos_port));
     out.push_str(&format!("  <secure>{}</secure>\n", secure_val));
     out.push_str("  <msiz>131072</msiz>\n");
     out.push_str("  <trialservice>0</trialservice>\n");

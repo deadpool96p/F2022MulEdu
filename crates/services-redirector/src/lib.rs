@@ -40,7 +40,7 @@ pub const QOS_SERVICE_NAME: &str = "qosapi";
 /// The host is only used by the client to build the URL and the SNI -- the
 /// emulator's `:443` sink answers the QoS paths regardless of the `Host`
 /// header -- and the shim's `getaddrinfo` hook keeps the name local.
-pub const DEFAULT_QOS_HOSTNAME: &str = "spring18.gosredirector.ea.com";
+pub const DEFAULT_QOS_HOSTNAME: &str = "qos.ea.com";
 
 /// The default port the QoS HTTP service is advertised under.
 pub const DEFAULT_QOS_PORT: u16 = 443;
