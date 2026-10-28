@@ -74,7 +74,7 @@ fn render_service_instance_xml(svc: &ServiceInstance) -> String {
     out.push_str(&format!("    <dstport>{}</dstport>\n", svc.dst_port));
     out.push_str(&format!(
         "    <qosip>{}</qosip>\n",
-        xml_escape(&svc.hostname)
+        svc.ip
     ));
     out.push_str(&format!("    <qosport>{}</qosport>\n", svc.port));
     out.push_str("    <addresses>\n");
