@@ -59,6 +59,9 @@ target_link_libraries(seamless_fifa PRIVATE
     dwmapi
     user32
     kernel32
+    crypt32
+    bcrypt
+    psapi
 )
 
 target_link_options(seamless_fifa PRIVATE -static -static-libgcc -static-libstdc++)

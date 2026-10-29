@@ -77,8 +77,9 @@ To ensure the game client runs smoothly without waiting on unresponsive EA serve
 
 | Traffic Class | Identification Criteria | Handling Action |
 |---|---|---|
-| **Game UDP (Send)** | Socket == `g_game_socket` OR destination port == `3659` (or `3658`–`3665`) | **Reroute**: Wrap with Seamless Envelope and send to `seamless-relay` UDP endpoint. |
+| **Game UDP (Send)** | Socket == `g_game_socket` OR destination port == `3659` (or `3658`–`3665`) | **Reroute**: If packet already has `PROTOCOL_MAGIC` ("SF22") or destination is relay server, pass through directly to avoid double-wrapping; otherwise wrap with Seamless Envelope and send to `seamless-relay` UDP endpoint. |
 | **Game UDP (Recv)** | Socket == `g_game_socket` AND sender == `seamless-relay` | **Process**: Strip Seamless Envelope, verify room token, synthesize remote peer `sockaddr_in`, and pass inner payload to DirtySDK. |
+| **Anadius Crack TCP** | Port 3216 (LSX TCP socket) | **Rewrite**: In-memory response sanitization replaces `"shutdown"` with `"running_"`, `"EOS"` with `"OK_"`, and `"offline"` with `"online_"`, preventing connection teardown and exit. |
 | **EA Telemetry (TCP)** | Destination port 443/80/8080 OR destination host `*.data.ea.com`, `*.ea.com` | **Silent Drop**: Return `SOCKET_ERROR` with `WSASetLastError(WSAECONNREFUSED)` or simulate an instant TCP close so threads do not block. |
 | **Blaze / QoS (TCP/UDP)** | Ports 42127, 42128, 42230, 17498 | **Intercept / Bypass**: Drop or acknowledge locally; game stays in offline mode. |
 | **Localhost / Control** | Port 42129 (Internal overlay / IPC) | **Passthrough**: Allow standard localhost communication for in-game overlay. |

@@ -61,5 +61,10 @@ crates/emulator-server/*.bin
 # facts are documented in docs/BLAZE_FIRE2_HEAT2_PROTOCOL.md instead.
 /blaze_schema_strings.txt
 
+# Local logs & crash dumps
+launcher_log.txt
+crash_dump.txt
+seamless_fifa.log
+
 # Local Claude Code tooling inventory
 /SKILLS_PLUGINS_LIST.md

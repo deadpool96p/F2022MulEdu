@@ -10,6 +10,10 @@ description = "Minimal Blaze Authentication Server for FIFA 22 Seamless Co-op"
 blaze-core = { path = "../blaze-core" }
 blaze-tdf = { path = "../blaze-tdf" }
 tokio = { version = "1", features = ["full"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "logging"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+rustls-pki-types = "1"
 bytes = "1.5"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
