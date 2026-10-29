@@ -77,6 +77,10 @@ bool InjectDll(HANDLE hProcess, const std::wstring& dllPath) {
 int main(int argc, char* argv[]) {
     PrintBanner();
 
+    // Set Steam Environment to Spacewar (AppID 480) for overlay & friend invitations
+    SetEnvironmentVariableW(L"SteamAppId", L"480");
+    SetEnvironmentVariableW(L"SteamGameId", L"480");
+
     // Determine current directory
     wchar_t currentDirBuf[MAX_PATH];
     GetCurrentDirectoryW(MAX_PATH, currentDirBuf);
@@ -89,6 +93,7 @@ int main(int argc, char* argv[]) {
     std::cout << "[Config] Session Room : " << cfg.session_password << "\n";
     std::cout << "[Config] Peer Role    : " << cfg.role << "\n";
     std::cout << "[Config] In-Game HUD  : " << (cfg.enable_overlay ? "ENABLED" : "DISABLED") << "\n";
+    std::cout << "[Steam]  AppID        : 480 (Spacewar P2P & Invites)\n";
     std::cout << "------------------------------------------------------------\n";
 
     // Locate FIFA22.exe
@@ -98,8 +103,8 @@ int main(int argc, char* argv[]) {
     }
 
     if (!fs::exists(exePath)) {
-        // Fallback to default G:\Games\FIFA 22\FIFA22.exe if local not found
-        fs::path fallback(L"G:\\Games\\FIFA 22\\FIFA22.exe");
+        // Fallback to default J:\Games\FIFA 22\FIFA22.exe if local not found
+        fs::path fallback(L"J:\\Games\\FIFA 22\\FIFA22.exe");
         if (fs::exists(fallback)) {
             exePath = fallback;
         } else {

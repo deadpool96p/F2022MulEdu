@@ -17,3 +17,4 @@ target_link_libraries(FIFA22_Seamless PRIVATE
 set_target_properties(FIFA22_Seamless PROPERTIES
     OUTPUT_NAME "FIFA22_Seamless"
 )
+

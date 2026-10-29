@@ -118,3 +118,4 @@ pub fn hash_password(password: &str) -> [u8; 32] {
     hasher.update(password.as_bytes());
     *hasher.finalize().as_bytes()
 }
+

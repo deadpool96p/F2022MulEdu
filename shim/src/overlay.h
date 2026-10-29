@@ -21,3 +21,4 @@ SeamlessHudState GetHudState();
 
 bool InstallDxgiOverlayHooks();
 void RemoveDxgiOverlayHooks();
+
