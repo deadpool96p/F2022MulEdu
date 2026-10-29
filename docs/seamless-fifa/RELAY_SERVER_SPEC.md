@@ -141,3 +141,4 @@ pub struct RelayState {
 ```
 
 The relay uses Tokio's multi-threaded runtime with an asynchronous UDP socket (`tokio::net::UdpSocket`). All room operations use `DashMap` for concurrent, lock-free lookups across all worker threads.
+

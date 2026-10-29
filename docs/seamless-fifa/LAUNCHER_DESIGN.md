@@ -180,3 +180,4 @@ Once injected, `seamless_fifa.dll` renders a minimal, non-intrusive status widge
 * **Peer Info**: Shows remote player username and role (`Host` or `Guest`).
 * **Telemetry**: Real-time Round Trip Time (e.g. `Ping: 18ms`) and Packet Loss rate.
 * **Match Status**: Displays `LOCKSTEP: SYNCED` when the DirtySDK match frame loop is active.
+

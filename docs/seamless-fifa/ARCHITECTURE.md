@@ -136,3 +136,4 @@ sequenceDiagram
    - Implement process creation, remote thread injection, and `seamless.ini` configuration parser.
 5. **Phase 5: In-Game Verification & End-to-End Playtesting**
    - Test room pairing, packet delivery latency, match kickoff lockstep synchronization, and overlay telemetry.
+

@@ -164,3 +164,4 @@ A critical design requirement is: **How do we identify and match sessions withou
      5. It returns the length of the *inner* payload to DirtySDK.
 
 Because DirtySDK sees only its exact, original packet format, **the game's encryption, lockstep timestamps, and CRC checksums remain 100% valid and unbroken.**
+
