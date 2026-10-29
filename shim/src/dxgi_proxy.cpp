@@ -91,3 +91,4 @@ HRESULT WINAPI DXGID3D10RegisterLayers(const void* pLayers, UINT NumLayers) {
 }
 
 }
+

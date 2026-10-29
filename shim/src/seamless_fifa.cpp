@@ -424,6 +424,90 @@ static LONG WINAPI CustomCrashHandler(EXCEPTION_POINTERS* pExceptionInfo) {
 }
 
 // -----------------------------------------------------------------------------
+// Offline & Server Status Bypass Memory Patches
+// -----------------------------------------------------------------------------
+static bool SafeMemoryPatch(uintptr_t address, const uint8_t* patch_bytes, size_t patch_len) {
+    DWORD oldProtect = 0;
+    if (VirtualProtect(reinterpret_cast<LPVOID>(address), patch_len, PAGE_EXECUTE_READWRITE, &oldProtect)) {
+        std::memcpy(reinterpret_cast<void*>(address), patch_bytes, patch_len);
+        VirtualProtect(reinterpret_cast<LPVOID>(address), patch_len, oldProtect, &oldProtect);
+        FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<LPCVOID>(address), patch_len);
+        return true;
+    }
+    return false;
+}
+
+static void PatchFifaExe() {
+    static std::atomic<bool> s_done{false};
+    if (s_done.load(std::memory_order_relaxed)) return;
+
+    HMODULE hExe = GetModuleHandleW(NULL);
+    if (!hExe) return;
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(hExe);
+
+    // Target 4: RVA 0x27E2C72 - Coerce failure return (mov eax, 1) -> (mov eax, 0)
+    uint8_t mov_zero[5] = {0xB8, 0x00, 0x00, 0x00, 0x00};
+    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2C72), mov_zero, 5);
+
+    // Target 5: RVA 0x27E2C79 - Coerce failure return (mov eax, -1) -> (mov eax, 0)
+    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2C79), mov_zero, 5);
+
+    // Target 6: RVA 0x27E2CC3 - Coerce error cleanup return (mov eax, esi) -> (xor eax, eax)
+    uint8_t xor_eax[2] = {0x31, 0xC0};
+    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2CC3), xor_eax, 2);
+
+    // Target 7: RVA 0x27E2B90 - NOP out conditional jump on sub-call error (0F 85 B1 00 00 00 -> 6x NOP)
+    uint8_t nop6[6] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
+    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2B90), nop6, 6);
+
+    // Target 8: RVA 0x4D89F4C - Suppress FifaOnline::ServerLocGetMsg popup message dispatch (FF 50 38 -> 90 90 90)
+    uint8_t nop3[3] = {0x90, 0x90, 0x90};
+    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x4D89F4C), nop3, 3);
+
+    LogShim("[Patch] Applied FIFA22.exe server status & popup bypass patches.");
+    s_done.store(true, std::memory_order_relaxed);
+}
+
+static bool PatchCardsDll() {
+    static std::atomic<bool> s_done{false};
+    if (s_done.load(std::memory_order_relaxed)) return true;
+
+    HMODULE hCards = GetModuleHandleW(L"CardsDLL_Win64_retail.dll");
+    if (!hCards) return false;
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(hCards);
+
+    // Target 1: RVA 0x4213B - NOP out conditional failure jump (74 17 -> 90 90)
+    uint8_t nop2[2] = {0x90, 0x90};
+    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x4213B), nop2, 2);
+
+    // Target 2: RVA 0x42154 - Redirect failure path entry to ONLINE dispatcher (83 E9 6F -> EB E7 90)
+    uint8_t jmp_online[3] = {0xEB, 0xE7, 0x90}; // jmp 0x4213D (status 2 = ONLINE); nop
+    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x42154), jmp_online, 3);
+
+    // Target 3: RVA 0x421C6 - Suppress CARDS_CB_ERR_SERVICE_UNAVAILABLE dialog call (FF 50 20 -> 90 90 90)
+    uint8_t nop3[3] = {0x90, 0x90, 0x90};
+    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x421C6), nop3, 3);
+
+    LogShim("[Patch] Applied CardsDLL_Win64_retail.dll online state & error suppression patches.");
+    s_done.store(true, std::memory_order_relaxed);
+    return true;
+}
+
+static DWORD WINAPI PatchWorkerThread(LPVOID) {
+    PatchFifaExe();
+    PatchCardsDll();
+
+    for (int i = 0; i < 60; ++i) {
+        Sleep(500);
+        PatchFifaExe();
+        if (PatchCardsDll()) {
+            break;
+        }
+    }
+    return 0;
+}
+
+// -----------------------------------------------------------------------------
 // Safe Asynchronous Initialization Thread (Avoids Loader Lock Deadlock)
 // -----------------------------------------------------------------------------
 static DWORD WINAPI SeamlessInitThread(LPVOID lpParam) {
@@ -487,6 +571,10 @@ static DWORD WINAPI SeamlessInitThread(LPVOID lpParam) {
         // Spawn background heartbeat thread
         HANDLE hHeartbeat = CreateThread(nullptr, 0, HeartbeatWorker, nullptr, 0, nullptr);
         if (hHeartbeat) CloseHandle(hHeartbeat);
+
+        // Spawn background memory patcher thread for server status & popup bypass
+        HANDLE hPatcher = CreateThread(nullptr, 0, PatchWorkerThread, nullptr, 0, nullptr);
+        if (hPatcher) CloseHandle(hPatcher);
     }
 
     LogShim("Initialization thread finished successfully.");
