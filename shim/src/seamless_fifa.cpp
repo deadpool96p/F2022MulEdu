@@ -424,7 +424,7 @@ static LONG WINAPI CustomCrashHandler(EXCEPTION_POINTERS* pExceptionInfo) {
 }
 
 // -----------------------------------------------------------------------------
-// Offline & Server Status Bypass Memory Patches
+// Offline & Server Status Bypass Memory Patches & Continuous Enforcer
 // -----------------------------------------------------------------------------
 static bool SafeMemoryPatch(uintptr_t address, const uint8_t* patch_bytes, size_t patch_len) {
     DWORD oldProtect = 0;
@@ -437,73 +437,135 @@ static bool SafeMemoryPatch(uintptr_t address, const uint8_t* patch_bytes, size_
     return false;
 }
 
-static void PatchFifaExe() {
-    static std::atomic<bool> s_done{false};
-    if (s_done.load(std::memory_order_relaxed)) return;
+static std::string BytesToHex(const uint8_t* ptr, size_t len) {
+    char buf[64];
+    std::string s;
+    for (size_t i = 0; i < len; ++i) {
+        std::snprintf(buf, sizeof(buf), "%02X ", ptr[i]);
+        s += buf;
+    }
+    if (!s.empty()) s.pop_back();
+    return s;
+}
 
+static void DumpPatchedMemory(const char* context) {
     HMODULE hExe = GetModuleHandleW(NULL);
     if (!hExe) return;
     const uint8_t* base = reinterpret_cast<const uint8_t*>(hExe);
 
-    // Target 4: RVA 0x27E2C72 - Coerce failure return (mov eax, 1) -> (mov eax, 0)
-    uint8_t mov_zero[5] = {0xB8, 0x00, 0x00, 0x00, 0x00};
-    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2C72), mov_zero, 5);
+    const uint8_t* b4D89F4C = base + 0x4D89F4C;
+    const uint8_t* b27E2C72 = base + 0x27E2C72;
+    const uint8_t* b27E2C79 = base + 0x27E2C79;
+    const uint8_t* b27E2CC3 = base + 0x27E2CC3;
+    const uint8_t* b27E2B90 = base + 0x27E2B90;
 
-    // Target 5: RVA 0x27E2C79 - Coerce failure return (mov eax, -1) -> (mov eax, 0)
-    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2C79), mov_zero, 5);
+    std::string dump = "[MemoryDump: " + std::string(context) + "] ";
+    dump += "0x144D89F4C=[" + BytesToHex(b4D89F4C, 3) + "] (expected 90 90 90) ";
+    dump += "0x1427E2C72=[" + BytesToHex(b27E2C72, 5) + "] (expected B8 00 00 00 00) ";
+    dump += "0x1427E2C79=[" + BytesToHex(b27E2C79, 5) + "] ";
+    dump += "0x1427E2CC3=[" + BytesToHex(b27E2CC3, 2) + "] ";
+    dump += "0x1427E2B90=[" + BytesToHex(b27E2B90, 6) + "]";
 
-    // Target 6: RVA 0x27E2CC3 - Coerce error cleanup return (mov eax, esi) -> (xor eax, eax)
-    uint8_t xor_eax[2] = {0x31, 0xC0};
-    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2CC3), xor_eax, 2);
+    HMODULE hCards = GetModuleHandleW(L"CardsDLL_Win64_retail.dll");
+    if (hCards) {
+        const uint8_t* cbase = reinterpret_cast<const uint8_t*>(hCards);
+        dump += " | CardsDLL at 0x" + std::to_string((uintptr_t)hCards);
+        dump += " 0x4213B=[" + BytesToHex(cbase + 0x4213B, 2) + "] (expected 90 90)";
+        dump += " 0x42154=[" + BytesToHex(cbase + 0x42154, 3) + "] (expected EB E7 90)";
+        dump += " 0x421C6=[" + BytesToHex(cbase + 0x421C6, 3) + "] (expected 90 90 90)";
+    } else {
+        dump += " | CardsDLL: NOT LOADED";
+    }
 
-    // Target 7: RVA 0x27E2B90 - NOP out conditional jump on sub-call error (0F 85 B1 00 00 00 -> 6x NOP)
-    uint8_t nop6[6] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
-    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2B90), nop6, 6);
-
-    // Target 8: RVA 0x4D89F4C - Suppress FifaOnline::ServerLocGetMsg popup message dispatch (FF 50 38 -> 90 90 90)
-    uint8_t nop3[3] = {0x90, 0x90, 0x90};
-    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x4D89F4C), nop3, 3);
-
-    LogShim("[Patch] Applied FIFA22.exe server status & popup bypass patches.");
-    s_done.store(true, std::memory_order_relaxed);
+    LogShim(dump);
 }
 
-static bool PatchCardsDll() {
-    static std::atomic<bool> s_done{false};
-    if (s_done.load(std::memory_order_relaxed)) return true;
+static bool ApplyFifaExePatches() {
+    HMODULE hExe = GetModuleHandleW(NULL);
+    if (!hExe) return false;
+    const uint8_t* base = reinterpret_cast<const uint8_t*>(hExe);
 
+    uint8_t mov_zero[5] = {0xB8, 0x00, 0x00, 0x00, 0x00};
+    uint8_t xor_eax[2] = {0x31, 0xC0};
+    uint8_t nop6[6] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
+    uint8_t nop3[3] = {0x90, 0x90, 0x90};
+
+    bool ok = true;
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2C72), mov_zero, 5);
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2C79), mov_zero, 5);
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2CC3), xor_eax, 2);
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2B90), nop6, 6);
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x4D89F4C), nop3, 3);
+    return ok;
+}
+
+static bool ApplyCardsDllPatches() {
     HMODULE hCards = GetModuleHandleW(L"CardsDLL_Win64_retail.dll");
     if (!hCards) return false;
     const uint8_t* base = reinterpret_cast<const uint8_t*>(hCards);
 
-    // Target 1: RVA 0x4213B - NOP out conditional failure jump (74 17 -> 90 90)
     uint8_t nop2[2] = {0x90, 0x90};
-    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x4213B), nop2, 2);
-
-    // Target 2: RVA 0x42154 - Redirect failure path entry to ONLINE dispatcher (83 E9 6F -> EB E7 90)
     uint8_t jmp_online[3] = {0xEB, 0xE7, 0x90}; // jmp 0x4213D (status 2 = ONLINE); nop
-    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x42154), jmp_online, 3);
-
-    // Target 3: RVA 0x421C6 - Suppress CARDS_CB_ERR_SERVICE_UNAVAILABLE dialog call (FF 50 20 -> 90 90 90)
     uint8_t nop3[3] = {0x90, 0x90, 0x90};
-    SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x421C6), nop3, 3);
 
-    LogShim("[Patch] Applied CardsDLL_Win64_retail.dll online state & error suppression patches.");
-    s_done.store(true, std::memory_order_relaxed);
-    return true;
+    bool ok = true;
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x4213B), nop2, 2);
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x42154), jmp_online, 3);
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x421C6), nop3, 3);
+    return ok;
 }
 
 static DWORD WINAPI PatchWorkerThread(LPVOID) {
-    PatchFifaExe();
-    PatchCardsDll();
+    LogShim("[PatchWorker] Background patcher thread started. Applying initial FIFA22.exe patches...");
+    ApplyFifaExePatches();
+    DumpPatchedMemory("InitialPostPatch");
 
-    for (int i = 0; i < 60; ++i) {
-        Sleep(500);
-        PatchFifaExe();
-        if (PatchCardsDll()) {
-            break;
+    bool cards_patched = false;
+    uint32_t iteration = 0;
+
+    while (g_running.load(std::memory_order_relaxed)) {
+        Sleep(100);
+        iteration++;
+
+        HMODULE hExe = GetModuleHandleW(NULL);
+        if (hExe) {
+            const uint8_t* base = reinterpret_cast<const uint8_t*>(hExe);
+            const uint8_t* b4D89F4C = base + 0x4D89F4C;
+            const uint8_t* b27E2C72 = base + 0x27E2C72;
+
+            // Check if patched bytes reverted
+            if (b4D89F4C[0] != 0x90 || b4D89F4C[1] != 0x90 || b4D89F4C[2] != 0x90 ||
+                b27E2C72[0] != 0xB8 || b27E2C72[1] != 0x00) {
+                LogShim("[PatchWorker ALERT] Detected byte revert in FIFA22.exe! Re-applying patches...");
+                ApplyFifaExePatches();
+                DumpPatchedMemory("RevertedReapplied");
+            }
+        }
+
+        HMODULE hCards = GetModuleHandleW(L"CardsDLL_Win64_retail.dll");
+        if (hCards) {
+            const uint8_t* cbase = reinterpret_cast<const uint8_t*>(hCards);
+            const uint8_t* c4213B = cbase + 0x4213B;
+            const uint8_t* c42154 = cbase + 0x42154;
+
+            if (!cards_patched) {
+                LogShim("[PatchWorker] CardsDLL_Win64_retail.dll detected! Applying patches...");
+                ApplyCardsDllPatches();
+                cards_patched = true;
+                DumpPatchedMemory("CardsLoadedPostPatch");
+            } else if (c4213B[0] != 0x90 || c42154[0] != 0xEB) {
+                LogShim("[PatchWorker ALERT] Detected byte revert in CardsDLL! Re-applying patches...");
+                ApplyCardsDllPatches();
+                DumpPatchedMemory("CardsRevertedReapplied");
+            }
+        }
+
+        // Dump memory periodically every 10 seconds (100 * 100ms) to track state
+        if (iteration % 100 == 0) {
+            DumpPatchedMemory("HeartbeatDump");
         }
     }
+
     return 0;
 }
 
