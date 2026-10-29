@@ -25,7 +25,7 @@ static PFN_DXGID3D10RegisterLayers g_pfn_DXGID3D10RegisterLayers = nullptr;
 bool InitDXGIProxy() {
     if (g_real_dxgi) return true;
 
-    // Load dxgi_org.dll from game root
+    // 1. Load real DXGI backend (dxgi_org.dll from game directory, or System32\dxgi.dll)
     g_real_dxgi = LoadLibraryW(L"dxgi_org.dll");
     if (!g_real_dxgi) {
         wchar_t sys_path[MAX_PATH];
@@ -45,7 +45,26 @@ bool InitDXGIProxy() {
     g_pfn_DXGID3D10CreateDevice = (PFN_DXGID3D10CreateDevice)GetProcAddress(g_real_dxgi, "DXGID3D10CreateDevice");
     g_pfn_DXGID3D10RegisterLayers = (PFN_DXGID3D10RegisterLayers)GetProcAddress(g_real_dxgi, "DXGID3D10RegisterLayers");
 
+    // 2. Explicitly load seamless_fifa.dll (Task 1)
+    static HMODULE hSeamless = nullptr;
+    if (!hSeamless) {
+        hSeamless = LoadLibraryW(L"seamless_fifa.dll");
+        if (hSeamless) {
+            OutputDebugStringA("[SF22-DXGI] Loaded seamless_fifa.dll successfully.\n");
+        } else {
+            OutputDebugStringA("[SF22-DXGI ERROR] Failed to load seamless_fifa.dll!\n");
+        }
+    }
+
     return true;
+}
+
+BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
+    if (fdwReason == DLL_PROCESS_ATTACH) {
+        DisableThreadLibraryCalls(hinstDLL);
+        InitDXGIProxy();
+    }
+    return TRUE;
 }
 
 extern "C" {
@@ -91,4 +110,3 @@ HRESULT WINAPI DXGID3D10RegisterLayers(const void* pLayers, UINT NumLayers) {
 }
 
 }
-
