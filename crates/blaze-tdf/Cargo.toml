@@ -1,0 +1,12 @@
+[package]
+name = "blaze-tdf"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Tagged Data Format (TDF) serializer and deserializer for EA Blaze Protocol"
+
+[dependencies]
+bytes = "1.5"
+
+[dev-dependencies]

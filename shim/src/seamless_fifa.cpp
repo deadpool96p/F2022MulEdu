@@ -247,10 +247,27 @@ static __declspec(noinline) int WSAAPI Hooked_connect(SOCKET s, const struct soc
     if (name && namelen >= static_cast<int>(sizeof(sockaddr_in)) && name->sa_family == AF_INET) {
         const auto* sin = reinterpret_cast<const sockaddr_in*>(name);
         uint16_t port = ntohs(sin->sin_port);
+        char ip[INET_ADDRSTRLEN] = {0};
+        inet_ntop(AF_INET, &sin->sin_addr, ip, sizeof(ip));
+        std::string ip_str(ip);
 
+        // Intercept Anadius LSX socket (port 3216)
         if (port == 3216 || (port >= 3210 && port <= 3220)) {
             g_lsx_socket.store(s);
-            LogShim("[Winsock TCP] Intercepted connect() to Anadius LSX port " + std::to_string(port) + " on socket " + std::to_string(s));
+            LogShim("[Winsock TCP] Intercepted connect() to Anadius LSX on " + ip_str + ":" + std::to_string(port) + " (Socket " + std::to_string(s) + ")");
+        }
+
+        // Redirect Blaze / EA Online TCP traffic to local Blaze Auth Server (127.0.0.1:42128)
+        if (port == 42128 || port == 42127 || port == 10041 || (port == 443 && ip_str != "127.0.0.1")) {
+            sockaddr_in redirected_addr{};
+            redirected_addr.sin_family = AF_INET;
+            redirected_addr.sin_port = htons(42128);
+            inet_pton(AF_INET, "127.0.0.1", &redirected_addr.sin_addr);
+
+            LogShim("[Winsock TCP REDIRECT] Redirecting connect() from " + ip_str + ":" + std::to_string(port) +
+                    " -> 127.0.0.1:42128 on socket " + std::to_string(s));
+
+            return g_orig_connect(s, reinterpret_cast<const struct sockaddr*>(&redirected_addr), sizeof(redirected_addr));
         }
     }
     return g_orig_connect(s, name, namelen);

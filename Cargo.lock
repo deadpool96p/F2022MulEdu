@@ -87,6 +87,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze-auth-server"
+version = "0.1.0"
+dependencies = [
+ "blaze-core",
+ "blaze-tdf",
+ "bytes",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "blaze-core"
+version = "0.1.0"
+dependencies = [
+ "blaze-tdf",
+ "bytes",
+ "tracing",
+]
+
+[[package]]
+name = "blaze-tdf"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+]
+
+[[package]]
 name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

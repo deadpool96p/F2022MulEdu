@@ -1,0 +1,15 @@
+[package]
+name = "blaze-auth-server"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Minimal Blaze Authentication Server for FIFA 22 Seamless Co-op"
+
+[dependencies]
+blaze-core = { path = "../blaze-core" }
+blaze-tdf = { path = "../blaze-tdf" }
+tokio = { version = "1", features = ["full"] }
+bytes = "1.5"
+tracing = "0.1"
+tracing-subscriber = "0.3"

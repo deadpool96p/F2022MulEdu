@@ -1,6 +1,14 @@
 [workspace]
+resolver = "2"
 members = [
     "crates/seamless-relay",
+    "crates/blaze-tdf",
+    "crates/blaze-core",
+    "crates/blaze-auth-server",
 ]
-resolver = "2"
 
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["FIFA 22 Multiplayer Emulator Project"]
+license = "MIT OR Apache-2.0"
