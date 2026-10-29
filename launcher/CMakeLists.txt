@@ -14,6 +14,8 @@ target_link_libraries(FIFA22_Seamless PRIVATE
     user32
 )
 
+target_link_options(FIFA22_Seamless PRIVATE -static -static-libgcc -static-libstdc++)
+
 set_target_properties(FIFA22_Seamless PROPERTIES
     OUTPUT_NAME "FIFA22_Seamless"
 )

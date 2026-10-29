@@ -61,6 +61,8 @@ target_link_libraries(seamless_fifa PRIVATE
     kernel32
 )
 
+target_link_options(seamless_fifa PRIVATE -static -static-libgcc -static-libstdc++)
+
 set_target_properties(seamless_fifa PROPERTIES
     OUTPUT_NAME "seamless_fifa"
     PREFIX ""

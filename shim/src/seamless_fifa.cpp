@@ -46,7 +46,7 @@ struct Config {
     uint16_t relay_port = 27015;
     std::string session_password = "fifa_coop_room";
     std::string role = "host";
-    bool enable_overlay = true;
+    bool enable_overlay = false; // Temporarily disabled for isolation test
 };
 
 static Config g_config;
@@ -63,7 +63,23 @@ static std::atomic<bool> g_is_connected{false};
 static std::atomic<bool> g_is_peer_connected{false};
 static std::atomic<bool> g_running{true};
 
-static std::thread g_heartbeat_thread;
+static std::ofstream g_shim_log;
+
+static void LogShim(const std::string& msg) {
+    OutputDebugStringA(("[SF22] " + msg + "\n").c_str());
+    if (g_shim_log.is_open()) {
+        auto now = std::chrono::system_clock::now();
+        auto time_t_now = std::chrono::system_clock::to_time_t(now);
+        std::tm tm_buf{};
+        localtime_s(&tm_buf, &time_t_now);
+
+        char time_str[64];
+        std::snprintf(time_str, sizeof(time_str), "[%02d:%02d:%02d] ",
+                      tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
+        g_shim_log << time_str << msg << "\n";
+        g_shim_log.flush();
+    }
+}
 
 // -----------------------------------------------------------------------------
 // Helper: Load Configuration & Compute Room Hash
@@ -99,7 +115,6 @@ static void LoadConfig() {
         }
     }
 
-    // Set peer role default
     if (g_config.role == "guest") {
         g_peer_id.store(1);
     } else {
@@ -120,13 +135,8 @@ static void LoadConfig() {
     g_relay_addr.sin_port = htons(g_config.relay_port);
     inet_pton(AF_INET, g_config.relay_host.c_str(), &g_relay_addr.sin_addr);
 
-    // Initialize HUD state
-    SeamlessHudState hud{};
-    hud.room_name = g_config.session_password;
-    hud.status_text = "Waiting for Game Socket...";
-    hud.role_text = (g_peer_id.load() == 0) ? "Host (Peer 0)" : "Guest (Peer 1)";
-    hud.peer_id = g_peer_id.load();
-    UpdateHudState(hud);
+    LogShim("Config loaded: relay=" + g_config.relay_host + ":" + std::to_string(g_config.relay_port) +
+            ", room=" + g_config.session_password + ", role=" + g_config.role);
 }
 
 // -----------------------------------------------------------------------------
@@ -173,14 +183,16 @@ static void SendHandshakeInit(SOCKET s) {
 
     sendto(s, reinterpret_cast<const char*>(pkt.data()), static_cast<int>(pkt.size()), 0,
            reinterpret_cast<const sockaddr*>(&g_relay_addr), sizeof(g_relay_addr));
+    LogShim("Sent HANDSHAKE_INIT to relay server (" + g_config.relay_host + ":" + std::to_string(g_config.relay_port) + ")");
 }
 
 // -----------------------------------------------------------------------------
 // Heartbeat Worker Thread
 // -----------------------------------------------------------------------------
-static void HeartbeatWorker() {
+static DWORD WINAPI HeartbeatWorker(LPVOID) {
+    LogShim("Heartbeat worker thread started.");
     while (g_running.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        Sleep(1000);
 
         SOCKET s = g_game_socket.load();
         if (s != INVALID_SOCKET) {
@@ -198,7 +210,6 @@ static void HeartbeatWorker() {
                    reinterpret_cast<const sockaddr*>(&g_relay_addr), sizeof(g_relay_addr));
         }
 
-        // Periodically refresh HUD
         SeamlessHudState hud = GetHudState();
         hud.rtt_ms = g_rtt_ms.load();
         hud.packets_sent = g_packets_sent.load();
@@ -209,6 +220,8 @@ static void HeartbeatWorker() {
         hud.role_text = (hud.peer_id == 0) ? "Host (Peer 0)" : "Guest (Peer 1)";
         UpdateHudState(hud);
     }
+    LogShim("Heartbeat worker thread exiting.");
+    return 0;
 }
 
 // -----------------------------------------------------------------------------
@@ -230,6 +243,7 @@ static __declspec(noinline) int WSAAPI Hooked_bind(SOCKET s, const struct sockad
         // Detect DirtySDK CommUDP match socket (port 3659 or range 3658-3665)
         if (port == 3659 || (port >= 3658 && port <= 3665)) {
             g_game_socket.store(s);
+            LogShim("[WinSock] Detected DirtySDK CommUDP bind on port " + std::to_string(port) + " (Socket: " + std::to_string(s) + ")");
 
             int bufsize = 65536;
             setsockopt(s, SOL_SOCKET, SO_RCVBUF, reinterpret_cast<const char*>(&bufsize), sizeof(bufsize));
@@ -239,7 +253,6 @@ static __declspec(noinline) int WSAAPI Hooked_bind(SOCKET s, const struct sockad
             hud.status_text = "Contacting Relay Server...";
             UpdateHudState(hud);
 
-            // Announce presence to relay server
             SendHandshakeInit(s);
         }
     }
@@ -269,7 +282,7 @@ static __declspec(noinline) int WSAAPI Hooked_sendto(
         return SOCKET_ERROR;
     }
 
-    // Check if this is game match UDP traffic
+    // Intercept and wrap match gameplay packets
     if (s == g_game_socket.load() || dst_port == 3659 || (dst_port >= 3658 && dst_port <= 3665)) {
         std::vector<uint8_t> envelope;
         BuildEnvelope(MessageType::GameData, g_peer_id.load(), g_seq_num.fetch_add(1),
@@ -286,7 +299,7 @@ static __declspec(noinline) int WSAAPI Hooked_sendto(
 
         if (res > 0) {
             g_packets_sent.fetch_add(1);
-            return len; // Return original length to DirtySDK
+            return len; // Return original payload length to DirtySDK
         }
         return res;
     }
@@ -328,6 +341,8 @@ static __declspec(noinline) int WSAAPI Hooked_recvfrom(
 
                         uint8_t status_byte = (payload_len > 0) ? static_cast<uint8_t>(buf[HEADER_LEN]) : 0x01;
                         g_is_peer_connected.store(status_byte == 0x02);
+                        LogShim("[Relay] Received HandshakeAck: Assigned Peer ID " + std::to_string(peer_id) +
+                                (status_byte == 0x02 ? " (Both Peers Ready)" : " (Waiting for Peer)"));
 
                         SeamlessHudState hud = GetHudState();
                         hud.is_connected = true;
@@ -337,13 +352,13 @@ static __declspec(noinline) int WSAAPI Hooked_recvfrom(
                         hud.is_peer_connected = (status_byte == 0x02);
                         UpdateHudState(hud);
 
-                        // Discard control packet from game loop, continue polling
                         continue;
                     }
 
                     if (msg_type == MessageType::PeerStatusNotify) {
                         uint8_t status_byte = (payload_len > 0) ? static_cast<uint8_t>(buf[HEADER_LEN]) : 0x00;
                         g_is_peer_connected.store(status_byte == 0x02);
+                        LogShim("[Relay] PeerStatusNotify: " + std::string(status_byte == 0x02 ? "Connected" : "Disconnected"));
 
                         SeamlessHudState hud = GetHudState();
                         hud.is_peer_connected = (status_byte == 0x02);
@@ -369,11 +384,9 @@ static __declspec(noinline) int WSAAPI Hooked_recvfrom(
                     }
 
                     if (msg_type == MessageType::GameData) {
-                        // Decapsulate: strip the 46-byte envelope and return raw DirtySDK frame
                         if (payload_len > 0 && res >= static_cast<int>(HEADER_LEN + payload_len)) {
                             std::memmove(buf, buf + HEADER_LEN, payload_len);
 
-                            // Synthesize virtual opponent socket address (127.0.0.1:3659)
                             if (from && fromlen && *fromlen >= static_cast<int>(sizeof(sockaddr_in))) {
                                 auto* out_sin = reinterpret_cast<sockaddr_in*>(from);
                                 out_sin->sin_family = AF_INET;
@@ -394,49 +407,117 @@ static __declspec(noinline) int WSAAPI Hooked_recvfrom(
     }
 }
 
+static LONG WINAPI CustomCrashHandler(EXCEPTION_POINTERS* pExceptionInfo) {
+    if (pExceptionInfo && pExceptionInfo->ExceptionRecord) {
+        char buf[512];
+        std::snprintf(buf, sizeof(buf),
+                      "[FATAL CRASH] ExceptionCode=0x%08lX Address=0x%p Flags=0x%lX",
+                      pExceptionInfo->ExceptionRecord->ExceptionCode,
+                      pExceptionInfo->ExceptionRecord->ExceptionAddress,
+                      pExceptionInfo->ExceptionRecord->ExceptionFlags);
+        OutputDebugStringA(buf);
+        std::ofstream f("crash_dump.txt", std::ios::out | std::ios::trunc);
+        f << buf << "\n";
+        f.flush();
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 // -----------------------------------------------------------------------------
-// DLL Lifetime & Hook Installation
+// Safe Asynchronous Initialization Thread (Avoids Loader Lock Deadlock)
 // -----------------------------------------------------------------------------
-static void InitializeSeamlessShim() {
+static DWORD WINAPI SeamlessInitThread(LPVOID lpParam) {
+    SetUnhandledExceptionFilter(CustomCrashHandler);
+
+    g_shim_log.open("seamless_fifa.log", std::ios::out | std::ios::trunc);
+    LogShim("============================================================");
+    LogShim("   Seamless FIFA 22 Initialization Thread Active            ");
+    LogShim("============================================================");
+
+    LogShim("[InitThread] Entering Sleep(1500)...");
+    Sleep(1500);
+    LogShim("[InitThread] Sleep(1500) completed.");
+
+    // User visibility checkpoint
+    LogShim("[InitThread] Displaying MessageBoxW...");
+    MessageBoxW(nullptr,
+                L"Seamless FIFA 22 attached to process successfully!\n\nClick OK to initialize network hooks.",
+                L"Seamless FIFA 22",
+                MB_OK | MB_ICONINFORMATION | MB_SYSTEMMODAL);
+    LogShim("[InitThread] MessageBoxW dismissed by user.");
+
     LoadConfig();
 
-    if (MH_Initialize() == MH_OK) {
+    LogShim("Initializing MinHook...");
+    MH_STATUS mh_init = MH_Initialize();
+    LogShim("MH_Initialize returned status: " + std::to_string(mh_init));
+
+    if (mh_init == MH_OK) {
         HMODULE hWs2 = GetModuleHandleW(L"ws2_32.dll");
+        if (!hWs2) {
+            hWs2 = LoadLibraryW(L"ws2_32.dll");
+        }
+
         if (hWs2) {
             void* pBind = reinterpret_cast<void*>(GetProcAddress(hWs2, "bind"));
             void* pSendto = reinterpret_cast<void*>(GetProcAddress(hWs2, "sendto"));
             void* pRecvfrom = reinterpret_cast<void*>(GetProcAddress(hWs2, "recvfrom"));
 
-            if (pBind) MH_CreateHook(pBind, reinterpret_cast<LPVOID>(&Hooked_bind), reinterpret_cast<LPVOID*>(&g_orig_bind));
-            if (pSendto) MH_CreateHook(pSendto, reinterpret_cast<LPVOID>(&Hooked_sendto), reinterpret_cast<LPVOID*>(&g_orig_sendto));
-            if (pRecvfrom) MH_CreateHook(pRecvfrom, reinterpret_cast<LPVOID>(&Hooked_recvfrom), reinterpret_cast<LPVOID*>(&g_orig_recvfrom));
+            LogShim("Target addresses: bind=0x" + std::to_string((uintptr_t)pBind) +
+                    ", sendto=0x" + std::to_string((uintptr_t)pSendto) +
+                    ", recvfrom=0x" + std::to_string((uintptr_t)pRecvfrom));
 
-            MH_EnableHook(MH_ALL_HOOKS);
+            if (pBind) {
+                MH_STATUS s = MH_CreateHook(pBind, reinterpret_cast<LPVOID>(&Hooked_bind), reinterpret_cast<LPVOID*>(&g_orig_bind));
+                LogShim("Hook bind status: " + std::to_string(s));
+            }
+            if (pSendto) {
+                MH_STATUS s = MH_CreateHook(pSendto, reinterpret_cast<LPVOID>(&Hooked_sendto), reinterpret_cast<LPVOID*>(&g_orig_sendto));
+                LogShim("Hook sendto status: " + std::to_string(s));
+            }
+            if (pRecvfrom) {
+                MH_STATUS s = MH_CreateHook(pRecvfrom, reinterpret_cast<LPVOID>(&Hooked_recvfrom), reinterpret_cast<LPVOID*>(&g_orig_recvfrom));
+                LogShim("Hook recvfrom status: " + std::to_string(s));
+            }
+
+            MH_STATUS s_all = MH_EnableHook(MH_ALL_HOOKS);
+            LogShim("MH_EnableHook(MH_ALL_HOOKS) status: " + std::to_string(s_all));
+        } else {
+            LogShim("ERROR: Failed to obtain ws2_32.dll handle!");
         }
 
+        // Overlay temporarily disabled to verify engine launch stability first
         if (g_config.enable_overlay) {
+            LogShim("Installing DXGI Overlay Hooks...");
             InstallDxgiOverlayHooks();
         }
 
-        g_heartbeat_thread = std::thread(HeartbeatWorker);
+        // Spawn background heartbeat thread
+        HANDLE hHeartbeat = CreateThread(nullptr, 0, HeartbeatWorker, nullptr, 0, nullptr);
+        if (hHeartbeat) CloseHandle(hHeartbeat);
     }
+
+    LogShim("Initialization thread finished successfully.");
+    return 0;
 }
 
-static void ShutdownSeamlessShim() {
-    g_running.store(false);
-    if (g_heartbeat_thread.joinable()) {
-        g_heartbeat_thread.join();
-    }
-    RemoveDxgiOverlayHooks();
-    MH_Uninitialize();
-}
-
+// -----------------------------------------------------------------------------
+// DllMain (Strict Minimal Loader Lock Compliance)
+// -----------------------------------------------------------------------------
 BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved) {
     if (fdwReason == DLL_PROCESS_ATTACH) {
+        SetUnhandledExceptionFilter(CustomCrashHandler);
         DisableThreadLibraryCalls(hinstDLL);
-        InitializeSeamlessShim();
+        OutputDebugStringW(L"[SF22] DllMain DLL_PROCESS_ATTACH invoked.\n");
+
+        // Spawn independent worker thread to initialize hooks outside loader lock
+        HANDLE hInit = CreateThread(nullptr, 0, SeamlessInitThread, hinstDLL, 0, nullptr);
+        if (hInit) {
+            CloseHandle(hInit);
+        }
     } else if (fdwReason == DLL_PROCESS_DETACH) {
-        ShutdownSeamlessShim();
+        g_running.store(false);
+        OutputDebugStringW(L"[SF22] DllMain DLL_PROCESS_DETACH invoked.\n");
     }
     return TRUE;
 }
