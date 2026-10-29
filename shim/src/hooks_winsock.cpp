@@ -5,6 +5,12 @@
 #include "overlay/input_hook.h"
 #include <MinHook.h>
 #include <mswsock.h>
+#ifdef _MSC_VER
+#include <intrin.h>
+#define GET_RETURN_ADDRESS() _ReturnAddress()
+#else
+#define GET_RETURN_ADDRESS() __builtin_return_address(0)
+#endif
 #include <sstream>
 #include <cstring>
 #include <string>
@@ -458,9 +464,10 @@ static __declspec(noinline) int WSAAPI Hooked_connect(SOCKET s, const struct soc
     uint16_t port = GetSocketPeerPort(s);
     if (port == 443 || port == 42128 || port == 42230 || port == 42127) {
         std::ostringstream ss;
-        ss << "[WinSock] connect(sock=" << s << ", port=" << port << ") -> res=" << res;
+        ss << "[WinSock] connect(sock=" << s << ", port=" << port << ") -> res=" << res
+           << " caller=0x" << std::hex << (uintptr_t)GET_RETURN_ADDRESS();
         if (res == SOCKET_ERROR) {
-            ss << " (WSAGetLastError=" << saved_err << ")";
+            ss << " (WSAGetLastError=" << std::dec << saved_err << ")";
         }
         LogInfo(ss.str());
     }
@@ -599,7 +606,8 @@ static __declspec(noinline) int WSAAPI Hooked_send(SOCKET s, const char *buf, in
     uint16_t port = GetSocketPeerPort(s);
     if (port == 443 || port == 42128 || port == 42230) {
         std::ostringstream ss;
-        ss << "[WinSock] send(sock=" << s << ", peer_port=" << port << ", len=" << res << ") [data: ";
+        ss << "[WinSock] send(sock=" << s << ", peer_port=" << port << ", len=" << res
+           << ") caller=0x" << std::hex << (uintptr_t)GET_RETURN_ADDRESS() << " [data: ";
         for (int i = 0; i < std::min(res, 16); ++i) {
             char hex[4];
             snprintf(hex, sizeof(hex), "%02X ", static_cast<uint8_t>(buf[i]));
@@ -678,7 +686,8 @@ static __declspec(noinline) int WSAAPI Hooked_recv(SOCKET s, char *buf, int len,
     uint16_t port = GetSocketPeerPort(s);
     if (port == 443 || port == 42128 || port == 42230) {
         std::ostringstream ss;
-        ss << "[WinSock] recv(sock=" << s << ", peer_port=" << port << ", len=" << res << ") [data: ";
+        ss << "[WinSock] recv(sock=" << s << ", peer_port=" << port << ", len=" << res
+           << ") caller=0x" << std::hex << (uintptr_t)GET_RETURN_ADDRESS() << " [data: ";
         for (int i = 0; i < std::min(res, 16); ++i) {
             char hex[4];
             snprintf(hex, sizeof(hex), "%02X ", static_cast<uint8_t>(buf[i]));

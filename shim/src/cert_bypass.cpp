@@ -381,28 +381,15 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile,
         found_total += found;
     }
 
-    HMODULE mods[1024];
-    DWORD needed = 0;
-    if (!EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &needed)) {
-        return found_total > 0;
-    }
-
-    DWORD count = needed / sizeof(HMODULE);
-    for (DWORD i = 0; i < count && i < 1024; ++i) {
-        HMODULE m = mods[i];
-        uintptr_t key = reinterpret_cast<uintptr_t>(m);
-        if (g_ca_scanned_modules.find(key) != g_ca_scanned_modules.end()) {
-            continue;
-        }
-
-        char name[MAX_PATH] = {0};
-        GetModuleFileNameA(m, name, MAX_PATH);
-
-        LogInfo("[SSL Bypass] EnumScan: module=" + std::string(name, name + strlen(name)));
+    // 2. Scan EAWebKit.dll only (do not scan external or system DLLs to prevent CPU starvation!)
+    HMODULE h_web = GetModuleHandleW(L"EAWebKit.dll");
+    if (!h_web) h_web = GetModuleHandleA("EAWebKit.dll");
+    if (h_web && g_ca_scanned_modules.find(reinterpret_cast<uintptr_t>(h_web)) ==
+                     g_ca_scanned_modules.end()) {
         bool ready = true;
-        int found = PatchCaTableInModule(m, name[0] ? name : "<module>", &ready);
+        int found = PatchCaTableInModule(h_web, "EAWebKit.dll", &ready);
         if (found > 0 && ready) {
-            g_ca_scanned_modules.insert(key);
+            g_ca_scanned_modules.insert(reinterpret_cast<uintptr_t>(h_web));
         }
         found_total += found;
     }
@@ -453,13 +440,12 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile,
       if (EnsureCaTablePatched()) {
         LogInfo("[SSL Bypass] All loaded modules' root-CA tables patched");
       }
-      // After ~4 seconds (20 ticks), the engine has fully initialized graphics and main menu.
-      // If CardsDLL has not loaded yet, safely load it in this background worker thread.
-      if (ticks == 20) {
+      // On tick 2 (~2-4 seconds after launch), ensure CardsDLL is loaded and patched.
+      if (ticks >= 2) {
         HMODULE hCards = GetModuleHandleW(L"CardsDLL_Win64_retail.dll");
         if (!hCards) hCards = GetModuleHandleA("CardsDLL_Win64_retail.dll");
         if (!hCards) {
-          LogInfo("[Memory Patch] Background worker triggering deferred LoadLibrary for CardsDLL_Win64_retail.dll");
+          LogInfo("[Memory Patch] Background worker triggering LoadLibrary for CardsDLL_Win64_retail.dll");
           hCards = LoadLibraryW(L"CardsDLL_Win64_retail.dll");
           if (hCards) {
             LogInfo("[Memory Patch] CardsDLL_Win64_retail.dll successfully loaded in background worker!");
@@ -521,7 +507,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile,
       wchar_t name[MAX_PATH] = {0};
       if (GetModuleFileNameW(h, name, MAX_PATH) > 0) {
         LogInfo("[SSL Bypass] LoadLibraryW module path: "+ std::string(name, name+wcslen(name)));
-        if (_wcsicmp(name, L"EAWebKit.dll") == 0) {
+        if (wcsstr(name, L"EAWebKit")) {
           LogInfo("[SSL Bypass] LoadLibraryW loaded EAWebKit.dll triggering CA patch");
           BinaryPatchBoringSSLVerify();
           EnsureCaTablePatched();
@@ -540,7 +526,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile,
       wchar_t name[MAX_PATH] = {0};
       if (GetModuleFileNameW(h, name, MAX_PATH) > 0) {
         LogInfo("[SSL Bypass] LoadLibraryExW module path: "+ std::string(name, name+wcslen(name)));
-        if (_wcsicmp(name, L"EAWebKit.dll") == 0) {
+        if (wcsstr(name, L"EAWebKit")) {
           LogInfo("[SSL Bypass] LoadLibraryExW loaded EAWebKit.dll triggering CA patch");
           BinaryPatchBoringSSLVerify();
           EnsureCaTablePatched();
@@ -630,6 +616,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile,
           uint8_t nop2[2] = {0x90, 0x90};
           std::memcpy(reinterpret_cast<void*>(p1), nop2, 2);
           VirtualProtect(reinterpret_cast<LPVOID>(p1), 2, old1, &old1);
+          FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<LPCVOID>(p1), 2);
           std::ostringstream ss;
           ss << "[Memory Patch] Patched CardsDLL failure branch at 0x" << std::hex << p1
              << " to NOP NOP (forcing fallthrough to ONLINE state)";
@@ -643,6 +630,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile,
           uint8_t jmp_online[3] = {0xEB, 0xE7, 0x90}; // jmp 0x4213D (status 2 = ONLINE); nop
           std::memcpy(reinterpret_cast<void*>(p2), jmp_online, 3);
           VirtualProtect(reinterpret_cast<LPVOID>(p2), 3, old2, &old2);
+          FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<LPCVOID>(p2), 3);
           std::ostringstream ss;
           ss << "[Memory Patch] Redirected CardsDLL error handler entry at 0x" << std::hex << p2
              << " to ONLINE state dispatcher (jmp 0x4213D)";
@@ -656,10 +644,21 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile,
           uint8_t nop3[3] = {0x90, 0x90, 0x90};
           std::memcpy(reinterpret_cast<void*>(p3), nop3, 3);
           VirtualProtect(reinterpret_cast<LPVOID>(p3), 3, old3, &old3);
+          FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<LPCVOID>(p3), 3);
           std::ostringstream ss;
           ss << "[Memory Patch] Suppressed ServerFatalError popup invocation at 0x" << std::hex << p3;
           LogInfo(ss.str());
         }
+
+        // Task 1 Verification: Dump memory bytes immediately after applying patches
+        const uint8_t* b1 = reinterpret_cast<const uint8_t*>(p1);
+        const uint8_t* b2 = reinterpret_cast<const uint8_t*>(p2);
+        const uint8_t* b3 = reinterpret_cast<const uint8_t*>(p3);
+        char dump_buf[256];
+        snprintf(dump_buf, sizeof(dump_buf),
+                 "[Memory Patch Verification] CardsDLL Bytes: 0x4213B=[%02X %02X] 0x42154=[%02X %02X %02X] 0x421C6=[%02X %02X %02X]",
+                 b1[0], b1[1], b2[0], b2[1], b2[2], b3[0], b3[1], b3[2]);
+        LogInfo(dump_buf);
 
         s_cards_patched.store(true, std::memory_order_relaxed);
       }
@@ -679,6 +678,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile,
           uint8_t mov_zero[5] = {0xB8, 0x00, 0x00, 0x00, 0x00};
           std::memcpy(reinterpret_cast<void*>(p4), mov_zero, 5);
           VirtualProtect(reinterpret_cast<LPVOID>(p4), 5, old4, &old4);
+          FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<LPCVOID>(p4), 5);
           std::ostringstream ss;
           ss << "[Memory Patch] Surgically coerced FIFA22.exe failure return at 0x" << std::hex << p4
              << " to mov eax, 0 (Success)";
@@ -692,6 +692,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile,
           uint8_t mov_zero[5] = {0xB8, 0x00, 0x00, 0x00, 0x00};
           std::memcpy(reinterpret_cast<void*>(p5), mov_zero, 5);
           VirtualProtect(reinterpret_cast<LPVOID>(p5), 5, old5, &old5);
+          FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<LPCVOID>(p5), 5);
           std::ostringstream ss;
           ss << "[Memory Patch] Surgically coerced FIFA22.exe failure return at 0x" << std::hex << p5
              << " to mov eax, 0 (Success)";
@@ -705,6 +706,7 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile,
           uint8_t xor_eax[2] = {0x31, 0xC0};
           std::memcpy(reinterpret_cast<void*>(p6), xor_eax, 2);
           VirtualProtect(reinterpret_cast<LPVOID>(p6), 2, old6, &old6);
+          FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<LPCVOID>(p6), 2);
           std::ostringstream ss;
           ss << "[Memory Patch] Surgically coerced FIFA22.exe error exit at 0x" << std::hex << p6
              << " to xor eax, eax (Success)";
@@ -718,9 +720,31 @@ typedef HMODULE (WINAPI *PFN_LoadLibraryExA)(LPCSTR lpLibFileName, HANDLE hFile,
           uint8_t nop6[6] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
           std::memcpy(reinterpret_cast<void*>(p7), nop6, 6);
           VirtualProtect(reinterpret_cast<LPVOID>(p7), 6, old7, &old7);
+          FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<LPCVOID>(p7), 6);
           std::ostringstream ss;
           ss << "[Memory Patch] Surgically NOPped FIFA22.exe sub-call error branch at 0x" << std::hex << p7;
           LogInfo(ss.str());
+        }
+
+        // Target 8: RVA 0x4D89F4C - Suppress FifaOnline::ServerLocGetMsg popup message dispatch
+        // (FF 50 38 -> 90 90 90: NOP out call qword ptr [rax+0x38] so message 0x60CF3B is never dispatched to UI queue)
+        uintptr_t p8 = reinterpret_cast<uintptr_t>(base + 0x4D89F4C);
+        DWORD old8 = 0;
+        if (VirtualProtect(reinterpret_cast<LPVOID>(p8), 3, PAGE_EXECUTE_READWRITE, &old8)) {
+          uint8_t nop3[3] = {0x90, 0x90, 0x90};
+          std::memcpy(reinterpret_cast<void*>(p8), nop3, 3);
+          VirtualProtect(reinterpret_cast<LPVOID>(p8), 3, old8, &old8);
+          FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<LPCVOID>(p8), 3);
+          std::ostringstream ss;
+          ss << "[Memory Patch] Suppressed FifaOnline::ServerLocGetMsg popup dispatch at 0x" << std::hex << p8;
+          LogInfo(ss.str());
+
+          const uint8_t* b8 = reinterpret_cast<const uint8_t*>(p8);
+          char dump8_buf[128];
+          snprintf(dump8_buf, sizeof(dump8_buf),
+                   "[Memory Patch Verification] FIFA22.exe 0x4D89F4C: [%02X %02X %02X]",
+                   b8[0], b8[1], b8[2]);
+          LogInfo(dump8_buf);
         }
 
         s_fifa_patched.store(true, std::memory_order_relaxed);

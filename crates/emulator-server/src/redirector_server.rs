@@ -259,13 +259,8 @@ fn xml_element_value(text: &str, tag: &str) -> Option<String> {
 /// FIFA 22's own request body does not name a service -- the reply has to
 /// advertise every service the client may bind.  A request that does name
 /// one gets that service advertised first.
-fn requested_service(request: &str, config: &RedirectorConfig) -> Option<String> {
-    let known = [
-        config.blaze_service_name.as_str(),
-        config.qos_service_name.as_str(),
-    ];
-
-    // Query parameters of the request line: "?service=qosapi".
+fn requested_service(request: &str, _config: &RedirectorConfig) -> Option<String> {
+    // Query parameters of the request line: "?service=qosapi" or "?name=fifa-2022-pc".
     let request_line = request.lines().next().unwrap_or_default();
     if let Some(query) = request_line.split_once('?').map(|(_, q)| q) {
         // The query string ends at the first space (the HTTP version).
@@ -274,21 +269,20 @@ fn requested_service(request: &str, config: &RedirectorConfig) -> Option<String>
             let Some((key, value)) = pair.split_once('=') else {
                 continue;
             };
-            if !matches!(key.to_ascii_lowercase().as_str(), "service" | "servicename" | "svc") {
-                continue;
-            }
-            let value = value.trim().to_ascii_lowercase();
-            if known.contains(&value.as_str()) {
-                return Some(value);
+            if matches!(key.to_ascii_lowercase().as_str(), "service" | "servicename" | "svc" | "name") {
+                let value = value.trim().to_ascii_lowercase();
+                if !value.is_empty() {
+                    return Some(value);
+                }
             }
         }
     }
 
-    // Or an element in the request body: "<servicename>qosapi</servicename>".
-    for tag in ["servicename", "serviceName"] {
+    // Or an element in the request body: "<name>fifa-2022-pc</name>" or "<servicename>qosapi</servicename>".
+    for tag in ["name", "servicename", "serviceName", "svc"] {
         if let Some(value) = xml_element_value(request, tag) {
-            let value = value.to_ascii_lowercase();
-            if known.contains(&value.as_str()) {
+            let value = value.trim().to_ascii_lowercase();
+            if !value.is_empty() {
                 return Some(value);
             }
         }

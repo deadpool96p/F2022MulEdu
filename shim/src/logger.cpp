@@ -121,14 +121,19 @@ void Log(std::string_view level, std::string_view message) {
 
     std::string formatted = ss.str();
 
-    StartLoggerWorkerIfNeeded();
     {
         std::lock_guard<std::mutex> lock(g_log_mutex);
-        if (g_log_queue.size() < 10000) {
-            g_log_queue.push(std::move(formatted));
+        EnsureLogFile();
+        if (g_log_file.is_open()) {
+            g_log_file << formatted;
+            g_log_file.flush();
         }
+        if (g_appdata_shim_log.is_open()) {
+            g_appdata_shim_log << formatted;
+            g_appdata_shim_log.flush();
+        }
+        OutputDebugStringA(formatted.c_str());
     }
-    g_log_cv.notify_one();
 }
 
 void LogInfo(std::string_view message) {

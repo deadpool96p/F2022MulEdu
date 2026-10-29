@@ -125,9 +125,22 @@ impl RedirectorConfig {
     /// client reading the first advertised instance gets the one it asked
     /// for.
     pub fn advertised_services_for(&self, preferred: Option<&str>) -> Vec<ServiceInstance> {
+        let mut blaze_names = vec![
+            "fifa-2022-pc".to_string(),
+            "blaze".to_string(),
+            self.blaze_service_name.clone(),
+        ];
+        if let Some(p) = preferred {
+            if p != self.qos_service_name {
+                blaze_names.insert(0, p.to_string());
+            }
+        }
+        blaze_names.dedup();
+        let primary_blaze_name = blaze_names[0].clone();
+
         let blaze = ServiceInstance {
-            service_name: self.blaze_service_name.clone(),
-            service_names: vec![self.blaze_service_name.clone()],
+            service_name: primary_blaze_name,
+            service_names: blaze_names,
             instance_type: 0,
             hostname: self.host.clone(),
             ip: self.ip,
@@ -152,7 +165,6 @@ impl RedirectorConfig {
 
         match preferred {
             Some(name) if name == qos.service_name => vec![qos, blaze],
-            Some(name) if name == blaze.service_name => vec![blaze, qos],
             _ => vec![blaze, qos],
         }
     }

@@ -81,22 +81,27 @@ static void RenderStatusPill(const ServerStatus& status) {
         ImU32 dot_color = IM_COL32(231, 76, 60, 255); // Red (Offline)
         const char* mode_str = "P2P";
 
-        if (netcode.mode == TransportMode::ProtoTunnelRelay) {
-            dot_color = IM_COL32(241, 196, 15, 255); // Amber (Relay)
-            mode_str = "RELAY";
-        } else if (netcode.mode == TransportMode::SteamP2P) {
-            dot_color = IM_COL32(52, 152, 219, 255); // Blue (Steam P2P)
-            mode_str = "STEAM-P2P";
+        bool is_online = status.online || (netcode.packets_recv > 0);
+        if (is_online) {
+            if (netcode.mode == TransportMode::ProtoTunnelRelay) {
+                dot_color = IM_COL32(241, 196, 15, 255); // Amber (Relay)
+                mode_str = "RELAY";
+            } else if (netcode.mode == TransportMode::SteamP2P) {
+                dot_color = IM_COL32(52, 152, 219, 255); // Blue (Steam P2P)
+                mode_str = "STEAM-P2P";
+            } else {
+                dot_color = IM_COL32(46, 204, 113, 255); // Green (Direct P2P)
+                mode_str = "P2P";
+            }
         } else {
-            dot_color = IM_COL32(46, 204, 113, 255); // Green (Direct P2P)
-            mode_str = "P2P";
+            dot_color = IM_COL32(231, 76, 60, 255); // Red (Offline)
         }
 
         // Draw glowing dot
         draw_list->AddCircleFilled(ImVec2(p.x + 4.0f, p.y + 10.0f), 5.0f, dot_color);
 
         ImGui::SetCursorScreenPos(ImVec2(p.x + 16.0f, p.y + 2.0f));
-        if (status.online || netcode.packets_recv > 0) {
+        if (is_online) {
             uint32_t display_ping = netcode.ping_ms > 0 ? netcode.ping_ms : (status.peer_ping_ms > 0 ? status.peer_ping_ms : 18);
             uint32_t display_jitter = netcode.jitter_ms;
             ImGui::TextColored(

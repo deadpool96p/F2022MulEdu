@@ -32,7 +32,7 @@ where
 /// A synced Steam friend entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SteamFriend {
-    #[serde(deserialize_with = "deserialize_u64_lenient")]
+    #[serde(deserialize_with = "deserialize_u64_lenient", alias = "id")]
     pub steam_id: u64,
     pub name: String,
 }

@@ -147,12 +147,21 @@ void ControlClient::CopyToClipboard(const std::string& text) {
 }
 
 void ControlClient::WorkerLoop() {
+    static bool s_last_status = false;
     while (m_running.load()) {
         ServerStatus status;
         if (FetchStatusSync(status)) {
+            if (!s_last_status) {
+                LogInfo("[ControlClient] Connection to control server (:42129) ESTABLISHED. Emulator is ONLINE.");
+                s_last_status = true;
+            }
             std::lock_guard<std::mutex> lock(m_mutex);
             m_cached_status = status;
         } else {
+            if (s_last_status) {
+                LogWarn("[ControlClient] Connection to control server (:42129) LOST. Emulator is OFFLINE.");
+                s_last_status = false;
+            }
             std::lock_guard<std::mutex> lock(m_mutex);
             m_cached_status.online = false;
             m_cached_status.transport_mode = "DISCONNECTED";
@@ -188,14 +197,28 @@ bool ControlClient::FetchStatusSync(ServerStatus& out_status) {
         return false;
     }
 
-    // Set timeout to 1 second so we don't hang if server is temporarily unreachable
-    WinHttpSetTimeouts(hRequest, 1000, 1000, 1000, 1000);
+    // Set timeout to 5 seconds so we don't drop requests during load spikes
+    WinHttpSetTimeouts(hRequest, 5000, 5000, 5000, 5000);
 
     bool success = false;
-    if (WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
-                           WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
-        WinHttpReceiveResponse(hRequest, nullptr)) {
-
+    if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                            WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
+        static DWORD s_last_log = 0;
+        if (GetTickCount() - s_last_log > 10000) {
+            s_last_log = GetTickCount();
+            std::ostringstream ss;
+            ss << "[ControlClient] WinHttpSendRequest to port " << m_port << " failed with error " << GetLastError();
+            LogWarn(ss.str());
+        }
+    } else if (!WinHttpReceiveResponse(hRequest, nullptr)) {
+        static DWORD s_last_log = 0;
+        if (GetTickCount() - s_last_log > 10000) {
+            s_last_log = GetTickCount();
+            std::ostringstream ss;
+            ss << "[ControlClient] WinHttpReceiveResponse from port " << m_port << " failed with error " << GetLastError();
+            LogWarn(ss.str());
+        }
+    } else {
         DWORD statusCode = 0;
         DWORD size = sizeof(statusCode);
         WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
