@@ -67,3 +67,32 @@ set_target_properties(seamless_fifa PROPERTIES
     OUTPUT_NAME "seamless_fifa"
     PREFIX ""
 )
+
+# DXGI Proxy Target (Native Zero-Crash Loader via OS Dependency Mechanism)
+add_library(dxgi_shim SHARED
+    src/seamless_fifa.cpp
+    src/dxgi_proxy.cpp
+    src/overlay.cpp
+    ${MINHOOK_SOURCES}
+    ${BLAKE3_SOURCES}
+    ${IMGUI_SOURCES}
+    dxgi.def
+)
+
+target_link_libraries(dxgi_shim PRIVATE
+    ws2_32
+    d3d11
+    d3d12
+    dxgi
+    d3dcompiler
+    dwmapi
+    user32
+    kernel32
+)
+
+target_link_options(dxgi_shim PRIVATE -static -static-libgcc -static-libstdc++)
+
+set_target_properties(dxgi_shim PROPERTIES
+    OUTPUT_NAME "dxgi"
+    PREFIX ""
+)

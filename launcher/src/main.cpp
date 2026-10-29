@@ -119,16 +119,24 @@ int main(int argc, char* argv[]) {
     g_log_file.open("launcher_log.txt", std::ios::out | std::ios::trunc);
     LogLauncher("FIFA 22 Seamless Co-op Launcher session started.");
 
-    // Set Steam Environment to Spacewar (AppID 480)
-    SetEnvironmentVariableW(L"SteamAppId", L"480");
-    SetEnvironmentVariableW(L"SteamGameId", L"480");
-    LogLauncher("[Steam] Configured SteamAppId=480, SteamGameId=480.");
-
     // Determine current directory
     wchar_t currentDirBuf[MAX_PATH];
     GetCurrentDirectoryW(MAX_PATH, currentDirBuf);
     fs::path workDir(currentDirBuf);
     LogLauncher("[Launcher] Current Directory: " + workDir.string());
+
+    // Check if steam_appid.txt exists or set default FIFA 22 App ID (1506830)
+    std::wstring defaultAppId = L"1506830";
+    if (fs::exists(workDir / L"steam_appid.txt")) {
+        std::ifstream appFile(workDir / L"steam_appid.txt");
+        std::string idStr;
+        if (appFile >> idStr && !idStr.empty()) {
+            defaultAppId = std::wstring(idStr.begin(), idStr.end());
+        }
+    }
+    SetEnvironmentVariableW(L"SteamAppId", defaultAppId.c_str());
+    SetEnvironmentVariableW(L"SteamGameId", defaultAppId.c_str());
+    LogLauncher("[Steam] Configured SteamAppId=" + std::string(defaultAppId.begin(), defaultAppId.end()) + ".");
 
     std::wstring iniPath = (workDir / L"seamless.ini").wstring();
     SeamlessConfig cfg = LoadSeamlessConfig(iniPath);
@@ -159,7 +167,55 @@ int main(int argc, char* argv[]) {
         // Can be copied after execution
     }
 
-    // Locate seamless_fifa.dll
+    // Check if dxgi.dll proxy is present in the game folder
+    fs::path dxgiProxyPath = exePath.parent_path() / L"dxgi.dll";
+    bool useProxyMode = fs::exists(dxgiProxyPath);
+
+    std::wstring cmdLine = L"\"" + exePath.wstring() + L"\"";
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+
+    if (useProxyMode) {
+        LogLauncher("[Launcher] Detected dxgi.dll proxy in game folder -> Native Loader Mode (Denuvo-safe, zero remote thread).");
+        BOOL success = CreateProcessW(
+            exePath.c_str(),
+            const_cast<wchar_t*>(cmdLine.c_str()),
+            nullptr,
+            nullptr,
+            FALSE,
+            NORMAL_PRIORITY_CLASS | CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
+            nullptr,
+            exePath.parent_path().c_str(),
+            &si,
+            &pi
+        );
+
+        if (!success) {
+            DWORD err = GetLastError();
+            LogLauncher("[Launcher ERROR] CreateProcessW failed! Error code: " + std::to_string(err));
+            return 1;
+        }
+
+        LogLauncher("[Launcher] Game process started. PID: " + std::to_string(pi.dwProcessId) + ", TID: " + std::to_string(pi.dwThreadId));
+        LogLauncher("[Launcher] Verifying process stability (waiting 3s)...");
+        DWORD waitRes = WaitForSingleObject(pi.hProcess, 3000);
+        if (waitRes == WAIT_TIMEOUT) {
+            LogLauncher("[Launcher SUCCESS] Game process is running stably! PID: " + std::to_string(pi.dwProcessId));
+        } else {
+            DWORD exitCode = 0;
+            GetExitCodeProcess(pi.hProcess, &exitCode);
+            LogLauncher("[Launcher WARNING] Game process exited early. Exit code: 0x" + std::to_string(exitCode));
+        }
+
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        LogLauncher("[Launcher] Launch sequence completed successfully.");
+        return 0;
+    }
+
+    // Locate seamless_fifa.dll for injection fallback
     fs::path dllPath = workDir / L"seamless_fifa.dll";
     if (!fs::exists(dllPath)) {
         fs::path exeDirDll = exePath.parent_path() / L"seamless_fifa.dll";
@@ -171,12 +227,6 @@ int main(int argc, char* argv[]) {
         }
     }
     LogLauncher("[Launcher] Injection DLL: " + dllPath.string());
-
-    std::wstring cmdLine = L"\"" + exePath.wstring() + L"\" -seamless -skipintro -novid -offline";
-
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
 
     LogLauncher("[Launcher] Spawning FIFA 22 with CREATE_SUSPENDED...");
     BOOL success = CreateProcessW(

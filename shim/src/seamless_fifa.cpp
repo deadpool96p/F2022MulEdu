@@ -434,17 +434,9 @@ static DWORD WINAPI SeamlessInitThread(LPVOID lpParam) {
     LogShim("   Seamless FIFA 22 Initialization Thread Active            ");
     LogShim("============================================================");
 
-    LogShim("[InitThread] Entering Sleep(1500)...");
-    Sleep(1500);
-    LogShim("[InitThread] Sleep(1500) completed.");
-
-    // User visibility checkpoint
-    LogShim("[InitThread] Displaying MessageBoxW...");
-    MessageBoxW(nullptr,
-                L"Seamless FIFA 22 attached to process successfully!\n\nClick OK to initialize network hooks.",
-                L"Seamless FIFA 22",
-                MB_OK | MB_ICONINFORMATION | MB_SYSTEMMODAL);
-    LogShim("[InitThread] MessageBoxW dismissed by user.");
+    LogShim("[InitThread] Waiting 500ms for CRT and socket libraries...");
+    Sleep(500);
+    LogShim("[InitThread] Proceeding with configuration and hooks...");
 
     LoadConfig();
 
