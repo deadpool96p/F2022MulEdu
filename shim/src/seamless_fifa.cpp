@@ -225,15 +225,76 @@ static DWORD WINAPI HeartbeatWorker(LPVOID) {
 }
 
 // -----------------------------------------------------------------------------
-// Winsock Detours
+// Winsock Detours (UDP Match Relay & TCP Anadius LSX Interceptor)
 // -----------------------------------------------------------------------------
 using PFN_bind = int(WSAAPI*)(SOCKET s, const struct sockaddr *name, int namelen);
 using PFN_sendto = int(WSAAPI*)(SOCKET s, const char *buf, int len, int flags, const struct sockaddr *to, int tolen);
 using PFN_recvfrom = int(WSAAPI*)(SOCKET s, char *buf, int len, int flags, struct sockaddr *from, int *fromlen);
+using PFN_connect = int(WSAAPI*)(SOCKET s, const struct sockaddr *name, int namelen);
+using PFN_send = int(WSAAPI*)(SOCKET s, const char *buf, int len, int flags);
+using PFN_recv = int(WSAAPI*)(SOCKET s, char *buf, int len, int flags);
 
 static PFN_bind g_orig_bind = nullptr;
 static PFN_sendto g_orig_sendto = nullptr;
 static PFN_recvfrom g_orig_recvfrom = nullptr;
+static PFN_connect g_orig_connect = nullptr;
+static PFN_send g_orig_send = nullptr;
+static PFN_recv g_orig_recv = nullptr;
+
+static std::atomic<SOCKET> g_lsx_socket{INVALID_SOCKET};
+
+static __declspec(noinline) int WSAAPI Hooked_connect(SOCKET s, const struct sockaddr *name, int namelen) {
+    if (name && namelen >= static_cast<int>(sizeof(sockaddr_in)) && name->sa_family == AF_INET) {
+        const auto* sin = reinterpret_cast<const sockaddr_in*>(name);
+        uint16_t port = ntohs(sin->sin_port);
+
+        if (port == 3216 || (port >= 3210 && port <= 3220)) {
+            g_lsx_socket.store(s);
+            LogShim("[Winsock TCP] Intercepted connect() to Anadius LSX port " + std::to_string(port) + " on socket " + std::to_string(s));
+        }
+    }
+    return g_orig_connect(s, name, namelen);
+}
+
+static __declspec(noinline) int WSAAPI Hooked_send(SOCKET s, const char *buf, int len, int flags) {
+    if (buf && len > 0 && s == g_lsx_socket.load()) {
+        std::string sample(buf, len > 160 ? 160 : len);
+        LogShim("[Winsock TCP LSX] Outgoing send (" + std::to_string(len) + " bytes): " + sample);
+    }
+    return g_orig_send(s, buf, len, flags);
+}
+
+static __declspec(noinline) int WSAAPI Hooked_recv(SOCKET s, char *buf, int len, int flags) {
+    int res = g_orig_recv(s, buf, len, flags);
+    if (res > 0 && buf && s == g_lsx_socket.load()) {
+        std::string data(buf, res);
+        LogShim("[Winsock TCP LSX] Incoming recv (" + std::to_string(res) + " bytes): " + data.substr(0, 160));
+
+        bool modified = false;
+        auto replace_all = [&](const std::string& from, const std::string& to) {
+            size_t pos = 0;
+            while ((pos = data.find(from, pos)) != std::string::npos) {
+                data.replace(pos, from.length(), to);
+                pos += to.length();
+                modified = true;
+            }
+        };
+
+        replace_all("shutdown", "running_");
+        replace_all("IS_MANUAL_OFFLINE", "IS_ONLINE_ALLOWED");
+        replace_all("IsManualOffline", "IsOnlineAllowed");
+        replace_all("unavailable", "available__");
+        replace_all("EOS", "OK_");
+        replace_all("-1577058293", "0000000000");
+
+        if (modified) {
+            size_t copy_len = data.length() < static_cast<size_t>(len) ? data.length() : static_cast<size_t>(len);
+            std::memcpy(buf, data.data(), copy_len);
+            LogShim("[Winsock TCP LSX] Sanitized LSX response buffer in memory!");
+        }
+    }
+    return res;
+}
 
 static __declspec(noinline) int WSAAPI Hooked_bind(SOCKET s, const struct sockaddr *name, int namelen) {
     if (name && name->sa_family == AF_INET) {
@@ -453,18 +514,20 @@ static void DumpPatchedMemory(const char* context) {
     if (!hExe) return;
     const uint8_t* base = reinterpret_cast<const uint8_t*>(hExe);
 
+    const uint8_t* b196B650 = base + 0x196B650;
+    const uint8_t* b24D92D0 = base + 0x24D92D0;
+    const uint8_t* b4F32B5F = base + 0x4F32B5F;
+    const uint8_t* b24DDCEA = base + 0x24DDCEA;
     const uint8_t* b4D89F4C = base + 0x4D89F4C;
     const uint8_t* b27E2C72 = base + 0x27E2C72;
-    const uint8_t* b27E2C79 = base + 0x27E2C79;
-    const uint8_t* b27E2CC3 = base + 0x27E2CC3;
-    const uint8_t* b27E2B90 = base + 0x27E2B90;
 
     std::string dump = "[MemoryDump: " + std::string(context) + "] ";
-    dump += "0x144D89F4C=[" + BytesToHex(b4D89F4C, 3) + "] (expected 90 90 90) ";
-    dump += "0x1427E2C72=[" + BytesToHex(b27E2C72, 5) + "] (expected B8 00 00 00 00) ";
-    dump += "0x1427E2C79=[" + BytesToHex(b27E2C79, 5) + "] ";
-    dump += "0x1427E2CC3=[" + BytesToHex(b27E2CC3, 2) + "] ";
-    dump += "0x1427E2B90=[" + BytesToHex(b27E2B90, 6) + "]";
+    dump += "Entitlement=0x" + BytesToHex(b196B650, 6) + " (exp B8 01 00 00 00 C3) ";
+    dump += "OriginCheck=0x" + BytesToHex(b24D92D0, 11) + " ";
+    dump += "OnlineAccess=0x" + BytesToHex(b4F32B5F, 3) + " (exp 40 B6 01) ";
+    dump += "OriginInternal=0x" + BytesToHex(b24DDCEA, 8) + " ";
+    dump += "Popup=0x" + BytesToHex(b4D89F4C, 3) + " (exp 90 90 90) ";
+    dump += "FailRet=0x" + BytesToHex(b27E2C72, 5) + " (exp B8 00 00 00 00)";
 
     HMODULE hCards = GetModuleHandleW(L"CardsDLL_Win64_retail.dll");
     if (hCards) {
@@ -485,12 +548,26 @@ static bool ApplyFifaExePatches() {
     if (!hExe) return false;
     const uint8_t* base = reinterpret_cast<const uint8_t*>(hExe);
 
+    // Root Entitlement Check (RVA 0x196B650): Force return 1 (True)
+    uint8_t ret_true[6] = {0xB8, 0x01, 0x00, 0x00, 0x00, 0xC3}; // mov eax, 1; ret
+    // Root OriginCheckOnline (RVA 0x24D92D0): Force *rcx = 1 (Online) and return 0 (Success)
+    uint8_t origin_online[11] = {0x48, 0x85, 0xC9, 0x74, 0x03, 0xC6, 0x01, 0x01, 0x31, 0xC0, 0xC3};
+    // Frostbite OnlineAccess Local Flag (RVA 0x4F32B5F): mov sil, 1 (entitlement granted)
+    uint8_t mov_sil_one[3] = {0x40, 0xB6, 0x01};
+    // OriginSDK Internal Online State (RVA 0x24DDCEA): Force *rsi = 1 (Online), ebx = 0, jmp 0x1424ddd00
+    uint8_t origin_internal[11] = {0xC6, 0x06, 0x01, 0x31, 0xDB, 0xEB, 0x0F, 0x90, 0x90, 0x90, 0x90};
+
+    // Sub-call failure coercions
     uint8_t mov_zero[5] = {0xB8, 0x00, 0x00, 0x00, 0x00};
     uint8_t xor_eax[2] = {0x31, 0xC0};
     uint8_t nop6[6] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
     uint8_t nop3[3] = {0x90, 0x90, 0x90};
 
     bool ok = true;
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x196B650), ret_true, 6);
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x24D92D0), origin_online, 11);
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x4F32B5F), mov_sil_one, 3);
+    ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x24DDCEA), origin_internal, 11);
     ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2C72), mov_zero, 5);
     ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2C79), mov_zero, 5);
     ok &= SafeMemoryPatch(reinterpret_cast<uintptr_t>(base + 0x27E2CC3), xor_eax, 2);
@@ -516,7 +593,7 @@ static bool ApplyCardsDllPatches() {
 }
 
 static DWORD WINAPI PatchWorkerThread(LPVOID) {
-    LogShim("[PatchWorker] Background patcher thread started. Applying initial FIFA22.exe patches...");
+    LogShim("[PatchWorker] Background patcher thread started. Applying root entitlement, auth & popup patches...");
     ApplyFifaExePatches();
     DumpPatchedMemory("InitialPostPatch");
 
@@ -530,12 +607,15 @@ static DWORD WINAPI PatchWorkerThread(LPVOID) {
         HMODULE hExe = GetModuleHandleW(NULL);
         if (hExe) {
             const uint8_t* base = reinterpret_cast<const uint8_t*>(hExe);
+            const uint8_t* b196B650 = base + 0x196B650;
+            const uint8_t* b24D92D0 = base + 0x24D92D0;
+            const uint8_t* b4F32B5F = base + 0x4F32B5F;
             const uint8_t* b4D89F4C = base + 0x4D89F4C;
             const uint8_t* b27E2C72 = base + 0x27E2C72;
 
             // Check if patched bytes reverted
-            if (b4D89F4C[0] != 0x90 || b4D89F4C[1] != 0x90 || b4D89F4C[2] != 0x90 ||
-                b27E2C72[0] != 0xB8 || b27E2C72[1] != 0x00) {
+            if (b196B650[0] != 0xB8 || b24D92D0[0] != 0x48 || b4F32B5F[0] != 0x40 ||
+                b4D89F4C[0] != 0x90 || b27E2C72[0] != 0xB8 || b27E2C72[1] != 0x00) {
                 LogShim("[PatchWorker ALERT] Detected byte revert in FIFA22.exe! Re-applying patches...");
                 ApplyFifaExePatches();
                 DumpPatchedMemory("RevertedReapplied");
@@ -600,10 +680,16 @@ static DWORD WINAPI SeamlessInitThread(LPVOID lpParam) {
             void* pBind = reinterpret_cast<void*>(GetProcAddress(hWs2, "bind"));
             void* pSendto = reinterpret_cast<void*>(GetProcAddress(hWs2, "sendto"));
             void* pRecvfrom = reinterpret_cast<void*>(GetProcAddress(hWs2, "recvfrom"));
+            void* pConnect = reinterpret_cast<void*>(GetProcAddress(hWs2, "connect"));
+            void* pSend = reinterpret_cast<void*>(GetProcAddress(hWs2, "send"));
+            void* pRecv = reinterpret_cast<void*>(GetProcAddress(hWs2, "recv"));
 
             LogShim("Target addresses: bind=0x" + std::to_string((uintptr_t)pBind) +
                     ", sendto=0x" + std::to_string((uintptr_t)pSendto) +
-                    ", recvfrom=0x" + std::to_string((uintptr_t)pRecvfrom));
+                    ", recvfrom=0x" + std::to_string((uintptr_t)pRecvfrom) +
+                    ", connect=0x" + std::to_string((uintptr_t)pConnect) +
+                    ", send=0x" + std::to_string((uintptr_t)pSend) +
+                    ", recv=0x" + std::to_string((uintptr_t)pRecv));
 
             if (pBind) {
                 MH_STATUS s = MH_CreateHook(pBind, reinterpret_cast<LPVOID>(&Hooked_bind), reinterpret_cast<LPVOID*>(&g_orig_bind));
@@ -616,6 +702,18 @@ static DWORD WINAPI SeamlessInitThread(LPVOID lpParam) {
             if (pRecvfrom) {
                 MH_STATUS s = MH_CreateHook(pRecvfrom, reinterpret_cast<LPVOID>(&Hooked_recvfrom), reinterpret_cast<LPVOID*>(&g_orig_recvfrom));
                 LogShim("Hook recvfrom status: " + std::to_string(s));
+            }
+            if (pConnect) {
+                MH_STATUS s = MH_CreateHook(pConnect, reinterpret_cast<LPVOID>(&Hooked_connect), reinterpret_cast<LPVOID*>(&g_orig_connect));
+                LogShim("Hook connect status: " + std::to_string(s));
+            }
+            if (pSend) {
+                MH_STATUS s = MH_CreateHook(pSend, reinterpret_cast<LPVOID>(&Hooked_send), reinterpret_cast<LPVOID*>(&g_orig_send));
+                LogShim("Hook send status: " + std::to_string(s));
+            }
+            if (pRecv) {
+                MH_STATUS s = MH_CreateHook(pRecv, reinterpret_cast<LPVOID>(&Hooked_recv), reinterpret_cast<LPVOID*>(&g_orig_recv));
+                LogShim("Hook recv status: " + std::to_string(s));
             }
 
             MH_STATUS s_all = MH_EnableHook(MH_ALL_HOOKS);
